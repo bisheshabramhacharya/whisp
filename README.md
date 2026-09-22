@@ -134,7 +134,7 @@ you said is what gets pasted, minus the noise.
 |---------------------|--------------------------------------------------------|
 | App data root       | `~/Library/Application Support/Whisp/`                 |
 | Transcript history  | `…/Whisp/history.jsonl`                                |
-| Saved recordings    | `…/Whisp/recordings/` (newest 200 kept, if enabled)    |
+| Saved recordings    | `…/Whisp/recordings/` (all kept, if enabled)           |
 | Dictionary          | `…/Whisp/dictionary.json`                              |
 | ASR models          | `~/Library/Application Support/FluidAudio/Models/`     |
 

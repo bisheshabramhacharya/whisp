@@ -1,7 +1,7 @@
 import Foundation
 
-/// Saves dictation audio as 16 kHz mono PCM16 WAVs in `recordings/` and prunes
-/// old ones. File name is `<HistoryEntry.id>.wav` so audio and history match up.
+/// Saves dictation audio as 16 kHz mono PCM16 WAVs in `recordings/`, all kept as
+/// fine-tuning data. File name is `<HistoryEntry.id>.wav` so audio and history match up.
 public final class RecordingArchive {
 
     public let directory: URL
@@ -19,28 +19,6 @@ public final class RecordingArchive {
         let url = directory.appendingPathComponent("\(id).wav")
         try wavData(samples).write(to: url, options: .atomic)
         return url
-    }
-
-    /// Deletes oldest WAVs beyond `keep` (by modification date).
-    public func prune(keep: Int) throws {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: directory.path) else { return }
-        let files = try fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ).filter { $0.pathExtension.lowercased() == "wav" }
-
-        guard files.count > keep else { return }
-
-        let newestFirst = try files.sorted { a, b in
-            let da = try a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
-            let db = try b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
-            return da > db
-        }
-        for stale in newestFirst.dropFirst(keep) {
-            try? fm.removeItem(at: stale)
-        }
     }
 
     // MARK: - WAV encoding (PCM16, mono, little-endian)

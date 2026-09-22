@@ -30,7 +30,7 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(autoMute, forKey: Key.autoMute) }
     }
 
-    /// Keep WAVs of past dictations (newest 200) next to history.jsonl.
+    /// Keep WAVs of every dictation next to history.jsonl (fine-tuning data).
     @Published public var keepRecordings: Bool {
         didSet { defaults.set(keepRecordings, forKey: Key.keepRecordings) }
     }

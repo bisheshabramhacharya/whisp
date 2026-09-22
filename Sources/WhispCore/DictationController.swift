@@ -335,7 +335,6 @@ public final class DictationController: ObservableObject {
             if settings.keepRecordings {
                 do {
                     try recordings.save(samples: samples, id: entry.id)
-                    try recordings.prune(keep: 200)
                 } catch {
                     logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
                 }
