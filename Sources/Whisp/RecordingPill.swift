@@ -2,24 +2,30 @@ import AppKit
 import Combine
 import WhispCore
 
-/// Floating "listening" pill like Willow Voice: borderless, never takes focus,
-/// follows the screen containing the mouse, bottom-center.
+/// Floating "listening" pill like Willow Voice: borderless, never takes focus.
+/// Drag it anywhere (the spot is remembered); otherwise it sits bottom-center
+/// of the screen with the mouse. Size comes from `AppSettings.pillScale`.
 ///   recording    → live waveform driven by recorder levels
 ///   transcribing → subtle spinner
-///   idle         → hidden
+///   idle         → hidden, or dimmed when `alwaysShowPill` is on
 @MainActor
 final class RecordingPillController {
 
     private let panel: NSPanel
     private let pillView: PillView
+    private let settings: AppSettings
+    private var state: DictationController.State = .idle
     private var cancellables = Set<AnyCancellable>()
 
-    private static let size = NSSize(width: 200, height: 52)
+    private static let baseSize = NSSize(width: 200, height: 52)
     private static let bottomMargin: CGFloat = 84
+    private static let idleAlpha: CGFloat = 0.45
 
-    init(controller: DictationController) {
+    init(controller: DictationController, settings: AppSettings) {
+        self.settings = settings
+        let size = Self.size(for: settings.pillScale)
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: Self.size),
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -29,15 +35,18 @@ final class RecordingPillController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.ignoresMouseEvents = true
-        panel.isMovable = false
         panel.hidesOnDeactivate = false
         panel.alphaValue = 0
         self.panel = panel
 
-        let pill = PillView(frame: NSRect(origin: .zero, size: Self.size))
+        let pill = PillView(frame: NSRect(origin: .zero, size: size))
         panel.contentView = pill
         self.pillView = pill
+
+        pill.onDragEnd = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            self.settings.pillOrigin = panel.frame.origin
+        }
 
         // Recorder levels → waveform bars (cheap CALayer updates, ~30 Hz).
         controller.onLevel = { [weak self] level in
@@ -46,30 +55,58 @@ final class RecordingPillController {
 
         controller.$state
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in self?.apply(state: state) }
+            .sink { [weak self] state in
+                self?.state = state
+                self?.refresh()
+            }
             .store(in: &cancellables)
+
+        settings.$pillScale.dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] scale in self?.resize(to: scale) }
+            .store(in: &cancellables)
+
+        Publishers.Merge(
+            settings.$alwaysShowPill.dropFirst().map { _ in () },
+            settings.$pillOrigin.dropFirst().filter { $0 == nil }.map { _ in () }
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in
+            self?.position()
+            self?.refresh()
+        }
+        .store(in: &cancellables)
     }
 
-    private func apply(state: DictationController.State) {
+    private static func size(for scale: Double) -> NSSize {
+        let s = CGFloat(min(max(scale, 0.4), 1.5))
+        return NSSize(width: (baseSize.width * s).rounded(), height: (baseSize.height * s).rounded())
+    }
+
+    private func refresh() {
         switch state {
         case .idle:
-            hide()
+            pillView.mode = .idle
+            settings.alwaysShowPill ? show(alpha: Self.idleAlpha) : hide()
         case .recording:
             pillView.mode = .recording
-            show()
+            show(alpha: 1)
         case .transcribing:
             pillView.mode = .transcribing
-            show()
+            show(alpha: 1)
         }
     }
 
-    private func show() {
-        positionOnMouseScreen()
-        guard !panel.isVisible else { return }
-        panel.orderFrontRegardless()
+    private func show(alpha: CGFloat) {
+        if !panel.isVisible {
+            position()
+            panel.orderFrontRegardless()
+        } else if settings.pillOrigin == nil, state == .recording {
+            position() // follow the mouse to another screen
+        }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
-            panel.animator().alphaValue = 1
+            panel.animator().alphaValue = alpha
         }
     }
 
@@ -79,21 +116,37 @@ final class RecordingPillController {
             ctx.duration = 0.15
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.panel.orderOut(nil)
+            MainActor.assumeIsolated {
+                guard let self, self.state == .idle, !self.settings.alwaysShowPill else { return }
+                self.panel.orderOut(nil)
+            }
         })
     }
 
-    /// Bottom-center of whichever screen currently holds the mouse pointer.
-    private func positionOnMouseScreen() {
+    /// Resize around the current center so the pill doesn't jump.
+    private func resize(to scale: Double) {
+        let size = Self.size(for: scale)
+        let old = panel.frame
+        let frame = NSRect(x: old.midX - size.width / 2, y: old.midY - size.height / 2,
+                           width: size.width, height: size.height)
+        panel.setFrame(frame, display: true)
+        if settings.pillOrigin != nil { settings.pillOrigin = frame.origin }
+    }
+
+    /// Saved spot if it's still on a connected screen, else bottom-center of the
+    /// screen holding the mouse.
+    private func position() {
+        let size = panel.frame.size
+        if let origin = settings.pillOrigin,
+           NSScreen.screens.contains(where: { $0.frame.intersects(NSRect(origin: origin, size: size)) }) {
+            panel.setFrameOrigin(origin)
+            return
+        }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         guard let screen else { return }
         let frame = screen.visibleFrame
-        let origin = NSPoint(
-            x: frame.midX - Self.size.width / 2,
-            y: frame.minY + Self.bottomMargin
-        )
-        panel.setFrameOrigin(origin)
+        panel.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: frame.minY + Self.bottomMargin))
     }
 }
 
@@ -102,34 +155,34 @@ final class RecordingPillController {
 private final class PillView: NSView {
 
     enum Mode {
-        case recording, transcribing
+        case idle, recording, transcribing
     }
 
-    var mode: Mode = .recording {
-        didSet { applyMode() }
+    var mode: Mode = .idle {
+        didSet { if mode != oldValue { applyMode() } }
     }
 
+    /// Called after the user finishes dragging the pill.
+    var onDragEnd: (() -> Void)?
+
+    private let background = NSVisualEffectView()
     private let barsView = WaveformBarsView()
     private let spinner = NSProgressIndicator()
-    private let statusLabel = NSTextField(labelWithString: "Transcribing")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
 
         // Dark HUD-material capsule background.
-        let background = NSVisualEffectView()
         background.material = .hudWindow
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = frameRect.height / 2
         background.layer?.masksToBounds = true
         background.frame = bounds
         background.autoresizingMask = [.width, .height]
         addSubview(background)
 
-        barsView.frame = bounds.insetBy(dx: 20, dy: 0)
         barsView.autoresizingMask = [.width, .height]
         background.addSubview(barsView)
 
@@ -137,23 +190,36 @@ private final class PillView: NSView {
         spinner.controlSize = .small
         spinner.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(spinner)
-
-        statusLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(statusLabel)
-
         NSLayoutConstraint.activate([
-            spinner.centerXAnchor.constraint(equalTo: background.centerXAnchor, constant: -30),
+            spinner.centerXAnchor.constraint(equalTo: background.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: background.centerYAnchor),
-            statusLabel.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 8),
-            statusLabel.centerYAnchor.constraint(equalTo: background.centerYAnchor),
         ])
 
+        toolTip = "Drag to move"
         applyMode()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        background.layer?.cornerRadius = bounds.height / 2
+        barsView.frame = bounds.insetBy(dx: bounds.height * 0.4, dy: 0)
+    }
+
+    // The whole capsule is a drag handle; subviews never take the click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        let before = window.frame.origin
+        window.performDrag(with: event) // returns when the drag ends
+        if window.frame.origin != before { onDragEnd?() }
+    }
 
     func push(level: Float) {
         guard mode == .recording else { return }
@@ -161,15 +227,13 @@ private final class PillView: NSView {
     }
 
     private func applyMode() {
-        let recording = (mode == .recording)
-        barsView.isHidden = !recording
-        spinner.isHidden = recording
-        statusLabel.isHidden = recording
-        if recording {
+        barsView.isHidden = mode == .transcribing
+        spinner.isHidden = mode != .transcribing
+        if mode == .transcribing {
+            spinner.startAnimation(nil)
+        } else {
             spinner.stopAnimation(nil)
             barsView.reset()
-        } else {
-            spinner.startAnimation(nil)
         }
     }
 }
@@ -179,8 +243,6 @@ private final class PillView: NSView {
 private final class WaveformBarsView: NSView {
 
     private let barCount = 14
-    private let barWidth: CGFloat = 4
-    private let barGap: CGFloat = 4
     private var barLayers: [CALayer] = []
     private var levels: [Float] = []
 
@@ -190,14 +252,17 @@ private final class WaveformBarsView: NSView {
         for _ in 0..<barCount {
             let bar = CALayer()
             bar.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
-            bar.cornerRadius = barWidth / 2
-            bar.frame = CGRect(x: 0, y: frameRect.midY - 1.5, width: barWidth, height: 3)
             layer?.addSublayer(bar)
             barLayers.append(bar)
         }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        updateBars()
+    }
 
     func reset() {
         levels.removeAll(keepingCapacity: true)
@@ -214,9 +279,12 @@ private final class WaveformBarsView: NSView {
     }
 
     private func updateBars() {
-        let total = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barGap
+        // Bars and gaps share the width equally, so the waveform scales with the pill.
+        let barWidth = max(1.5, (bounds.width / CGFloat(barCount * 2 - 1)).rounded(.down))
+        let total = CGFloat(barCount) * barWidth * 2 - barWidth
         let startX = (bounds.width - total) / 2
-        let maxHeight = bounds.height - 16
+        let minHeight = max(2, barWidth * 0.75)
+        let maxHeight = bounds.height * 0.7
         let midY = bounds.midY
 
         CATransaction.begin()
@@ -225,13 +293,10 @@ private final class WaveformBarsView: NSView {
             // levels is a right-aligned history; missing slots sit at min height.
             let levelIndex = levels.count - barCount + i
             let level = levelIndex >= 0 ? levels[levelIndex] : 0
-            let height = max(3, 3 + CGFloat(level) * (maxHeight - 3))
-            bar.frame = CGRect(
-                x: startX + CGFloat(i) * (barWidth + barGap),
-                y: midY - height / 2,
-                width: barWidth,
-                height: height
-            )
+            let height = minHeight + CGFloat(level) * (maxHeight - minHeight)
+            bar.cornerRadius = barWidth / 2
+            bar.frame = CGRect(x: startX + CGFloat(i) * barWidth * 2, y: midY - height / 2,
+                               width: barWidth, height: height)
         }
         CATransaction.commit()
     }

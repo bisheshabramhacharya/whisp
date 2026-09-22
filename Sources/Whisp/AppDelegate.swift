@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.services = services
 
         statusBar = StatusBarController(services: services)
-        pill = RecordingPillController(controller: services.controller)
+        pill = RecordingPillController(controller: services.controller, settings: services.settings)
 
         // Warm the model in the background — first launch may download it.
         services.controller.prepareModel()

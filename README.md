@@ -13,6 +13,8 @@ subscription.
 - Filler words ("um", "uh", …) and repeated-word stutters are removed.
   Whisp only ever *subtracts* — it never rewrites your words
 - Personal dictionary for names, jargon and phrase replacements
+- Floating recording pill: drag it anywhere (position is remembered), pick
+  Tiny / Small / Large, or keep it always visible — menu → Recording Pill
 
 > **Note:** quit Willow while using Whisp — both listen for Right Option and
 > will fight over the hotkey.

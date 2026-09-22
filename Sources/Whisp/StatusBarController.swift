@@ -133,6 +133,26 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         })
         menu.addItem(.separator())
 
+        // Recording pill
+        let pillMenu = NSMenu()
+        for (title, scale) in [("Tiny", 0.5), ("Small", 0.75), ("Large", 1.0)] {
+            pillMenu.addItem(toggle(title, isOn: abs(services.settings.pillScale - scale) < 0.01) { [weak self] in
+                self?.services.settings.pillScale = scale
+            })
+        }
+        pillMenu.addItem(.separator())
+        pillMenu.addItem(toggle("Always Show (drag to move)", isOn: services.settings.alwaysShowPill) { [weak self] in
+            guard let self else { return }
+            self.services.settings.alwaysShowPill.toggle()
+        })
+        pillMenu.addItem(item("Reset Position", action: { [weak self] in
+            self?.services.settings.pillOrigin = nil
+        }))
+        let pillItem = NSMenuItem(title: "Recording Pill", action: nil, keyEquivalent: "")
+        pillItem.submenu = pillMenu
+        menu.addItem(pillItem)
+        menu.addItem(.separator())
+
         // Permissions
         addPermissionRow(to: menu, title: "Microphone",
                          granted: services.permissions.microphoneGranted, pane: .microphone)

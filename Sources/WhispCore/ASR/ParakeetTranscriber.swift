@@ -66,13 +66,13 @@ public final class ParakeetTranscriber: Transcribing {
     private let engine: Engine
     private let normalizer = TextNormalizer()
 
-    /// Create a transcriber with the default model (`Model.tdtV2` —
-    /// Parakeet TDT 0.6B v2 English). Chosen over `unified` on M1 for its
-    /// ~1.6-2.4x lower latency on >15 s clips (parallel chunked decoding)
-    /// at comparable accuracy; both emit written-form, punctuated text.
-    public init() {
-        self.model = .tdtV2
-        self.engine = Engine(model: .tdtV2)
+    /// Create a transcriber with the default model (`Model.unified`). On the
+    /// owner's real dictations it was clearly more accurate than `tdtV2`
+    /// ("with the ChatGPT thing" vs "with the chatty bitty thing") and faster
+    /// for clips under ~15 s (80-160 ms vs 100-190 ms on M1); it is slower
+    /// only on long clips (~570 ms vs ~330 ms at 38 s).
+    public convenience init() {
+        self.init(model: .unified)
     }
 
     /// Create a transcriber with a specific model backend.
@@ -117,6 +117,10 @@ public final class ParakeetTranscriber: Transcribing {
         }
 
         var text = try await engine.transcribe(input, vocabulary: vocabulary)
+        if text.contains("<unk>") {
+            text = text.replacingOccurrences(of: "<unk>", with: "")
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
 
         if inverseTextNormalization, !text.isEmpty {
             text = normalizer.normalizeSentence(text)
