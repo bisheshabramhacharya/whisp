@@ -14,6 +14,7 @@ struct Options {
     var model = ParakeetTranscriber().model.rawValue
     var itn = false
     var vocab: [String] = []
+    var chunked = false
     var files: [String] = []
 }
 
@@ -39,6 +40,8 @@ func parseArgs() -> Options {
                     $0.trimmingCharacters(in: .whitespaces)
                 }.filter { !$0.isEmpty }
             }
+        case "--chunked":
+            opts.chunked = true
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -59,6 +62,9 @@ func printUsage() {
                        (aliases: v2, v3, 110m, unified; default: transcriber default)
           --itn on|off inverse text normalization (default off)
           --vocab a,b,c  custom vocabulary terms (comma-separated; enables CTC rescoring)
+          --chunked    also replay the app's transcribe-while-recording path: chunks cut at
+                       pauses are decoded ahead, then only the tail is timed (release→text).
+                       Reports word differences vs whole-clip decoding.
           If <file>.txt exists next to an audio file it is scored as the WER reference.
         """)
 }
@@ -177,6 +183,47 @@ func wordEditDistance(_ ref: [String], _ hyp: [String]) -> Int {
     return prev[m]
 }
 
+// MARK: - Chunked replay
+
+var chunkedTotals = (files: 0, fullMs: 0.0, tailMs: 0.0, diffWords: 0, words: 0)
+
+@MainActor
+func benchChunked(_ samples: [Float], full: String, fullMs: Double) async {
+    let cuts = SpeechSegmenter.plan(samples)
+    var texts: [String] = []
+    var start = 0
+    do {
+        for cut in cuts {
+            texts.append(try await transcriber.transcribe(Array(samples[start..<cut])))
+            start = cut
+        }
+        let t0 = Date()
+        let joined = try await SpeechSegmenter.finish(
+            samples, chunkStarts: [0] + cuts.dropLast(), texts: texts, committed: start,
+            transcriber: transcriber)
+        let tailMs = Date().timeIntervalSince(t0) * 1000
+        let ref = normalizedWords(full)
+        let diff = wordEditDistance(ref, normalizedWords(joined))
+        print(String(format: "  chunked: %d cuts  tail %.0f ms vs full %.0f ms  word diffs vs full: %d/%d",
+                     cuts.count, tailMs, fullMs, diff, ref.count))
+        if diff > 0 {
+            print("  chunked transcript: \(joined)")
+            let bounds = [0] + cuts + [samples.count]
+            for (i, text) in texts.enumerated() where i + 1 < bounds.count {
+                print(String(format: "    [%6.2f-%6.2f s] %@", Double(bounds[i]) / 16_000,
+                             Double(bounds[i + 1]) / 16_000, text))
+            }
+        }
+        chunkedTotals.files += 1
+        chunkedTotals.fullMs += fullMs
+        chunkedTotals.tailMs += tailMs
+        chunkedTotals.diffWords += diff
+        chunkedTotals.words += ref.count
+    } catch {
+        print("  chunked: failed: \(error.localizedDescription)")
+    }
+}
+
 // MARK: - Main
 
 let opts = parseArgs()
@@ -253,6 +300,9 @@ for path in opts.files {
                          avg * 1000, warm.min()! * 1000, warm.max()! * 1000))
         }
         print("  transcript: \(lastText)")
+        if opts.chunked {
+            await benchChunked(samples, full: lastText, fullMs: (latencies.dropFirst().min() ?? latencies[0]) * 1000)
+        }
         if let reference, !reference.isEmpty {
             let ref = normalizedWords(reference)
             let hyp = normalizedWords(lastText)
@@ -265,3 +315,9 @@ for path in opts.files {
 }
 
 print("Peak RSS: \(formatMB(peakRSSBytes()))  footprint: \(formatMB(physicalFootprint()))")
+if chunkedTotals.files > 0 {
+    let t = chunkedTotals
+    print(String(format: "Chunked summary: %d files  full %.0f ms total  tail %.0f ms total (%.0f%% faster)  word diffs %d/%d (%.2f%%)",
+                 t.files, t.fullMs, t.tailMs, 100 * (1 - t.tailMs / max(t.fullMs, 1)),
+                 t.diffWords, t.words, 100 * Double(t.diffWords) / Double(max(t.words, 1))))
+}

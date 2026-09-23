@@ -10,7 +10,10 @@ subscription.
 - Menu-bar app — no Dock icon, no windows required
 - Hold Right Option to dictate; **double-tap** Right Option to lock
   hands-free recording, press again to stop; **Esc** cancels
-- Filler words ("um", "uh", …) and repeated-word stutters are removed.
+- Transcribes while you talk: finished stretches are decoded in the background at
+  natural pauses, so releasing the key only waits on the last few seconds —
+  ~100 ms regardless of how long you dictated
+- Filler words ("um", "uh", …), stutters and restarted phrases are removed.
   Whisp only ever *subtracts* — it never rewrites your words
 - Personal dictionary for names, jargon and phrase replacements
 - Floating recording pill: drag it anywhere (position is remembered), pick
@@ -95,7 +98,8 @@ user domain is silent and is what makes `find-identity` list the identity.)
 Whisp removes hesitations (*um, uh, erm, hmm*), *like / you know / I mean* when
 set off by commas (*"It was, like, huge"*), and word-level stutters
 (*"the the"* → *"the"*; intentional doubles like *"that that"* or *"no no"* are
-kept). The only other change is writing clock times with a colon
+kept), and restarted phrases (*"go to the go to desktop"* → *"go to desktop"*;
+*"it is what it is"* is kept). The only other change is writing clock times with a colon
 (*"at 5.30"* → *"at 5:30"*). It never paraphrases, reorders or rewrites — what
 you said is what gets pasted, minus the noise.
 
@@ -151,7 +155,11 @@ scripts/make-icon.sh                 # regenerate Resources/AppIcon.icns
 
 `whisp-bench` prints model load time, per-file transcript, latency, RTF and
 peak RSS; a sibling `<file>.txt` is used as the WER reference.
-`whisp-bench --help` lists `--runs`, `--model`, `--itn`, `--vocab`.
+`whisp-bench --help` lists `--runs`, `--model`, `--itn`, `--vocab`, `--chunked`.
+`--chunked` replays the app's transcribe-while-recording path and reports the
+release-time tail latency and word differences vs whole-clip decoding — run it
+over `~/Library/Application Support/Whisp/recordings/*.wav` after touching
+`SpeechSegmenter`.
 
 ### Packaging internals
 

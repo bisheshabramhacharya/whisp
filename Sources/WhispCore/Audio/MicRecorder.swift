@@ -146,6 +146,13 @@ public final class MicRecorder: AudioRecording {
         DispatchQueue.main.async { [weak self] in self?.armLevelTimer() }
     }
 
+    public func samples(from start: Int) -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard recording, start < samples.count else { return [] }
+        return Array(samples[start...])
+    }
+
     public func stop() -> [Float] {
         // engineLock stays held until `recording` is cleared: a configuration change
         // interleaving here either fully precedes us (we tear down its restart too)

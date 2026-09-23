@@ -81,6 +81,10 @@ public final class DictationController: ObservableObject {
     /// Tail of the serial transcribe->clean->paste pipeline.
     private var pipelineTail: Task<Void, Never>?
     private var prepareStarted = false
+    /// Chunks of the current recording already sent to the transcriber, and the loop
+    /// that cuts them at pauses while the user is still talking.
+    private var live: LiveChunks?
+    private var chunkLoop: Task<Void, Never>?
 
     /// Samples shorter than this are treated as an accidental tap and dropped.
     public var minimumDuration: TimeInterval = 0.3
@@ -206,6 +210,7 @@ public final class DictationController: ObservableObject {
         isRecording = true
         recordingStartedAt = Date()
         recomputeState()
+        startChunkLoop()
 
         // 3. Mute system output so the model hears the user, not the speakers —
         //    after the start sound has played, since muting the device cuts it off.
@@ -233,6 +238,7 @@ public final class DictationController: ObservableObject {
         isRecording = false
         capTask?.cancel()
         capTask = nil
+        let chunks = stopChunkLoop()
 
         let releasedAt = Date()
         let startedAt = recordingStartedAt ?? releasedAt
@@ -247,7 +253,8 @@ public final class DictationController: ObservableObject {
             return
         }
 
-        enqueueTranscription(samples: samples, duration: duration, startedAt: startedAt, releasedAt: releasedAt)
+        enqueueTranscription(samples: samples, chunks: chunks, duration: duration,
+                             startedAt: startedAt, releasedAt: releasedAt)
     }
 
     private func cancelCapture() {
@@ -255,6 +262,7 @@ public final class DictationController: ObservableObject {
         isRecording = false
         capTask?.cancel()
         capTask = nil
+        _ = stopChunkLoop()
         recorder.cancel()
         restoreAudioIfNeeded()
         if settings.sounds { sounds.playCancel() }
@@ -275,11 +283,66 @@ public final class DictationController: ObservableObject {
         }
     }
 
+    // MARK: - Transcribe while recording
+
+    /// Every second, cut the audio pending since the last cut at a pause and transcribe
+    /// it in the background, so on release only the tail is left to decode.
+    private func startChunkLoop() {
+        let chunks = LiveChunks()
+        live = chunks
+        chunkLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self, self.live === chunks else { return }
+                self.transcribeFinishedChunk(chunks)
+            }
+        }
+    }
+
+    private func stopChunkLoop() -> LiveChunks? {
+        chunkLoop?.cancel()
+        chunkLoop = nil
+        defer { live = nil }
+        return live
+    }
+
+    private func transcribeFinishedChunk(_ chunks: LiveChunks) {
+        guard chunks.inFlight == nil, !chunks.failed else { return }
+        let pending = recorder.samples(from: chunks.committed)
+        guard let cut = SpeechSegmenter.nextCut(in: pending) else { return }
+        let chunk = Array(pending[..<cut])
+        chunks.starts.append(chunks.committed)
+        chunks.committed += cut
+        chunks.inFlight = Task { [transcriber] in
+            do {
+                chunks.texts.append(try await transcriber.transcribe(chunk))
+            } catch {
+                chunks.failed = true
+            }
+            chunks.inFlight = nil
+        }
+    }
+
+    /// Chunk transcripts first, then the tail. Falls back to the whole clip if any chunk failed.
+    private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
+        guard let chunks, chunks.committed > 0 else {
+            return try await transcriber.transcribe(samples)
+        }
+        await chunks.inFlight?.value
+        if chunks.failed || chunks.committed > samples.count {
+            return try await transcriber.transcribe(samples)
+        }
+        return try await SpeechSegmenter.finish(
+            samples, chunkStarts: chunks.starts, texts: chunks.texts, committed: chunks.committed,
+            transcriber: transcriber)
+    }
+
     // MARK: - Serial transcription pipeline
 
     /// Enqueues a finished clip. Items run strictly in order so that pastes
     /// land in the order the recordings finished, never interleaved.
-    private func enqueueTranscription(samples: [Float], duration: TimeInterval, startedAt: Date, releasedAt: Date) {
+    private func enqueueTranscription(samples: [Float], chunks: LiveChunks?, duration: TimeInterval,
+                                      startedAt: Date, releasedAt: Date) {
         pendingTranscriptions += 1
         recomputeState()
 
@@ -287,16 +350,18 @@ public final class DictationController: ObservableObject {
         pipelineTail = Task { [weak self] in
             await previous?.value
             guard let self else { return }
-            await self.process(samples: samples, duration: duration, startedAt: startedAt, releasedAt: releasedAt)
+            await self.process(samples: samples, chunks: chunks, duration: duration,
+                               startedAt: startedAt, releasedAt: releasedAt)
             self.pendingTranscriptions -= 1
             self.recomputeState()
         }
     }
 
-    private func process(samples: [Float], duration: TimeInterval, startedAt: Date, releasedAt: Date) async {
+    private func process(samples: [Float], chunks: LiveChunks?, duration: TimeInterval,
+                         startedAt: Date, releasedAt: Date) async {
         let transcribeStart = Date()
         do {
-            let raw = try await transcriber.transcribe(samples)
+            let raw = try await transcribe(samples, chunks: chunks)
             let transcribedAt = Date()
 
             let cleaned = cleaner.clean(raw)
@@ -314,7 +379,7 @@ public final class DictationController: ObservableObject {
 
             logger.info("""
                 dictation done: audio=\(duration, format: .fixed(precision: 2))s \
-                transcribe=\(transcribeMs)ms clean=\(cleanMs)ms \
+                chunks=\(chunks?.texts.count ?? 0) transcribe=\(transcribeMs)ms clean=\(cleanMs)ms \
                 release→paste=\(latencyMs)ms
                 """)
 
@@ -347,4 +412,16 @@ public final class DictationController: ObservableObject {
             if settings.sounds { sounds.playError() }
         }
     }
+}
+
+/// Background transcripts of one recording's finished chunks. Main actor only.
+@MainActor
+private final class LiveChunks {
+    /// Samples already handed to the transcriber.
+    var committed = 0
+    /// Where each chunk in `texts` began.
+    var starts: [Int] = []
+    var texts: [String] = []
+    var inFlight: Task<Void, Never>?
+    var failed = false
 }

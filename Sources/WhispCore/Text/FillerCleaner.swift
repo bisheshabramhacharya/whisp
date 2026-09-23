@@ -6,6 +6,8 @@ import Foundation
 /// - "like" / "you know" / "I mean" when set off by commas ("It was, like, huge"),
 /// - immediate stutters ("I I think", "the, the") except intentional doubles
 ///   ("that that", "had had", "no no", "very very"),
+/// - restarted phrases: the abandoned first try in "go to the go to desktop" or
+///   "I want to, I want to go",
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
 /// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
@@ -22,6 +24,7 @@ public final class FillerCleaner: TextCleaning {
         removeHesitations(&tokens)
         removeParentheticalFillers(&tokens)
         removeStutters(&tokens)
+        removeRestarts(&tokens)
         let text = Self.fixClockTimes(tokens.map(\.text).joined(separator: " "))
         return dictionary?.apply(text) ?? text
     }
@@ -110,6 +113,38 @@ public final class FillerCleaner: TextCleaning {
             } else {
                 i += 1
             }
+        }
+    }
+
+    /// Words a speaker may abandon between a phrase and its restart ("go to the go to").
+    private static let abandonable: Set<String> = [
+        "the", "a", "an", "to", "my", "our", "your", "his", "her", "their", "this", "its",
+    ]
+
+    /// Drops the first copy of a 2–4 word phrase that is immediately repeated, optionally
+    /// with one abandoned word in between: "go to the go to desktop" -> "go to desktop".
+    /// Never crosses a sentence end, and leaves chants made of intentional doubles alone.
+    private func removeRestarts(_ tokens: inout [Token]) {
+        var i = 0
+        scan: while i < tokens.count {
+            for n in stride(from: 4, through: 2, by: -1) {
+                for gap in 0...1 {
+                    let second = i + n + gap
+                    guard second + n <= tokens.count else { continue }
+                    let first = tokens[i..<(i + n)]
+                    if gap == 1, !Self.abandonable.contains(tokens[i + n].word) { continue }
+                    guard tokens[i..<second].allSatisfy({ !$0.endsSentence && $0.leading.isEmpty }),
+                          first.indices.allSatisfy({ tokens[$0].word == tokens[$0 + n + gap].word }),
+                          !first.allSatisfy({ Self.intentionalDoubles.contains($0.word) || $0.word.isEmpty })
+                    else { continue }
+                    // Keep the first copy's casing (sentence start stays capitalized).
+                    let firstCore = tokens[i].core
+                    tokens.removeSubrange(i..<second)
+                    tokens[i].core = firstCore
+                    continue scan
+                }
+            }
+            i += 1
         }
     }
 

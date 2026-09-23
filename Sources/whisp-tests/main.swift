@@ -52,6 +52,16 @@ let cases: [(String, String)] = [
     ("No no, that's wrong.", "No no, that's wrong."),
     ("It was very very good.", "It was very very good."),
     ("Go. Go.", "Go. Go."),
+    // Restarted phrases
+    ("Go to the go to desktop folder.", "Go to desktop folder."),
+    ("I want to I want to go home.", "I want to go home."),
+    ("Make sure you, make sure you open it.", "Make sure you open it."),
+    ("Is it, is it working?", "Is it working?"),
+    ("It is what it is.", "It is what it is."),
+    ("How long did it take? How long did it take?", "How long did it take? How long did it take?"),
+    ("No no no no.", "No no no no."),
+    ("I can can make make it.", "I can make it."),
+    ("Just do that Do that, but fast.", "Just do that, but fast."),
     // Never rewrites
     ("She went to the ER.", "She went to the ER."),
     ("It's 5 mm wide.", "It's 5 mm wide."),
@@ -104,6 +114,24 @@ expect(fileDict.apply("vinted on depop"), "vinted on Depop", "reloads on change"
 try! #"{"terms": ["#.write(to: tmp, atomically: true, encoding: .utf8)
 try! FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: tmp.path)
 expect(fileDict.apply("depop"), "Depop", "malformed edit keeps last good")
+
+// MARK: - SpeechSegmenter
+
+func tone(_ seconds: Double, amplitude: Float = 0.3) -> [Float] {
+    (0..<Int(seconds * 16_000)).map { amplitude * sinf(Float($0) * 0.2) }
+}
+let silence = { (seconds: Double) in [Float](repeating: 0, count: Int(seconds * 16_000)) }
+let speech = tone(4) + silence(0.6) + tone(4)
+let cut = SpeechSegmenter.nextCut(in: speech)
+expect(cut.map { $0 >= 64_000 && $0 <= 73_600 ? "in pause" : "at \($0)" } ?? "nil", "in pause", "cut lands in the pause")
+expect(SpeechSegmenter.nextCut(in: tone(3) + silence(0.6) + tone(1)).map(String.init) ?? "nil", "nil", "waits for minChunk")
+expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4)).map(String.init) ?? "nil", "nil",
+       "keeps near-silent chunk attached")
+expect(SpeechSegmenter.nextCut(in: tone(8)).map(String.init) ?? "nil", "nil", "no pause, below forceChunk")
+expect(SpeechSegmenter.nextCut(in: tone(26)) != nil ? "cut" : "nil", "cut", "forced cut")
+expect(SpeechSegmenter.plan(tone(5) + silence(0.6) + tone(5) + silence(0.6) + tone(5)).count.description, "2", "plan")
+expect(SpeechSegmenter.join(["I went to", "The store and then.", "The end."]), "I went to the store and then. The end.")
+expect(SpeechSegmenter.join(["Hello", "", "Bishesha said hi."]), "Hello Bishesha said hi.")
 
 // MARK: - Speed
 

@@ -16,6 +16,8 @@ public protocol AudioRecording: AnyObject {
     /// Normalized input level 0...1, called on the main thread ~30x/s while recording.
     var onLevel: ((Float) -> Void)? { get set }
     func start() throws
+    /// Copy of the audio captured so far, from sample `start` on (empty when not recording).
+    func samples(from start: Int) -> [Float]
     /// Stops capture and returns everything recorded since start().
     func stop() -> [Float]
     /// Stops capture and discards audio.

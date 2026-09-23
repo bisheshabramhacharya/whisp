@@ -96,13 +96,7 @@ public final class ParakeetTranscriber: Transcribing {
         guard !samples.isEmpty else { throw TranscriberError.audioTooShort }
 
         // Cheap RMS gate — never run the model on silence.
-        var rms: Float = 0
-        var peak: Float = 0
-        samples.withUnsafeBufferPointer { buf in
-            vDSP_rmsqv(buf.baseAddress!, 1, &rms, vDSP_Length(buf.count))
-            vDSP_maxmgv(buf.baseAddress!, 1, &peak, vDSP_Length(buf.count))
-        }
-        guard rms >= silenceThreshold || peak >= 0.05 else { return "" }
+        guard !SpeechSegmenter.isNearSilent(samples, rmsThreshold: silenceThreshold) else { return "" }
 
         // Trim leading/trailing silence, keeping a 150 ms margin so no
         // speech onset/offset is ever cut.
