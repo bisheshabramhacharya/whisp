@@ -52,6 +52,7 @@ public final class MicRecorder: AudioRecording {
     /// `stop()` could leave the engine running (mic indicator on) while idle.
     /// Lock order when both are needed: `engineLock` -> `lock`, never the reverse.
     private let engineLock = NSLock()
+    private let teardownQueue = DispatchQueue(label: "com.bishesha.whisp.mic-teardown", qos: .userInitiated)
     private var samples: [Float] = []
     private var converter: AVAudioConverter?
     private var tapInstalled = false
@@ -168,12 +169,9 @@ public final class MicRecorder: AudioRecording {
     }
 
     public func stop() -> [Float] {
-        // engineLock stays held until `recording` is cleared: a configuration change
-        // interleaving here either fully precedes us (we tear down its restart too)
-        // or sees recording==false and does not restart. No mic-while-idle window.
-        engineLock.lock()
+        // Hand the audio back first; stopping the engine (~40 ms) happens on
+        // `teardownQueue` so transcription doesn't wait for it.
         let stoppedAtNs = DispatchTime.now().uptimeNanoseconds
-        teardownLocked()
         lock.lock()
         let captured = samples
         samples.removeAll(keepingCapacity: true)
@@ -181,7 +179,7 @@ public final class MicRecorder: AudioRecording {
         lostInput = inputLost
         let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
         lock.unlock()
-        engineLock.unlock()
+        teardownWhenIdle()
         endLevelReporting()
         // Audio missing from the clip = wall time since start() minus audio captured.
         // "head" = arrival of the first buffer minus the audio it held: time after start()
@@ -209,6 +207,21 @@ public final class MicRecorder: AudioRecording {
     }
 
     // MARK: - Engine plumbing
+
+    /// Stops the engine in the background unless a new recording started first.
+    /// Holding `engineLock` serializes it with start() and device changes, so the
+    /// mic is never left running while idle.
+    private func teardownWhenIdle() {
+        teardownQueue.async { [weak self] in
+            guard let self else { return }
+            self.engineLock.lock()
+            self.lock.lock()
+            let idle = !self.recording
+            self.lock.unlock()
+            if idle { self.teardownLocked() }
+            self.engineLock.unlock()
+        }
+    }
 
     /// Stops the engine (mic indicator off) and drops the tap so the next start()
     /// re-reads the input format — cheap, and always correct after device changes.

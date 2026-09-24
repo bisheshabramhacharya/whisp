@@ -17,6 +17,7 @@ struct Options {
     var vocab: [String] = []
     var chunked = false
     var streaming: String?
+    var gap: Double = 0
     var files: [String] = []
 }
 
@@ -44,6 +45,9 @@ func parseArgs() -> Options {
             }
         case "--chunked":
             opts.chunked = true
+        case "--gap":
+            i += 1
+            if i < args.count, let g = Double(args[i]) { opts.gap = g }
         case "--streaming":
             i += 1
             if i < args.count { opts.streaming = args[i] }
@@ -70,6 +74,8 @@ func printUsage() {
           --chunked    also replay the app's transcribe-while-recording path: chunks cut at
                        pauses are decoded ahead, then only the tail is timed (release→text).
                        Reports word differences vs whole-clip decoding.
+          --gap SECONDS  idle this long before each run, like the pause between real
+                       dictations (decodes run ~60-120 ms slower after >0.1 s idle on M1)
           --streaming 320|640|1120  instead, replay each file through the streaming Unified
                        model in 100 ms buffers (the mic cadence) and time the release step.
           If <file>.txt exists next to an audio file it is scored as the WER reference.
@@ -368,6 +374,7 @@ for path in opts.files {
     var latencies: [Double] = []
     var lastText = ""
     for run in 0..<opts.runs {
+        if opts.gap > 0 { try? await Task.sleep(nanoseconds: UInt64(opts.gap * 1e9)) }
         let t0 = Date()
         do {
             lastText = try await transcriber.transcribe(samples)
