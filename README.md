@@ -1,67 +1,177 @@
+<div align="center">
+
+<img src="docs/icon.png" width="128" alt="Whisp icon">
+
 # Whisp
 
-Whisp is a free, fully local clone of [Willow Voice](https://willowvoice.com)
-for macOS. Hold **Right Option**, talk, release — the text is transcribed
-on-device with NVIDIA Parakeet (via
-[FluidAudio](https://github.com/FluidInference/FluidAudio)) and pasted into
-whatever app you're in. No audio ever leaves your Mac, no account, no
-subscription.
+**Hold a key, talk, let go — your words are typed wherever your cursor is.**<br>
+Free, open-source voice dictation for Mac that runs 100% on your device.
 
-- Menu-bar app — no Dock icon, no windows required
-- Hold Right Option to dictate; **double-tap** Right Option to lock
-  hands-free recording, press again to stop; **Esc** cancels
-- Transcribes while you talk: finished stretches are decoded in the background at
-  natural pauses, so releasing the key only waits on the last few seconds —
-  ~100 ms regardless of how long you dictated
-- Filler words ("um", "uh", …), stutters and restarted phrases are removed.
-  Whisp only ever *subtracts* — it never rewrites your words
-- Personal dictionary for names, jargon and phrase replacements
-- Floating recording pill: drag it anywhere (position is remembered), pick
-  Tiny / Small / Large, or keep it always visible — menu → Recording Pill
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000?logo=apple)](#install)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-000)](#install)
+[![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Note:** quit Willow while using Whisp — both listen for Right Option and
-> will fight over the hotkey.
+</div>
 
-## Requirements
+---
 
-- Apple Silicon Mac, macOS 14.0+
-- Swift 6.x toolchain (Xcode Command Line Tools are enough)
-- ~1 GB disk for the on-device Parakeet model (downloaded from HuggingFace on
-  first launch; everything else is offline)
+Whisp is a local alternative to Wispr Flow and Willow Voice. It uses NVIDIA's
+Parakeet speech model running on your Mac's Neural Engine, so there's no
+account, no subscription, and **no audio ever leaves your computer**.
 
-## Build & install
+## Why Whisp
+
+- ⚡ **Fast.** Text appears ~0.15 s after you let go (median of 56 real
+  dictations on a base 8 GB M1). Long dictations are transcribed *while you
+  talk*, so a 2-minute ramble pastes as fast as a one-liner.
+- 🔒 **Private.** Speech recognition happens on-device. After the one-time
+  model download, Whisp works fully offline.
+- 🧹 **Clean, never rewritten.** Removes "um", "uh", stutters ("the the") and
+  restarts ("go to the go to desktop" → "go to desktop"). It only ever
+  *subtracts* — it never paraphrases what you said.
+- 📖 **Learns your words.** Menu → **Fix a Misheard Word…** teaches it names
+  and jargon it gets wrong, instantly.
+- 🎯 **Works everywhere.** Any app with a text cursor: Slack, Notes, VS Code,
+  Terminal, your browser, AI chat boxes.
+- 🪶 **Tiny.** A menu-bar app with no Dock icon. The mic is only on while you
+  hold the key.
+
+## Install
+
+You'll need an **Apple Silicon Mac** on **macOS 14+** and the Xcode Command
+Line Tools (`xcode-select --install`).
 
 ```sh
-scripts/build-app.sh            # release build -> dist/Whisp.app (signed)
-scripts/build-app.sh --install  # also installs to /Applications and launches
+git clone https://github.com/bisheshabramhacharya/whisp.git
+cd whisp
+scripts/build-app.sh --install
 ```
 
-Useful env overrides: `SCRATCH` (SwiftPM build dir, default `.build`),
-`PRODUCT`, `APP_NAME`, `DIST`, `IDENTITY` (`IDENTITY=-` forces ad-hoc signing).
+That builds Whisp, copies it to `/Applications` and launches it. On first
+launch it walks you through three permissions and downloads the speech model
+(~1 GB, once).
+
+> **Using Wispr Flow or Willow?** Quit it first — both apps listen for the
+> same key.
+
+## How to use it
+
+| Do this | What happens |
+|---|---|
+| **Hold Right Option**, talk, let go | Your words are typed at the cursor |
+| **Double-tap Right Option** | Hands-free: keeps listening until you press it again |
+| **Esc** | Cancels — even right after you let go |
+| Menu bar → **Fix a Misheard Word…** | Teach Whisp a word it got wrong |
+| Menu bar → **History** | Click any past dictation to copy it |
 
 ## Permissions
 
-Whisp asks for three macOS permissions (System Settings → Privacy & Security):
+macOS asks for three things (System Settings → Privacy & Security):
 
-| Permission        | Why                                                             |
-|-------------------|-----------------------------------------------------------------|
-| **Microphone**        | capture your voice for transcription                        |
-| **Accessibility**     | paste the transcript into the frontmost app (simulated ⌘V + AX reads) |
-| **Input Monitoring**  | the listen-only event tap that watches Right Option           |
+| Permission | Why Whisp needs it |
+|---|---|
+| **Microphone** | To hear you |
+| **Accessibility** | To type the text into the app you're using |
+| **Input Monitoring** | To notice when you press Right Option |
 
-macOS binds these grants to the app's **code signature**. See the next
-section — it matters every time you rebuild.
+## Teach it your words
 
-### Stable signing identity
+Whisp keeps a personal dictionary at
+`~/Library/Application Support/Whisp/dictionary.json`. The easy way to add to
+it is **Fix a Misheard Word…** in the menu. You can also edit the file directly;
+changes apply to your next dictation:
 
-`scripts/build-app.sh` signs with a self-signed identity named
-**"Whisp Local Signing"** if it exists, and otherwise tries to create it
-non-interactively. With a stable signature, your Microphone / Accessibility /
-Input Monitoring grants survive rebuilds. With ad-hoc signing (the fallback),
-TCC re-prompts after *every* rebuild.
+```json
+{
+  "terms": ["Kubernetes", "ChatGPT"],
+  "replacements": [
+    { "from": ["cloud code", "clawed code"], "to": "Claude Code" },
+    { "from": ["kate's"], "to": "K8s" }
+  ]
+}
+```
 
-If the script fell back to ad-hoc (locked keychain, CI shell, …), create the
-identity once by hand:
+- `terms` fixes capitalization (*kubernetes* → *Kubernetes*).
+- `replacements` swaps a misheard phrase for the right one. Matching is
+  whole-word and case-insensitive.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Hold key] --> B[Mic records]
+    B -->|at each pause| C[Parakeet transcribes<br>finished sentences]
+    B --> D[Let go]
+    D --> E[Transcribe the last bit]
+    C --> F[Remove um / stutters<br>+ your dictionary]
+    E --> F
+    F --> G[Paste at cursor]
+```
+
+While you're still talking, Whisp cuts the audio at natural pauses and
+transcribes those parts in the background. When you let go, only the last
+few seconds are left to process. The text is pasted with a simulated ⌘V, and
+your clipboard is put back afterwards.
+
+## FAQ
+
+**Is it really free?** Yes. MIT-licensed, no account, no telemetry.
+
+**What languages?** English. Whisp uses Parakeet Unified 0.6B, an English
+model.
+
+**Intel Macs?** No. The model runs on the Apple Silicon Neural Engine.
+
+**Where is my data?** In `~/Library/Application Support/Whisp/`: your history
+(`history.jsonl`), dictionary, and recordings. Recordings are kept by default
+so you can build a fine-tuning set; turn this off in the menu with **Keep
+recordings**.
+
+**Why build from source instead of a download?** Apps from the internet need
+Apple notarization to open without warnings. Building locally avoids that, and
+you can read every line of what you're running.
+
+## Development
+
+```sh
+swift build                                   # debug build
+swift run -c release whisp-tests              # tests
+swift run -c release whisp-bench clip.wav     # speed + accuracy benchmark
+```
+
+<details>
+<summary><b>Benchmarking</b></summary>
+
+`whisp-bench` prints model load time, transcript, latency and memory per file.
+A sibling `clip.txt` is scored as the reference transcript (WER).
+
+- `--chunked` replays the transcribe-while-recording path and reports the
+  release-time latency plus word differences vs whole-clip decoding. Run it over
+  `~/Library/Application Support/Whisp/recordings/*.wav` after changing
+  `SpeechSegmenter`.
+- `--gap SECONDS` idles between runs, like real use. On M1, decodes run
+  ~60–120 ms slower after even 0.1 s idle.
+- `--streaming 320|640|1120` replays files through FluidAudio's streaming
+  model. The 320 ms tier finished in ~33 ms but dropped more words than the
+  offline model on real dictations, so Whisp stays offline.
+- `--model`, `--itn`, `--vocab`: see `whisp-bench --help`.
+
+The app logs per-stage timings. Watch them live with:
+
+```sh
+/usr/bin/log stream --predicate 'subsystem == "com.bishesha.whisp"'
+```
+</details>
+
+<details>
+<summary><b>Code signing (why permissions survive rebuilds)</b></summary>
+
+macOS ties permission grants to the app's code signature. `build-app.sh` signs
+with a self-signed identity named **"Whisp Local Signing"**, creating it if it
+doesn't exist, so your grants survive rebuilds. If it falls back to ad-hoc
+signing (locked keychain, CI shell), macOS re-asks for permissions after every
+rebuild. To create the identity by hand:
 
 ```sh
 cd "$(mktemp -d)"
@@ -81,114 +191,45 @@ security add-trusted-cert -r trustRoot -p codeSign \
 security find-identity -p codesigning -v   # should list "Whisp Local Signing"
 ```
 
-(The legacy `PBE-SHA1-3DES`/`sha1` flags are required — macOS `security import`
-cannot read OpenSSL 3's default AES-encrypted PKCS12. `add-trusted-cert` in the
-user domain is silent and is what makes `find-identity` list the identity.)
+The legacy `PBE-SHA1-3DES`/`sha1` flags are required: macOS `security import`
+can't read OpenSSL 3's default AES-encrypted PKCS12.
 
-## Usage
+Build overrides: `SCRATCH`, `PRODUCT`, `APP_NAME`, `DIST`, `IDENTITY`
+(`IDENTITY=-` forces ad-hoc signing).
+</details>
 
-1. Launch Whisp — it lives in the menu bar (a waveform icon).
-2. Click into any text field, **hold Right Option** and speak.
-3. Release — the cleaned-up transcript is pasted at the cursor.
-4. **Double-tap** Right Option to keep recording hands-free; press it again to
-   stop. **Esc** cancels the current dictation.
+<details>
+<summary><b>Packaging internals</b></summary>
 
-### Text cleanup rules
+SwiftPM's generated accessor for FluidAudio resolves `Bundle.module` as
+`Bundle.main.bundleURL + "/FluidAudio_FluidAudio.bundle"`. Inside an `.app`,
+that is the app wrapper root, where `codesign` refuses to seal anything. So
+`build-app.sh` copies bundles into `Contents/Resources/`, signs the app, then
+adds root-level symlinks for `Bundle.module`. `codesign --verify --deep
+--strict` therefore reports unsealed root contents afterwards; that's expected.
+The executable signature, which permissions bind to, is valid.
+</details>
 
-Whisp removes hesitations (*um, uh, erm, hmm*), *like / you know / I mean* when
-set off by commas (*"It was, like, huge"*), and word-level stutters
-(*"the the"* → *"the"*; intentional doubles like *"that that"* or *"no no"* are
-kept), and restarted phrases (*"go to the go to desktop"* → *"go to desktop"*;
-*"it is what it is"* is kept). The only other change is writing clock times with a colon
-(*"at 5.30"* → *"at 5:30"*). It never paraphrases, reorders or rewrites — what
-you said is what gets pasted, minus the noise.
-
-### Personal dictionary
-
-`~/Library/Application Support/Whisp/dictionary.json`:
-
-```json
-{
-  "terms": [
-    "Bishesha",
-    "Kubernetes",
-    "monorepo"
-  ],
-  "replacements": [
-    { "from": ["bishesha", "be shesha"], "to": "Bishesha" },
-    { "from": ["kate's", "cates"], "to": "K8s" }
-  ]
-}
-```
-
-- `terms` — fixes the spelling/casing of whole-word matches
-  (*"kubernetes"* → *"Kubernetes"*).
-- `replacements` — any whole-word transcript phrase in `from` is replaced by
-  `to`. Matching is case-insensitive; `to` is emitted verbatim. Use this for
-  words the model consistently mishears.
-- Terms are not fed to the recognizer: FluidAudio's acoustic vocabulary
-  rescoring measured 2–3× slower on an M1 without fixing more words
-  (try it with `whisp-bench --vocab`).
-- The file is created with an empty template on first launch; edit and save —
-  Whisp picks up changes automatically.
-
-## Data locations
-
-| What                | Path                                                   |
-|---------------------|--------------------------------------------------------|
-| App data root       | `~/Library/Application Support/Whisp/`                 |
-| Transcript history  | `…/Whisp/history.jsonl`                                |
-| Saved recordings    | `…/Whisp/recordings/` (all kept, if enabled)           |
-| Dictionary          | `…/Whisp/dictionary.json`                              |
-| ASR models          | `~/Library/Application Support/FluidAudio/Models/`     |
-
-Set `WHISP_DATA_DIR` to relocate the Whisp data root (dev/testing).
-
-## Development
-
-```sh
-swift build                          # debug build
-swift run -c release whisp-bench file.wav   # benchmark: latency, RTF, WER vs file.txt
-swift run whisp-tests                # test harness
-scripts/make-icon.sh                 # regenerate Resources/AppIcon.icns
-```
-
-`whisp-bench` prints model load time, per-file transcript, latency, RTF and
-peak RSS; a sibling `<file>.txt` is used as the WER reference.
-`whisp-bench --help` lists `--runs`, `--model`, `--itn`, `--vocab`, `--chunked`.
-`--chunked` replays the app's transcribe-while-recording path and reports the
-release-time tail latency and word differences vs whole-clip decoding — run it
-over `~/Library/Application Support/Whisp/recordings/*.wav` after touching
-`SpeechSegmenter`.
-
-### Packaging internals
-
-SwiftPM's generated `resource_bundle_accessor.swift` for FluidAudio resolves
-`Bundle.module` as `Bundle.main.bundleURL + "/FluidAudio_FluidAudio.bundle"`.
-Inside an `.app`, `Bundle.main.bundleURL` is the **app wrapper root**
-(`Whisp.app/`), not `Contents/Resources` — but `codesign` refuses to seal
-anything placed at the root ("unsealed contents present in the bundle root").
-
-`build-app.sh` therefore:
-
-1. copies `*.bundle` into `Contents/Resources/` (sealed),
-2. signs the app (fully valid signature — verified pre-symlink),
-3. then adds `Whisp.app/<name>.bundle` symlinks for `Bundle.module`.
-
-Consequence: `codesign --verify --deep --strict` reports *unsealed* root
-contents afterwards. Expected — the executable signature (what TCC binds) is
-valid; this is unverifiable-only-at-the-bundle-level and fine for local
-self-signed distribution. There are no non-system dynamic dependencies to
-embed (`NemoTextProcessing` is a static `.a` inside the xcframework; verified
-with `otool -L`).
-
-## Layout
+<details>
+<summary><b>Project layout</b></summary>
 
 ```
-Sources/WhispCore   ASR (Parakeet), mic capture, hotkey, paste, storage, text cleanup
-Sources/Whisp       menu-bar app shell (AppDelegate, status bar, pill, onboarding)
-Sources/whisp-bench benchmark CLI
-Sources/whisp-tests test harness
-Resources/          Info.plist, AppIcon.icns
-scripts/            build-app.sh, make-icon.sh, make-icon.swift
+Sources/WhispCore    speech model, mic, hotkey, paste, storage, text cleanup
+Sources/Whisp        menu-bar app (status bar, recording pill, onboarding)
+Sources/whisp-bench  benchmark CLI
+Sources/whisp-tests  test runner
+Resources/           Info.plist, app icon
+scripts/             build-app.sh, icon generation
 ```
+</details>
+
+## Credits
+
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0):
+  runs Parakeet on Core ML and the Neural Engine
+- [NVIDIA Parakeet](https://huggingface.co/nvidia): the speech recognition
+  model
+
+## License
+
+[MIT](LICENSE)
