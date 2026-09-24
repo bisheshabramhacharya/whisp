@@ -25,8 +25,11 @@ public struct HistoryEntry: Codable, Sendable, Identifiable {
 }
 
 /// Append-only JSONL history at AppPaths.historyFile.
-/// Call-site is the main actor; appends are small and serialized there.
-public final class HistoryStore {
+/// Appends run on one serial queue (DictationController's persistence queue); reads
+/// run on the main thread. They share no mutable state — the encoder is only used by
+/// appends, the decoder only by reads — and a read racing an append just drops the
+/// half-written last line.
+public final class HistoryStore: @unchecked Sendable {
 
     public let fileURL: URL
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// Saves dictation audio as 16 kHz mono PCM16 WAVs in `recordings/`, all kept as
 /// fine-tuning data. File name is `<HistoryEntry.id>.wav` so audio and history match up.
-public final class RecordingArchive {
+public final class RecordingArchive: Sendable {
 
     public let directory: URL
     public let sampleRate: Int

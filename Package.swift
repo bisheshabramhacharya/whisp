@@ -24,7 +24,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "whisp-bench",
-            dependencies: ["WhispCore"],
+            dependencies: ["WhispCore", .product(name: "FluidAudio", package: "FluidAudio")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(

@@ -5,21 +5,25 @@ import Foundation
 
 /// Inserts dictated text into the frontmost app at the cursor, without stealing focus:
 ///
-///   1. Best-effort Accessibility read of the focused element to decide whether a
-///      leading space is needed (hard time-boxed via AX messaging timeout).
-///   2. Snapshot every item/type on the general pasteboard.
-///   3. Write the text, marked `org.nspasteboard.TransientType`/`ConcealedType` so
+///   1. At key release, note the frontmost app and start a background, time-boxed
+///      Accessibility read of the character before the cursor (decides whether a
+///      leading space is needed). It runs while the model transcribes.
+///   2. If a different app is frontmost by paste time, leave the text on the clipboard
+///      instead of pasting into the wrong window.
+///   3. Snapshot every item/type on the general pasteboard.
+///   4. Write the text, marked `org.nspasteboard.TransientType`/`ConcealedType` so
 ///      clipboard managers don't record it.
-///   4. Post Cmd+V as a real HID event (`.cghidEventTap`).
-///   5. ~300 ms later, restore the original clipboard — but only if `changeCount`
+///   5. Post Cmd+V as a real HID event (`.cghidEventTap`).
+///   6. ~300 ms later, restore the original clipboard — but only if `changeCount`
 ///      shows nothing else wrote to the pasteboard in the meantime.
+@MainActor
 public final class Paster: TextPasting {
 
     /// How long to wait before restoring the user's clipboard (ms).
     public var restoreDelay: TimeInterval = 0.3
 
     /// Hard cap on every Accessibility query so a hung target app can't stall pasting.
-    private static let axTimeout: Float = 0.02 // 20 ms
+    private nonisolated static let axTimeout: Float = 0.02 // 20 ms
 
     /// NSPasteboard marker types that tell clipboard managers to ignore this write.
     private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
@@ -27,27 +31,47 @@ public final class Paster: TextPasting {
 
     /// The user's clipboard and the scheduled restore, while one is pending. A paste
     /// that lands before the restore reuses this snapshot instead of capturing our
-    /// own previous dictation as "the user's clipboard". Main thread only.
-    private var pendingRestore: (snapshot: [[NSPasteboard.PasteboardType: Data]], work: DispatchWorkItem)?
+    /// own previous dictation as "the user's clipboard" — unless the user copied
+    /// something since (`changeCount` moved), which then becomes the clipboard to restore.
+    private var pendingRestore: (snapshot: [[NSPasteboard.PasteboardType: Data]], changeCount: Int,
+                                 work: DispatchWorkItem)?
 
     public init() {}
 
     // MARK: - TextPasting
 
-    /// Call on the main thread.
-    public func paste(_ text: String) {
-        guard !text.isEmpty else { return }
+    public func target() -> PasteTarget {
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let lookup = Task.detached(priority: .userInitiated) { () -> Character? in
+            guard AXIsProcessTrusted() else { return nil }
+            return Self.focusedCharacterBeforeCursor()
+        }
+        return PasteTarget(pid: pid, precedingCharacter: lookup)
+    }
+
+    public func paste(_ text: String, into target: PasteTarget) async -> PasteResult {
+        guard !text.isEmpty else { return .pasted }
 
         var text = text
-        if shouldPrependSpace(to: text) {
+        if let first = text.first, first.isLetter || first.isNumber,
+           let previous = await target.precedingCharacter.value,
+           Self.needsSpace(after: previous) {
             text = " " + text
         }
 
         let pasteboard = NSPasteboard.general
+        if let pid = target.pid, NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            pendingRestore?.work.cancel()
+            pendingRestore = nil
+            pasteboard.clearContents()
+            pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
+            return .copiedAppChanged
+        }
+
         let snapshot: [[NSPasteboard.PasteboardType: Data]]
         if let pending = pendingRestore {
             pending.work.cancel()
-            snapshot = pending.snapshot
+            snapshot = pasteboard.changeCount == pending.changeCount ? pending.snapshot : Self.snapshot(pasteboard)
         } else {
             snapshot = Self.snapshot(pasteboard)
         }
@@ -79,8 +103,15 @@ public final class Paster: TextPasting {
                 pasteboard.writeObjects(items)
             }
         }
-        pendingRestore = (snapshot, work)
+        pendingRestore = (snapshot, expectedChangeCount, work)
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay, execute: work)
+        return .pasted
+    }
+
+    /// Dictation is appended to a word/sentence (so needs a separating space) unless the
+    /// cursor follows whitespace or an opening bracket/quote/slash: "foo(" + "bar" -> "foo(bar".
+    public nonisolated static func needsSpace(after previous: Character) -> Bool {
+        !previous.isWhitespace && !"([{/\\\u{201C}\u{2018}".contains(previous)
     }
 
     // MARK: - Cmd+V
@@ -117,21 +148,11 @@ public final class Paster: TextPasting {
 
     // MARK: - Smart spacing
 
-    /// Prepend a space when the text starts with an alphanumeric character AND the
-    /// character right before the cursor is non-whitespace (i.e. we're appending to
-    /// a word/sentence rather than starting fresh). Everything is best-effort and
-    /// time-boxed: any AX failure -> paste as-is.
-    private func shouldPrependSpace(to text: String) -> Bool {
-        guard let first = text.first, first.isLetter || first.isNumber else { return false }
-        guard AXIsProcessTrusted() else { return false }
-        guard let previous = focusedCharacterBeforeCursor() else { return false }
-        return !previous.isWhitespace
-    }
-
     /// The single character immediately before the focused element's insertion point.
     /// Prefers the parameterized "string for range" attribute (cheap — the target only
     /// serializes one character); falls back to reading the whole value.
-    private func focusedCharacterBeforeCursor() -> Character? {
+    /// Best-effort and time-boxed: any AX failure -> nil (paste as-is). Thread-safe.
+    private nonisolated static func focusedCharacterBeforeCursor() -> Character? {
         let systemWide = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(systemWide, Self.axTimeout)
 
@@ -167,14 +188,18 @@ public final class Paster: TextPasting {
             }
         }
 
-        // Fallback: read the whole value and index into it (still time-boxed).
+        // Fallback: read the whole value and index into it (still time-boxed). AX ranges
+        // count UTF-16 code units, so index the UTF-16 view, not Characters.
         var wholeValue: AnyObject?
         guard AXUIElementCopyAttributeValue(
             element, kAXValueAttribute as CFString, &wholeValue
         ) == .success, let string = wholeValue as? String else { return nil }
-        let index = string.index(string.startIndex, offsetBy: range.location - 1,
-                                 limitedBy: string.endIndex)
-        guard let index, index < string.endIndex else { return nil }
-        return string[index]
+        let utf16 = string.utf16
+        guard range.location <= utf16.count,
+              let end = utf16.index(utf16.startIndex, offsetBy: range.location, limitedBy: utf16.endIndex),
+              let endIndex = end.samePosition(in: string.unicodeScalars),
+              endIndex > string.unicodeScalars.startIndex else { return nil }
+        let scalar = string.unicodeScalars[string.unicodeScalars.index(before: endIndex)]
+        return Character(scalar)
     }
 }

@@ -78,6 +78,35 @@ public final class PersonalDictionary: @unchecked Sendable {
         return result as String
     }
 
+    /// Adds a "`from` -> `to`" replacement to the dictionary file (created if missing),
+    /// joining an existing entry with the same `to`. Throws — without writing — when the
+    /// file exists but isn't valid JSON, so a half-edited dictionary is never clobbered.
+    public static func addReplacement(from: String, to: String, fileURL: URL) throws {
+        let from = trim(from), to = trim(to)
+        guard !from.isEmpty, !to.isEmpty else { return }
+        var root: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let data = try Data(contentsOf: fileURL)
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            root = object
+        }
+        var replacements = root["replacements"] as? [[String: Any]] ?? []
+        if let i = replacements.firstIndex(where: { ($0["to"] as? String) == to }) {
+            var sources = replacements[i]["from"] as? [String] ?? (replacements[i]["from"] as? String).map { [$0] } ?? []
+            guard !sources.contains(where: { $0.caseInsensitiveCompare(from) == .orderedSame }) else { return }
+            sources.append(from)
+            replacements[i]["from"] = sources
+        } else {
+            replacements.append(["from": [from], "to": to])
+        }
+        root["replacements"] = replacements
+        let data = try JSONSerialization.data(
+            withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try data.write(to: fileURL, options: .atomic)
+    }
+
     // MARK: - Loading (call with lock held)
 
     private func reloadIfNeeded() {

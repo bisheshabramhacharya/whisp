@@ -1,6 +1,7 @@
 import AVFoundation
 import Accelerate
 import Foundation
+import os
 
 /// Errors thrown by `MicRecorder.start()`.
 public enum MicRecorderError: Error {
@@ -27,6 +28,9 @@ public enum MicRecorderError: Error {
 public final class MicRecorder: AudioRecording {
 
     public var onLevel: ((Float) -> Void)?
+    public private(set) var lostInput = false
+
+    private let logger = Logger(subsystem: "com.bishesha.whisp", category: "Mic")
 
     private let engine = AVAudioEngine()
 
@@ -52,6 +56,12 @@ public final class MicRecorder: AudioRecording {
     private var converter: AVAudioConverter?
     private var tapInstalled = false
     private var recording = false
+    /// Set when a device change could not be recovered mid-recording.
+    private var inputLost = false
+    /// When `start()` was called, and when the first converted buffer arrived (uptime ns).
+    private var startedAtNs: UInt64 = 0
+    private var firstBufferAtNs: UInt64 = 0
+    private var firstBufferSamples = 0
     /// Whether `engine.inputNode` has been materialized at least once. `engine.prepare()`
     /// crashes with an NSException on an engine with zero nodes, so every prepare() must
     /// be preceded by an inputNode access.
@@ -118,6 +128,10 @@ public final class MicRecorder: AudioRecording {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         recording = true
+        inputLost = false
+        startedAtNs = DispatchTime.now().uptimeNanoseconds
+        firstBufferAtNs = 0
+        firstBufferSamples = 0
         lock.unlock()
 
         engineLock.lock()
@@ -158,14 +172,28 @@ public final class MicRecorder: AudioRecording {
         // interleaving here either fully precedes us (we tear down its restart too)
         // or sees recording==false and does not restart. No mic-while-idle window.
         engineLock.lock()
+        let stoppedAtNs = DispatchTime.now().uptimeNanoseconds
         teardownLocked()
         lock.lock()
         let captured = samples
         samples.removeAll(keepingCapacity: true)
         recording = false
+        lostInput = inputLost
+        let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
         lock.unlock()
         engineLock.unlock()
         endLevelReporting()
+        // Audio missing from the clip = wall time since start() minus audio captured.
+        // "head" = arrival of the first buffer minus the audio it held: time after start()
+        // that was never captured. The rest of "missing" is the undelivered last buffer.
+        let wallMs = Double(stoppedAtNs - started) / 1e6
+        let audioMs = Double(captured.count) / 16.0
+        let firstBufferMs = firstBuffer > 0 ? Double(firstBuffer - started) / 1e6 : -1
+        let headMs = firstBuffer > 0 ? firstBufferMs - Double(firstCount) / 16.0 : -1
+        logger.notice("""
+            capture: wall=\(Int(wallMs))ms audio=\(Int(audioMs))ms missing=\(Int(wallMs - audioMs))ms \
+            firstBuffer=\(Int(firstBufferMs))ms head=\(Int(headMs))ms
+            """)
         return captured
     }
 
@@ -273,6 +301,10 @@ public final class MicRecorder: AudioRecording {
         vDSP_vclip(channelData[0], 1, &lo, &hi, channelData[0], 1, vDSP_Length(count))
         lock.lock()
         if recording {
+            if firstBufferAtNs == 0 {
+                firstBufferAtNs = DispatchTime.now().uptimeNanoseconds
+                firstBufferSamples = count
+            }
             samples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: count))
         }
         lock.unlock()
@@ -323,9 +355,17 @@ public final class MicRecorder: AudioRecording {
             do {
                 try installTapLocked()
                 try engine.start()
+                lock.lock()
+                inputLost = false
+                lock.unlock()
             } catch {
                 // New device unusable. `recording` stays true so a later device change
-                // retries, and samples captured so far are preserved for stop().
+                // retries, and samples captured so far are preserved for stop(), which
+                // reports the loss via `lostInput`.
+                lock.lock()
+                inputLost = true
+                lock.unlock()
+                logger.error("Mic restart after device change failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         engineLock.unlock()

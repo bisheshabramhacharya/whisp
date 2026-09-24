@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import WhispCore
 
@@ -15,6 +16,7 @@ struct Options {
     var itn = false
     var vocab: [String] = []
     var chunked = false
+    var streaming: String?
     var files: [String] = []
 }
 
@@ -42,6 +44,9 @@ func parseArgs() -> Options {
             }
         case "--chunked":
             opts.chunked = true
+        case "--streaming":
+            i += 1
+            if i < args.count { opts.streaming = args[i] }
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -65,6 +70,8 @@ func printUsage() {
           --chunked    also replay the app's transcribe-while-recording path: chunks cut at
                        pauses are decoded ahead, then only the tail is timed (release→text).
                        Reports word differences vs whole-clip decoding.
+          --streaming 320|640|1120  instead, replay each file through the streaming Unified
+                       model in 100 ms buffers (the mic cadence) and time the release step.
           If <file>.txt exists next to an audio file it is scored as the WER reference.
         """)
 }
@@ -224,12 +231,94 @@ func benchChunked(_ samples: [Float], full: String, fullMs: Double) async {
     }
 }
 
+// MARK: - Streaming replay
+
+/// Feeds each file to the streaming Unified model in 100 ms buffers, decoding as audio
+/// arrives like a live recording would, then times the release step two ways:
+/// `finish()` (flush the held-back right context), and simply taking the partial.
+func runStreaming(tier: String, files: [String]) async {
+    let configs: [String: UnifiedConfig] = [
+        "320": UnifiedConfig(leftFrames: 70, chunkFrames: 2, rightFrames: 2),
+        "640": UnifiedConfig(leftFrames: 70, chunkFrames: 7, rightFrames: 1),
+        "1120": UnifiedConfig(leftFrames: 70, chunkFrames: 7, rightFrames: 7),
+    ]
+    guard let config = configs[tier] else {
+        print("Unknown streaming tier '\(tier)'. Choices: 320, 640, 1120")
+        exit(1)
+    }
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    func buffer(_ slice: ArraySlice<Float>) -> AVAudioPCMBuffer {
+        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(slice.count))!
+        buf.frameLength = AVAudioFrameCount(slice.count)
+        slice.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: slice.count) }
+        return buf
+    }
+
+    let manager = StreamingUnifiedAsrManager(config: config)
+    let loadStart = Date()
+    do {
+        try await manager.loadModels()
+    } catch {
+        print("streaming load failed: \(error.localizedDescription)")
+        exit(2)
+    }
+    print(String(format: "Streaming %@ ms tier loaded in %.1f s  footprint: %@", tier,
+                 Date().timeIntervalSince(loadStart), formatMB(physicalFootprint())))
+
+    var totals = (files: 0, audioMs: 0.0, busyMs: 0.0, finishMs: 0.0, partialSame: 0)
+    for (index, path) in files.enumerated() {
+        guard let samples = try? loadSamples16kMono(path: path) else { continue }
+        do {
+            try await manager.reset()
+            var busyMs = 0.0
+            var start = 0
+            while start < samples.count {
+                let end = min(start + 1_600, samples.count)
+                try await manager.appendAudio(buffer(samples[start..<end]))
+                let t0 = Date()
+                try await manager.processBufferedAudio()
+                busyMs += Date().timeIntervalSince(t0) * 1000
+                start = end
+            }
+            let partial = await manager.getPartialTranscript()
+            let t0 = Date()
+            let final = try await manager.finish()
+            let finishMs = Date().timeIntervalSince(t0) * 1000
+            let audioMs = Double(samples.count) / 16
+            let same = normalizedWords(partial) == normalizedWords(final)
+            print("=== \(URL(fileURLWithPath: path).lastPathComponent)  (\(String(format: "%.2f", audioMs / 1000)) s) ===")
+            print(String(format: "  stream: busy %.0f ms (%.1f%% of audio)  finish %.0f ms  partial==final: %@",
+                         busyMs, 100 * busyMs / audioMs, finishMs, same ? "yes" : "no"))
+            print("  stream transcript: \(final)")
+            if !same { print("  partial at release: \(partial)") }
+            if index > 0 {  // first file includes one-time warm-up
+                totals.files += 1
+                totals.audioMs += audioMs
+                totals.busyMs += busyMs
+                totals.finishMs += finishMs
+                totals.partialSame += same ? 1 : 0
+            }
+        } catch {
+            print("\(path): streaming failed: \(error.localizedDescription)")
+        }
+    }
+    let t = totals
+    print(String(format: "Streaming summary: %d files  busy %.1f%% of audio  finish avg %.0f ms  partial==final %d/%d",
+                 t.files, 100 * t.busyMs / max(t.audioMs, 1), t.finishMs / Double(max(t.files, 1)),
+                 t.partialSame, t.files))
+    print("Peak RSS: \(formatMB(peakRSSBytes()))  footprint: \(formatMB(physicalFootprint()))")
+}
+
 // MARK: - Main
 
 let opts = parseArgs()
 guard !opts.files.isEmpty else {
     printUsage()
     exit(1)
+}
+if let tier = opts.streaming {
+    await runStreaming(tier: tier, files: opts.files)
+    exit(0)
 }
 
 let modelAliases: [String: ParakeetTranscriber.Model] = [

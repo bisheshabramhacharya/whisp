@@ -15,6 +15,9 @@ public protocol Transcribing: AnyObject {
 public protocol AudioRecording: AnyObject {
     /// Normalized input level 0...1, called on the main thread ~30x/s while recording.
     var onLevel: ((Float) -> Void)? { get set }
+    /// True when the input device went away mid-recording and capture could not resume,
+    /// so the last `stop()` returned only the audio from before the device change.
+    var lostInput: Bool { get }
     func start() throws
     /// Copy of the audio captured so far, from sample `start` on (empty when not recording).
     func samples(from start: Int) -> [Float]
@@ -45,9 +48,32 @@ public enum HotkeyError: Error {
     case permissionDenied
 }
 
+/// Where a dictation should land, captured at key release.
+public struct PasteTarget: Sendable {
+    /// Frontmost app at key release.
+    public let pid: pid_t?
+    /// Character before the cursor, looked up in the background so the Accessibility
+    /// round-trips overlap transcription instead of delaying the paste.
+    public let precedingCharacter: Task<Character?, Never>
+
+    public init(pid: pid_t?, precedingCharacter: Task<Character?, Never>) {
+        self.pid = pid
+        self.precedingCharacter = precedingCharacter
+    }
+}
+
+public enum PasteResult: Sendable {
+    case pasted
+    /// Focus moved to another app while transcribing; the text was left on the clipboard.
+    case copiedAppChanged
+}
+
 /// Inserts text into the frontmost app at the cursor.
+@MainActor
 public protocol TextPasting: AnyObject {
-    func paste(_ text: String)
+    /// Call at key release.
+    func target() -> PasteTarget
+    func paste(_ text: String, into target: PasteTarget) async -> PasteResult
 }
 
 /// Non-rewriting cleanup: removes fillers/stutters and applies personal dictionary.

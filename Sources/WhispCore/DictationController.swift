@@ -78,6 +78,13 @@ public final class DictationController: ObservableObject {
     private var pendingTranscriptions = 0
     private var recordingStartedAt: Date?
     private var capTask: Task<Void, Never>?
+    private var muteTask: Task<Void, Never>?
+    /// Every finished recording gets an increasing id; Esc after release (or quit)
+    /// drops the paste of every id up to `cancelledThrough`.
+    private var lastClipID = 0
+    private var cancelledThrough = 0
+    /// History/WAV writes happen here, in order, so they never hold up the next paste.
+    private let persistQueue = DispatchQueue(label: "com.bishesha.whisp.persist", qos: .utility)
     /// Tail of the serial transcribe->clean->paste pipeline.
     private var pipelineTail: Task<Void, Never>?
     private var prepareStarted = false
@@ -86,8 +93,9 @@ public final class DictationController: ObservableObject {
     private var live: LiveChunks?
     private var chunkLoop: Task<Void, Never>?
 
-    /// Samples shorter than this are treated as an accidental tap and dropped.
-    public var minimumDuration: TimeInterval = 0.3
+    /// Clips shorter than this are dropped. Accidental taps (< 0.25 s holds) are already
+    /// cancelled by the hotkey state machine, so this only catches an empty capture.
+    public var minimumDuration: TimeInterval = 0.05
     /// Hard safety cap so a stuck key can never record forever.
     public var maximumDuration: TimeInterval = 10 * 60
     /// Assumed sample rate delivered by AudioRecording (per contract: 16 kHz mono).
@@ -154,7 +162,16 @@ public final class DictationController: ObservableObject {
         isHotkeyRunning = false
     }
 
-    /// Downloads/loads/warms the model. Safe to call more than once.
+    /// Accessibility or Input Monitoring was turned off while running: the event tap is
+    /// now deaf, so drop it (a fresh one is created once the grant is back).
+    public func hotkeyPermissionLost() {
+        guard isHotkeyRunning else { return }
+        stopHotkey()
+        statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
+    }
+
+    /// Downloads/loads/warms the model. Safe to call more than once; after a failure
+    /// the next call (or the next dictation) retries.
     public func prepareModel() {
         guard !prepareStarted else { return }
         prepareStarted = true
@@ -163,15 +180,17 @@ public final class DictationController: ObservableObject {
             do {
                 try await self.transcriber.prepare()
             } catch {
+                self.prepareStarted = false
                 self.modelStatus = "Model failed: \(error.localizedDescription)"
                 self.logger.error("Model prepare failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
 
-    /// Clean shutdown for app termination.
+    /// Clean shutdown for app termination. Queued dictations are not pasted.
     public func shutdown() {
         stopHotkey()
+        cancelledThrough = lastClipID
         capTask?.cancel()
         if isRecording {
             isRecording = false
@@ -179,6 +198,7 @@ public final class DictationController: ObservableObject {
             restoreAudioIfNeeded()
             recomputeState()
         }
+        flushPersistence()
     }
 
     // MARK: - Hotkey events
@@ -198,8 +218,10 @@ public final class DictationController: ObservableObject {
         if settings.sounds { sounds.playStart() }
 
         // 2. Start capture.
+        let micStart = DispatchTime.now()
         do {
             try recorder.start()
+            logger.notice("mic started in \(Self.ms(since: micStart))ms")
         } catch {
             if settings.sounds { sounds.playError() }
             statusMessage = "Microphone failed: \(error.localizedDescription)"
@@ -214,11 +236,12 @@ public final class DictationController: ObservableObject {
 
         // 3. Mute system output so the model hears the user, not the speakers —
         //    after the start sound has played, since muting the device cuts it off.
+        //    Cancelled on stop, so a quick take can't mute the next one's start sound.
         if settings.autoMute {
             let delay: UInt64 = settings.sounds ? 250_000_000 : 0
-            Task { [weak self] in
+            muteTask = Task { [weak self] in
                 if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
-                guard let self, self.isRecording, !self.systemMuted else { return }
+                guard !Task.isCancelled, let self, self.isRecording, !self.systemMuted else { return }
                 self.muter.mute()
                 self.systemMuted = true
             }
@@ -235,33 +258,56 @@ public final class DictationController: ObservableObject {
 
     private func stopCapture() {
         guard isRecording else { return }
+        let releasedAt = DispatchTime.now()
         isRecording = false
         capTask?.cancel()
         capTask = nil
+        muteTask?.cancel()
+        muteTask = nil
         let chunks = stopChunkLoop()
 
-        let releasedAt = Date()
-        let startedAt = recordingStartedAt ?? releasedAt
+        let startedAt = recordingStartedAt ?? Date()
+        let target = paster.target()
         let samples = recorder.stop()
-        restoreAudioIfNeeded()
-        if settings.sounds { sounds.playStop() }
+        let stopMs = Self.ms(since: releasedAt)
+        if recorder.lostInput {
+            statusMessage = "Microphone disconnected mid-recording — only the audio before it was used"
+        }
 
         let duration = Double(samples.count) / Double(sampleRate)
         guard duration >= minimumDuration else {
-            logger.debug("Discarded \(duration, format: .fixed(precision: 2))s clip (< \(self.minimumDuration)s)")
+            logger.notice("Discarded \(duration, format: .fixed(precision: 2))s clip (< \(self.minimumDuration)s)")
+            finishRelease()
             recomputeState()
             return
         }
 
-        enqueueTranscription(samples: samples, chunks: chunks, duration: duration,
-                             startedAt: startedAt, releasedAt: releasedAt)
+        enqueueTranscription(samples: samples, chunks: chunks, target: target, duration: duration,
+                             startedAt: startedAt, releasedAt: releasedAt, stopMs: stopMs)
+        // Unmute and the stop sound run after transcription has been handed off.
+        DispatchQueue.main.async { [weak self] in self?.finishRelease() }
+    }
+
+    private func finishRelease() {
+        restoreAudioIfNeeded()
+        if settings.sounds { sounds.playStop() }
     }
 
     private func cancelCapture() {
-        guard isRecording else { return }
+        guard isRecording else {
+            // Esc after release: drop every dictation still being transcribed.
+            if pendingTranscriptions > 0, cancelledThrough < lastClipID {
+                cancelledThrough = lastClipID
+                if settings.sounds { sounds.playCancel() }
+                logger.notice("Pending dictation cancelled")
+            }
+            return
+        }
         isRecording = false
         capTask?.cancel()
         capTask = nil
+        muteTask?.cancel()
+        muteTask = nil
         _ = stopChunkLoop()
         recorder.cancel()
         restoreAudioIfNeeded()
@@ -339,78 +385,117 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Serial transcription pipeline
 
-    /// Enqueues a finished clip. Items run strictly in order so that pastes
-    /// land in the order the recordings finished, never interleaved.
-    private func enqueueTranscription(samples: [Float], chunks: LiveChunks?, duration: TimeInterval,
-                                      startedAt: Date, releasedAt: Date) {
+    /// Starts transcribing a finished clip right away, then pastes it once every earlier
+    /// clip has pasted, so pastes land in the order the recordings finished.
+    private func enqueueTranscription(samples: [Float], chunks: LiveChunks?, target: PasteTarget,
+                                      duration: TimeInterval, startedAt: Date,
+                                      releasedAt: DispatchTime, stopMs: Int) {
+        lastClipID += 1
+        let id = lastClipID
         pendingTranscriptions += 1
         recomputeState()
 
+        let transcription = Task { [weak self] () -> Result<(String, Int), Error> in
+            guard let self else { return .failure(CancellationError()) }
+            let start = DispatchTime.now()
+            do {
+                let raw = try await self.transcribe(samples, chunks: chunks)
+                return .success((raw, Self.ms(since: start)))
+            } catch {
+                return .failure(error)
+            }
+        }
         let previous = pipelineTail
         pipelineTail = Task { [weak self] in
             await previous?.value
+            let result = await transcription.value
             guard let self else { return }
-            await self.process(samples: samples, chunks: chunks, duration: duration,
-                               startedAt: startedAt, releasedAt: releasedAt)
+            await self.process(id: id, result: result, samples: samples, chunks: chunks.map(\.texts.count),
+                               target: target, duration: duration, startedAt: startedAt,
+                               releasedAt: releasedAt, stopMs: stopMs)
             self.pendingTranscriptions -= 1
             self.recomputeState()
         }
     }
 
-    private func process(samples: [Float], chunks: LiveChunks?, duration: TimeInterval,
-                         startedAt: Date, releasedAt: Date) async {
-        let transcribeStart = Date()
-        do {
-            let raw = try await transcribe(samples, chunks: chunks)
-            let transcribedAt = Date()
+    private func process(id: Int, result: Result<(String, Int), Error>, samples: [Float], chunks: Int?,
+                         target: PasteTarget, duration: TimeInterval, startedAt: Date,
+                         releasedAt: DispatchTime, stopMs: Int) async {
+        let transcribedAt = DispatchTime.now()
+        let raw: String, transcribeMs: Int
+        switch result {
+        case .success(let value):
+            (raw, transcribeMs) = value
+        case .failure(let error):
+            guard id > cancelledThrough else { return }
+            logger.error("transcribe failed: \(error.localizedDescription, privacy: .public)")
+            statusMessage = "Transcription failed: \(error.localizedDescription)"
+            if settings.sounds { sounds.playError() }
+            return
+        }
+        guard id > cancelledThrough else {
+            logger.notice("dictation \(id) cancelled before paste")
+            return
+        }
 
-            let cleaned = cleaner.clean(raw)
-            let cleanedAt = Date()
+        let cleaned = cleaner.clean(raw)
+        let cleanMs = Self.ms(since: transcribedAt)
 
-            let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                paster.paste(cleaned)
-            }
-            let pastedAt = Date()
+        let pasteStart = DispatchTime.now()
+        var outcome = PasteResult.pasted
+        if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            outcome = await paster.paste(cleaned, into: target)
+        }
+        let pasteMs = Self.ms(since: pasteStart)
+        let latencyMs = Self.ms(since: releasedAt)
+        if outcome == .copiedAppChanged {
+            statusMessage = "You switched apps while transcribing — text copied, press ⌘V to paste"
+            if settings.sounds { sounds.playError() }
+        }
 
-            let transcribeMs = Int(transcribedAt.timeIntervalSince(transcribeStart) * 1000)
-            let cleanMs = Int(cleanedAt.timeIntervalSince(transcribedAt) * 1000)
-            let latencyMs = Int(pastedAt.timeIntervalSince(releasedAt) * 1000)
+        logger.notice("""
+            dictation done: audio=\(duration, format: .fixed(precision: 2))s chunks=\(chunks ?? 0) \
+            stop=\(stopMs)ms transcribe=\(transcribeMs)ms clean=\(cleanMs)ms paste=\(pasteMs)ms \
+            release→paste=\(latencyMs)ms
+            """)
 
-            logger.info("""
-                dictation done: audio=\(duration, format: .fixed(precision: 2))s \
-                chunks=\(chunks?.texts.count ?? 0) transcribe=\(transcribeMs)ms clean=\(cleanMs)ms \
-                release→paste=\(latencyMs)ms
-                """)
+        let entry = HistoryEntry(
+            id: UUID().uuidString,
+            date: startedAt,
+            durationSec: duration,
+            raw: raw,
+            cleaned: cleaned,
+            latencyMs: latencyMs
+        )
+        lastResult = entry
+        persist(entry, samples: settings.keepRecordings ? samples : nil)
+    }
 
-            let entry = HistoryEntry(
-                id: UUID().uuidString,
-                date: startedAt,
-                durationSec: duration,
-                raw: raw,
-                cleaned: cleaned,
-                latencyMs: latencyMs
-            )
+    /// Writes history and the WAV off the main thread, in order.
+    private func persist(_ entry: HistoryEntry, samples: [Float]?) {
+        let history = history, recordings = recordings, logger = logger
+        persistQueue.async {
             do {
                 try history.append(entry)
             } catch {
                 logger.error("history append failed: \(error.localizedDescription, privacy: .public)")
             }
-
-            if settings.keepRecordings {
-                do {
-                    try recordings.save(samples: samples, id: entry.id)
-                } catch {
-                    logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
-                }
+            guard let samples else { return }
+            do {
+                try recordings.save(samples: samples, id: entry.id)
+            } catch {
+                logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
             }
-
-            lastResult = entry
-        } catch {
-            logger.error("transcribe failed: \(error.localizedDescription, privacy: .public)")
-            statusMessage = "Transcription failed: \(error.localizedDescription)"
-            if settings.sounds { sounds.playError() }
         }
+    }
+
+    /// Blocks until queued history/WAV writes are on disk (app termination, tests).
+    public func flushPersistence() {
+        persistQueue.sync {}
+    }
+
+    private static func ms(since start: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
     }
 }
 

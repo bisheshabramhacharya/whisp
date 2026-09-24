@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Polls permission state after the user was sent to Settings, so the
     /// hotkey starts as soon as Accessibility + Input Monitoring land.
     private var permissionPoll: Timer?
+    /// Notices a hotkey permission being revoked or re-granted while running.
+    private var permissionWatch: Timer?
+    private var hotkeyStoppedForPermission = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? AppPaths.ensureDirectories()
@@ -36,10 +39,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !allPermissionsGranted {
             showOnboarding()
         }
+
+        permissionWatch = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.permissionWatchTick() }
+        }
+    }
+
+    private func permissionWatchTick() {
+        guard let services, permissionPoll == nil else { return }
+        if hotkeyPermissionsGranted {
+            if hotkeyStoppedForPermission {
+                hotkeyStoppedForPermission = false
+                services.controller.startHotkey()
+            }
+        } else if services.controller.isHotkeyRunning {
+            services.controller.hotkeyPermissionLost()
+            hotkeyStoppedForPermission = true
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionPoll?.invalidate()
+        permissionWatch?.invalidate()
         services?.controller.shutdown()
     }
 

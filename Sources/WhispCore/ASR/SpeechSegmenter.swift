@@ -94,7 +94,9 @@ public enum SpeechSegmenter {
     /// Release step: transcribe the tail and join it to the chunk transcripts.
     /// `chunkStarts[i]` is where the audio behind `texts[i]` began; the tail starts at
     /// `committed`. A near-silent tail may still hold quiet trailing words the silence
-    /// gate would drop, so the last chunk is then re-decoded together with it.
+    /// gate would drop, so the last chunk is then re-decoded together with it — unless
+    /// no tail frame reaches the level `trimSilence` would keep as speech next to that
+    /// chunk, in which case the re-decode would see the same audio and is skipped.
     public static func finish(
         _ samples: [Float], chunkStarts: [Int], texts: [String], committed: Int,
         transcriber: Transcribing
@@ -102,7 +104,12 @@ public enum SpeechSegmenter {
         var texts = texts
         var tailStart = committed
         if tailStart < samples.count, isNearSilent(Array(samples[tailStart...])),
-           let last = chunkStarts.last, !texts.isEmpty {
+           let last = chunkStarts.last, !texts.isEmpty, last < committed {
+            let chunkPeak = frameEnergies(Array(samples[last..<committed])).max() ?? 0
+            let tailPeak = frameEnergies(Array(samples[tailStart...])).max() ?? 0
+            if tailPeak < speechThreshold(peak: chunkPeak) {
+                return join(texts)
+            }
             texts.removeLast()
             tailStart = last
         }
@@ -139,6 +146,12 @@ public enum SpeechSegmenter {
     ]
 
     // MARK: - Helpers
+
+    /// A 10 ms frame counts as speech when its RMS exceeds this, given the loudest frame
+    /// in the clip. Deliberately low so quiet consonants are never clipped.
+    static func speechThreshold(peak: Float) -> Float {
+        max(1.5e-3, peak * 0.06)
+    }
 
     static func frameEnergies(_ samples: [Float]) -> [Float] {
         let count = samples.count / frame

@@ -17,6 +17,8 @@ import Foundation
 ///     hold start -> `.cancel` (the user is doing Option+X, not dictating).
 ///     After the grace window other keys are ignored.
 ///   - Esc while recording (hold, second hold, or hands-free)   -> `.cancel`.
+///   - Esc while not recording -> `.cancel` too; the controller uses it to drop a
+///     dictation that is still transcribing and ignores it otherwise.
 public struct HotkeyStateMachine {
 
     /// Inputs the plumbing layer extracts from CGEvents. "Key" always refers to the
@@ -116,6 +118,9 @@ public struct HotkeyStateMachine {
         // MARK: Escape — always aborts an active recording.
         case (.holding, .escape), (.secondHold, .escape), (.handsFree, .escape):
             state = .idle
+            return .cancel
+
+        case (.idle, .escape), (.ignoringRelease, .escape):
             return .cancel
 
         default:

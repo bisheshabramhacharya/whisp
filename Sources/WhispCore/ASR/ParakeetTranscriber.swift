@@ -110,6 +110,8 @@ public final class ParakeetTranscriber: Transcribing {
             input.append(contentsOf: [Float](repeating: 0, count: minSamples - input.count))
         }
 
+        // A dictation during launch waits for the model instead of failing.
+        try await prepare()
         var text = try await engine.transcribe(input, vocabulary: vocabulary)
         if text.contains("<unk>") {
             text = text.replacingOccurrences(of: "<unk>", with: "")
@@ -148,7 +150,7 @@ public final class ParakeetTranscriber: Transcribing {
             }
         }
         guard let peak = energies.max(), peak > 0 else { return [] }
-        let threshold = max(Float(1.5e-3), peak * 0.06)
+        let threshold = SpeechSegmenter.speechThreshold(peak: peak)
 
         var first = 0
         while first < frameCount, energies[first] < threshold { first += 1 }
@@ -171,6 +173,9 @@ extension ParakeetTranscriber {
     fileprivate actor Engine {
         private let model: ParakeetTranscriber.Model
         private var prepared = false
+        /// The in-flight prepare, shared by concurrent callers; cleared on failure so a
+        /// later call retries.
+        private var preparing: Task<Void, Error>?
 
         // TDT backend
         private var asrManager: AsrManager?
@@ -190,6 +195,18 @@ extension ParakeetTranscriber {
 
         func prepare(status: @Sendable @escaping (String) async -> Void) async throws {
             guard !prepared else { return }
+            if let preparing { return try await preparing.value }
+            let task = Task { try await self.load(status: status) }
+            preparing = task
+            do {
+                try await task.value
+            } catch {
+                preparing = nil
+                throw error
+            }
+        }
+
+        private func load(status: @Sendable @escaping (String) async -> Void) async throws {
             switch model {
             case .tdtV2, .tdtV3, .tdtCtc110m:
                 try await prepareTDT(status: status)

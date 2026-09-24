@@ -71,6 +71,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // Model + error status
         menu.addItem(disabled("Model: \(controller.modelStatus)"))
+        if controller.modelStatus.hasPrefix("Model failed") {
+            menu.addItem(item("Retry Loading Model", action: { [weak controller] in
+                controller?.prepareModel()
+            }))
+        }
         if let message = controller.statusMessage, !message.isEmpty {
             menu.addItem(disabled("⚠︎ \(message)"))
         }
@@ -80,6 +85,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if let last = controller.lastResult {
             menu.addItem(item("Last: \(truncate(last.cleaned, 46))", action: { [weak self] in
                 self?.copyToPasteboard(last.cleaned)
+            }))
+            menu.addItem(item("Fix a Misheard Word…", action: { [weak self] in
+                self?.fixMisheardWord(in: last.cleaned)
             }))
         } else {
             menu.addItem(disabled("No transcripts yet"))
@@ -194,6 +202,39 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             permissions.openSettings(.inputMonitoring)
         }
         (NSApp.delegate as? AppDelegate)?.beginPermissionPolling()
+    }
+
+    // MARK: - Fix a misheard word
+
+    /// Asks what was misheard and what it should be, then adds that replacement to
+    /// dictionary.json so every later dictation gets it right.
+    private func fixMisheardWord(in transcript: String) {
+        let alert = NSAlert()
+        alert.messageText = "Fix a Misheard Word"
+        alert.informativeText = "Last transcript:\n\(truncate(transcript, 300))"
+        alert.addButton(withTitle: "Add to Dictionary")
+        alert.addButton(withTitle: "Cancel")
+
+        let heard = NSTextField(frame: NSRect(x: 0, y: 30, width: 280, height: 24))
+        heard.placeholderString = "Heard as (e.g. Pychy)"
+        let correct = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        correct.placeholderString = "Should be (e.g. pi CLI)"
+        let fields = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 54))
+        fields.addSubview(heard)
+        fields.addSubview(correct)
+        alert.accessoryView = fields
+        alert.window.initialFirstResponder = heard
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try PersonalDictionary.addReplacement(
+                from: heard.stringValue, to: correct.stringValue, fileURL: AppPaths.ensureDictionaryTemplate())
+        } catch {
+            let failure = NSAlert(error: error)
+            failure.messageText = "dictionary.json couldn't be read — fix it with Edit Dictionary… and try again."
+            failure.runModal()
+        }
     }
 
     // MARK: - Helpers
