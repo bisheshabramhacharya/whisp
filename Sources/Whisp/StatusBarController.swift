@@ -36,7 +36,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private static func icon(for state: DictationController.State) -> NSImage? {
         switch state {
-        case .idle:         return NSImage(systemSymbolName: "waveform", accessibilityDescription: "Whisp")
+        case .idle:         return MenuBarIcon.image
         case .recording:    return NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Whisp — recording")
         case .transcribing: return NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Whisp — transcribing")
         }
