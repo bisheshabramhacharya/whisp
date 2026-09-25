@@ -1,7 +1,7 @@
 #!/bin/sh
 # Whisp installer — clones the source, builds it, and installs the app.
 #
-#   curl -fsSL https://whisper.bishesha.com/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/install.sh | bash
 #
 # What it does: clones this repo to ~/.whisp (or updates an existing clone),
 # builds Whisp in release mode with scripts/build-app.sh, installs it to

@@ -4,7 +4,7 @@
 
 ### Added
 - **Cmd+Shift+V** re-pastes your last dictation at the cursor, so a take that landed in an app with no text field is one keystroke away.
-- `install.sh`: a one-line installer that clones, builds and installs (`curl -fsSL https://whisper.bishesha.com/install.sh | bash`).
+- `install.sh`: a one-line installer that clones, builds and installs (`curl -fsSL https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/install.sh | bash`).
 - `SECURITY.md`: the threat model and how to report a vulnerability.
 
 ### Changed
