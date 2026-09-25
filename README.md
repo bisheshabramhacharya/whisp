@@ -45,7 +45,7 @@ Line Tools (`xcode-select --install`).
 The quick way, which clones, builds and installs in one go:
 
 ```sh
-curl -fsSL https://whisper.bishesha.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/install.sh | bash
 ```
 
 Or build it yourself:
