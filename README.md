@@ -42,6 +42,14 @@ account, no subscription, and **no audio ever leaves your computer**.
 You'll need an **Apple Silicon Mac** on **macOS 14+** and the Xcode Command
 Line Tools (`xcode-select --install`).
 
+The quick way, which clones, builds and installs in one go:
+
+```sh
+curl -fsSL https://whisper.bishesha.com/install.sh | bash
+```
+
+Or build it yourself:
+
 ```sh
 git clone https://github.com/bisheshabramhacharya/whisp.git
 cd whisp
@@ -62,6 +70,7 @@ launch it walks you through three permissions and downloads the speech model
 | **Hold Right Option**, talk, let go | Your words are typed at the cursor |
 | **Double-tap Right Option** | Hands-free: keeps listening until you press it again |
 | **Esc** | Cancels — even right after you let go |
+| **Cmd+Shift+V** | Re-paste your last dictation at the cursor |
 | Menu bar → **Fix a Misheard Word…** | Teach Whisp a word it got wrong |
 | Menu bar → **History** | Click any past dictation to copy it |
 
@@ -131,6 +140,11 @@ recordings**.
 **Why build from source instead of a download?** Apps from the internet need
 Apple notarization to open without warnings. Building locally avoids that, and
 you can read every line of what you're running.
+
+**Did paste-without-formatting stop working?** Whisp re-pastes your last
+dictation with Cmd+Shift+V and swallows that chord system-wide, so apps that
+use it for paste-without-formatting (Slack, Google Docs) never see it. Quit
+Whisp when you need the original chord.
 
 ## Development
 
