@@ -2,12 +2,12 @@
 //
 // Usage: swift scripts/make-icon.swift <output.iconset>
 //
-// Design: macOS-style rounded-square tile with a vertical indigo→violet
-// gradient and a centered white waveform glyph (five rounded bars).
+// Design: matches the shared Bishesha icon family (~/projects/app-icons) —
+// an ivory rounded square with the charcoal "waveform" SF Symbol, the same
+// symbol the menu bar shows via MenuBarIcon.swift.
 
-import CoreGraphics
+import AppKit
 import Foundation
-import ImageIO
 
 // iconutil requires exactly these (name, pixelSize) pairs.
 let iconEntries: [(String, Int)] = [
@@ -23,91 +23,58 @@ let iconEntries: [(String, Int)] = [
     ("icon_512x512@2x.png", 1024),
 ]
 
-func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
-    CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-            components: [r, g, b, a])!
+// Anthropic-style palette, same as the shared family.
+let ivory = NSColor(srgbRed: 0.941, green: 0.933, blue: 0.902, alpha: 1)      // #F0EEE6
+let ivoryDeep = NSColor(srgbRed: 0.894, green: 0.878, blue: 0.827, alpha: 1)
+let charcoal = NSColor(srgbRed: 0.078, green: 0.078, blue: 0.075, alpha: 1)   // #141413
+
+/// Draws an SF Symbol in one colour, aspect-fit and centred in `box`.
+func drawSymbol(_ name: String, in box: NSRect, color: NSColor, weight: NSFont.Weight) {
+    let config = NSImage.SymbolConfiguration(pointSize: box.height, weight: weight)
+        .applying(.init(paletteColors: [color]))
+    guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+        .withSymbolConfiguration(config) else { return }
+    let scale = min(box.width / image.size.width, box.height / image.size.height)
+    let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+    image.draw(in: NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2,
+                          width: size.width, height: size.height))
 }
 
-func roundedRectPath(in rect: CGRect, radius: CGFloat) -> CGPath {
-    CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius,
-           transform: nil)
+/// macOS 1024 grid: 824-pt body at 100, soft shadow, ivory fill, charcoal symbol.
+func drawIcon(size: CGFloat) {
+    let k = size / 1024
+    let body = NSRect(x: 100 * k, y: 100 * k, width: 824 * k, height: 824 * k)
+    let shape = NSBezierPath(roundedRect: body, xRadius: 185 * k, yRadius: 185 * k)
+
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+    shadow.shadowBlurRadius = 22 * k
+    shadow.shadowOffset = NSSize(width: 0, height: -10 * k)
+    shadow.set()
+    ivory.setFill()
+    shape.fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    NSGradient(starting: ivory, ending: ivoryDeep)?.draw(in: shape, angle: -90)
+    NSColor.black.withAlphaComponent(0.08).setStroke()
+    shape.lineWidth = 2 * k
+    shape.stroke()
+
+    let mark = body.insetBy(dx: 190 * k, dy: 190 * k)
+    drawSymbol("waveform", in: mark, color: charcoal, weight: .medium)
 }
 
-func drawIcon(size: Int) -> CGImage {
-    let s = CGFloat(size)
-    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-    let ctx = CGContext(data: nil, width: size, height: size,
-                        bitsPerComponent: 8, bytesPerRow: 0,
-                        space: colorSpace,
-                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-
-    // Rounded-square tile, ~22.5% corner radius (Apple icon shape).
-    let inset = s * 0.01
-    let tile = CGRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
-    let tilePath = roundedRectPath(in: tile, radius: s * 0.225)
-
-    // Vertical gradient: indigo -> violet.
-    ctx.saveGState()
-    ctx.addPath(tilePath)
-    ctx.clip()
-    let gradient = CGGradient(colorsSpace: colorSpace,
-                              colors: [srgb(0.36, 0.49, 1.00),
-                                       srgb(0.55, 0.30, 0.98)] as CFArray,
-                              locations: [0.0, 1.0])!
-    ctx.drawLinearGradient(gradient,
-                           start: CGPoint(x: s / 2, y: s),
-                           end: CGPoint(x: s / 2, y: 0),
-                           options: [])
-    ctx.restoreGState()
-
-    // Subtle top highlight for depth.
-    ctx.saveGState()
-    ctx.addPath(tilePath)
-    ctx.clip()
-    let sheen = CGGradient(colorsSpace: colorSpace,
-                           colors: [srgb(1, 1, 1, 0.22), srgb(1, 1, 1, 0.0)] as CFArray,
-                           locations: [0.0, 0.45])!
-    ctx.drawLinearGradient(sheen,
-                           start: CGPoint(x: s / 2, y: s),
-                           end: CGPoint(x: s / 2, y: s * 0.55),
-                           options: [])
-    ctx.restoreGState()
-
-    // Waveform glyph: five centered vertical bars with rounded caps.
-    let barHeights: [CGFloat] = [0.30, 0.56, 0.86, 0.56, 0.30]
-    let barWidth = s * 0.085
-    let spacing = s * 0.145
-    let midY = s / 2
-    let firstX = s / 2 - spacing * 2
-
-    ctx.setFillColor(srgb(1, 1, 1, 0.96))
-    ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.012),
-                  blur: s * 0.02,
-                  color: srgb(0.2, 0.1, 0.5, 0.35))
-    for (i, h) in barHeights.enumerated() {
-        let bh = s * h * 0.62
-        let rect = CGRect(x: firstX + CGFloat(i) * spacing - barWidth / 2,
-                          y: midY - bh / 2,
-                          width: barWidth,
-                          height: bh)
-        ctx.addPath(roundedRectPath(in: rect, radius: barWidth / 2))
-        ctx.fillPath()
-    }
-
-    return ctx.makeImage()!
-}
-
-func writePNG(_ image: CGImage, to url: URL) throws {
-    guard let dest = CGImageDestinationCreateWithURL(
-        url as CFURL, "public.png" as CFString, 1, nil) else {
-        throw NSError(domain: "make-icon", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "CGImageDestination failed for \(url.path)"])
-    }
-    CGImageDestinationAddImage(dest, image, nil)
-    guard CGImageDestinationFinalize(dest) else {
-        throw NSError(domain: "make-icon", code: 2,
-                      userInfo: [NSLocalizedDescriptionKey: "finalize failed for \(url.path)"])
-    }
+func png(_ size: NSSize, _ draw: () -> Void) -> Data {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width),
+                               pixelsHigh: Int(size.height), bitsPerSample: 8,
+                               samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    draw()
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.representation(using: .png, properties: [:])!
 }
 
 // main
@@ -119,6 +86,7 @@ let outDir = URL(fileURLWithPath: CommandLine.arguments[1])
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
 for (name, pixels) in iconEntries {
-    try writePNG(drawIcon(size: pixels), to: outDir.appendingPathComponent(name))
+    let data = png(NSSize(width: pixels, height: pixels)) { drawIcon(size: CGFloat(pixels)) }
+    try data.write(to: outDir.appendingPathComponent(name))
 }
 print("wrote \(iconEntries.count) icons to \(outDir.path)")
