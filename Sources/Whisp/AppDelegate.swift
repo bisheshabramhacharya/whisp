@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start the hotkey as soon as the required permissions exist.
         if hotkeyPermissionsGranted {
             services.controller.startHotkey()
+            services.pasteLast.start()
         }
 
         // First launch (or missing permissions): show the setup window.
@@ -87,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let services else { return }
         if hotkeyPermissionsGranted {
             services.controller.startHotkey()
+            services.pasteLast.start()
         }
         if allPermissionsGranted {
             permissionPoll?.invalidate()

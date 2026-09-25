@@ -31,4 +31,5 @@ struct AppServices {
     let settings: AppSettings
     let history: HistoryStore
     let permissions: PermissionsProviding
+    let pasteLast: PasteLastHotkey
 }

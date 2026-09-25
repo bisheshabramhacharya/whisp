@@ -53,7 +53,8 @@ enum Composition {
             controller: controller,
             settings: settings,
             history: history,
-            permissions: RealPermissions()
+            permissions: RealPermissions(),
+            pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster)
         )
     }
 }
