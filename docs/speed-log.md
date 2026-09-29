@@ -104,3 +104,8 @@ wait p50: +0 → 132, +100 → 123, +150 → 74, +200 → 25, +350 → 0, +600 �
 ## `short` engine full replay (speed/all @ f17a82f, `--replay --engine short`, 300 files)
 
 wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 → **0**, +600 → **0** (vs parakeet 132/123/74/25/0/0); last-word ok 99.0% every offset — gate holds. File mix: 266/300 <5 s (w5000), 31 at 5–15 s (stock window), 3 >15 s. The +0 median lands inside the <5 s group: w5000 decode ≈ 55–60 ms **on this VM** (`--compare` 57.7 warm p50) vs ~39 ms on B's VM — machine-relative, not a regression. p95 161 at +0 is the 5–15 s + >15 s tail still paying the stock window — the remaining M1-check question for >5 s takes.
+
+## Audit items fixed (2026-09-29)
+
+- **corrections-pending clobber** (PR #28, merged 83ad3e7): undecodable file → `fileUnreadable` → `save()` skips. Never-clobber rule now holds.
+- **LCS quadratic on unchanged text** (PR #30, merged 83ad3e7): `a == b` early-out skips the O(n·m) table (audit: 59 ms/69 MB @ 3 000 words). Prefix/suffix strip evaluated and rejected — interior words can LCS-match suffix words (a="x A"/b="y x A": substitution vs insertion), so it changes learned blocks; table kept for edited text. Not release-path work.
