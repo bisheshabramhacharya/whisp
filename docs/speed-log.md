@@ -135,3 +135,6 @@ After the `gen-edge.sh` header fix (432 files now load through `loadSamples16kMo
 Full-432 edge compare on speed/all: `parakeet` vs `short` → **agree 1.0000**,
 WER identical 8.57/8.57, decode 130.1→59.4 ms (−54%). `short` is now verified
 word-identical on dictation-300 AND edge-432 (no test-clean regression: 2.24 vs 2.36).
+
+Lead re-verify on speed/all @ 303ad8d+ (all merges): `--compare parakeet,short` on the
+full dictation-300 → **agree 1.0000**, WER 9.75 identical, decode 131.0→61.1 ms.
