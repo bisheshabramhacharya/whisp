@@ -175,6 +175,7 @@ public final class DictationController: ObservableObject {
     public func hotkeyPermissionLost() {
         guard isHotkeyRunning else { return }
         stopHotkey()
+        if isRecording { cancelCapture() }
         statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
     }
 
@@ -460,6 +461,8 @@ public final class DictationController: ObservableObject {
 
         let transcription = Task { [weak self] () -> Result<(String, Int), Error> in
             guard let self else { return .failure(CancellationError()) }
+            // Esc between enqueue and task start: don't spend a decode on a dead clip.
+            guard id > self.cancelledThrough else { return .failure(CancellationError()) }
             let start = DispatchTime.now()
             do {
                 let raw = try await self.transcribe(samples, chunks: chunks)

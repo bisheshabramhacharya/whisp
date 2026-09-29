@@ -25,9 +25,10 @@ public enum SpeechSegmenter {
     /// sooner than 350 ms after the last word, and a speculation is only used when
     /// nothing audible follows it, so starting early can't change the text.
     /// Env-overridable for the speed grid sweep (`WHISP_SPEC_PAUSE_FRAMES`);
-    /// default 200 ms.
+    /// default 180 ms (grid: 150 drops a quiet-variant last word on edge; 180 keeps
+    /// every offset's last-word rate identical to 200 while cutting release wait).
     static let speculatePauseFrames =
-        Int(ProcessInfo.processInfo.environment["WHISP_SPEC_PAUSE_FRAMES"] ?? "") ?? 20
+        Int(ProcessInfo.processInfo.environment["WHISP_SPEC_PAUSE_FRAMES"] ?? "") ?? 18
     static let frame = 160  // 10 ms
 
     /// Where to cut `samples` (audio pending since the last cut), or nil to wait for more.
