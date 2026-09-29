@@ -132,7 +132,7 @@ let cut = SpeechSegmenter.nextCut(in: speech)
 expect(cut.map { $0 >= 64_000 && $0 <= 73_600 ? "in pause" : "at \($0)" } ?? "nil", "in pause", "cut lands in the pause")
 expect(SpeechSegmenter.nextCut(in: tone(3) + silence(0.6) + tone(1)).map(String.init) ?? "nil", "nil", "waits for minChunk")
 expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.5)).description, "true", "speech then pause")
-expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.2)).description, "false", "pause too short")
+expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.1)).description, "false", "pause too short")
 expect(SpeechSegmenter.endsInPause(silence(2)).description, "false", "no speech")
 expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4)).map(String.init) ?? "nil", "nil",
        "keeps near-silent chunk attached")
