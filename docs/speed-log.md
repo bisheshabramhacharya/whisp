@@ -155,3 +155,11 @@ include `streaming` in the M1 check's wider sweep.
 `--replay --engine parakeet --offsets 0,100,150,200,350,600` on all 300 dictation clips:
 +0 131, +100 **101** (was 123 @200), +150 **51** (was 74), +200 2, +350 0, +600 0;
 spec-hit 84%/100%/99%/91%/90% at +100..600; last-word ok 99.0% at every offset.
+
+## Track C final verdict (d3aee91, merged @09723ba)
+
+C's 60-file × 8-offset replay @t2080: finish() ≈ **88 ms flat** at every offset.
+**Last-word misses 23/480 (4.8%) vs parakeet 4/480 (0.8%)** — ~17 tail-word
+mis-transcriptions persisting at +1000 ms, ~6 empty-output dead zones (upstream
+quirk; rescued via padded batch retry, ~170 ms rescue path). Agreement 0.9891.
+Verdict: **dead end for this run** on the zero-loss criterion; ships opt-in only.
