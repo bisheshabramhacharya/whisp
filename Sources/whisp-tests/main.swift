@@ -170,7 +170,7 @@ do {
 }
 do {
     // A short quiet trailing word: the whole tail passes the near-silence gate, but the
-    // word is loud enough that trimSilence would keep it — must still re-decode.
+    // word is loud enough that trimSpeech would keep it — must still re-decode.
     let (text, calls) = await finishCalls(tail: silence(0.5) + tone(0.06, amplitude: 0.02) + silence(0.44))
     expect(text, "Tail.", "quiet word in tail re-decodes last chunk")
     expect(calls.description, "[\(7 * 16_000 + 16_000)]", "re-decode covers chunk + tail")
@@ -616,6 +616,15 @@ do {
     expect(abs(kept - 36_800) <= 320 ? "in margin" : "\(kept)", "in margin", "loud speech keeps 150 ms margins")
     expect(SpeechSegmenter.trimSpeech(silence(2)).isEmpty.description, "true", "all silence trims to empty")
     expect(SpeechSegmenter.trimSpeech(tone(0.01)).count.description, "160", "sub-frame clip untouched")
+
+    // finish() must judge a quiet trailing word by the same p90 rule: a cough in
+    // the last chunk must not make it skip the re-decode and drop the word.
+    let chunk = quiet(6.7) + tone(0.3, amplitude: 0.9)
+    let tail = silence(0.5) + quiet(0.06) + silence(0.44)
+    let fake = CountingTranscriber()
+    _ = try! await SpeechSegmenter.finish(
+        chunk + tail, chunkStarts: [0], texts: ["Chunk one."], committed: chunk.count, transcriber: fake)
+    expect(fake.calls.description, "[\(chunk.count + tail.count)]", "cough in chunk: quiet tail word re-decodes")
 }
 
 // Paster: the restore snapshot is captured at target() and the user's

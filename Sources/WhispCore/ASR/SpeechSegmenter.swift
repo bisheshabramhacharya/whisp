@@ -83,8 +83,10 @@ public enum SpeechSegmenter {
         guard end < samples.count else { return true }
         let rest = Array(samples[end...])
         guard isNearSilent(rest) else { return false }
-        let peak = frameEnergies(Array(samples[start..<end])).max() ?? 0
-        return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: peak)
+        // Same reference as trimSpeech on samples[start...], so this predicts exactly
+        // what a re-decode would keep.
+        let loud = percentile(frameEnergies(Array(samples[start...])), 0.9) ?? 0
+        return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: loud)
     }
 
     /// Trim leading/trailing near-silence with a 150 ms safety margin.
@@ -147,7 +149,7 @@ public enum SpeechSegmenter {
     /// during a pause; it is the tail's text when nothing audible came after it.
     /// A near-silent tail may still hold quiet trailing words the silence gate would
     /// drop, so the last chunk is then re-decoded together with it — unless no tail
-    /// frame reaches the level `trimSilence` would keep as speech next to that chunk,
+    /// frame reaches the level `trimSpeech` would keep as speech next to that chunk,
     /// in which case the re-decode would see the same audio and is skipped.
     public static func finish(
         _ samples: [Float], chunkStarts: [Int], texts: [String], committed: Int,
