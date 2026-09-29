@@ -16,7 +16,7 @@ confirm. Every claim cites the command that produced it in `docs/speed-log*.md`.
 | 0 | `asrEngine` hidden switch | — | — | identical (default unchanged) | none | shipped | [#19](https://github.com/bisheshabramhacharya/whisp/pull/19) |
 | 1 | FluidAudio 0.15.7→0.17.4 | same | unlocks streaming + 0.17.0 RNNT speedups | byte-identical transcripts (40 files) | low | shipped | [#21](https://github.com/bisheshabramhacharya/whisp/pull/21) |
 | 2 | **Short encoder window** (`asrEngine short`, w5000 bundle) | decode p50 **123.7→38.9 ms (-68%)**; replay wait +0 ms **123→40** | **the big one**: encoder ≈ 85% of decode; a ≤5 s take encodes 5 s not 15 s | **word-identical on all 300 dictation clips**; test-clean-250 WER 2.24 vs 2.36; test-other-500 5.79=5.79 (agree 0.9999); zero new dropped words | low — new bundle, fallback = stock | **shipped, needs M1 confirm** | [#22](https://github.com/bisheshabramhacharya/whisp/pull/22) |
-| 3 | Streaming decode during capture (`asrEngine streaming`) | release→text = `finish()` ≈ 80–90 ms VM | kills the whole tail decode — only the right-context flush remains | **gate risk**: word agreement vs parakeet = 0.9602 (t640) / 0.9818 (t1120) / 0.9891 (t2080) — diffs are mostly ITN style ("72" vs "seventy two"); WER-vs-refs arbitrates | med — new decode path, batch fallback | **pending — agreement < 99.5% gate** | — |
+| 3 | Streaming decode during capture (`asrEngine streaming`, t2080) | release→text = `finish()` ≈ **82–84 ms VM, flat at every offset** (lead replay, 15-file slice) | kills the whole tail decode — only the right-context flush remains | **fails gate**: agreement vs parakeet = 0.9602/0.9818/0.9891 @640/1120/2080 — ITN-convention diffs dominate ("72"/"94110" vs spelled-out; semantically equal-or-better for paste), residual = 3 imperative→past tense swaps; +1 last-word drop on replay slice | med — new decode path, batch fallback | **opt-in only, needs-M1** — `short` beats it on latency AND accuracy on this VM | — |
 | 4a | FastRnnt wide-joint (`fast`, `fastall`) | joint calls ~120→46 per decode; VM-CPU p50 194.9 vs 193.4 — a wash on CPU (each call does 72× FLOPs) | dispatch-bound → **ANE is where it pays**; needs-M1 verdict | byte-identical transcripts (dictation+edge+test-clean dumps) | low — opt-in engine | shipped, needs-M1 | [#26](https://github.com/bisheshabramhacharya/whisp/pull/26) |
 | 4b | Parallel tail lane (`par2` engine, `unifiedLanes`) | wait = `max(rem,tail)` vs `rem+tail`; p95 357→309 ms at +0 offset | shrinks p95 on releases racing a decode; +600 MB/lane memory | text path unchanged — same decode of the same span | low — opt-in, default 1 lane = today | shipped | [#27](https://github.com/bisheshabramhacharya/whisp/pull/27) |
 | 4c | Speculation pause 200→**180** ms | stitched: release-wait p50 −14 ms at +100/+150 offsets | earlier speculation → more releases hit spec-hit | **150 ms failed edge**: quiet-variant last-word 77.8% vs 83.3%; 180 ms keeps every offset identical to 200 | low — one constant (env-overridable) | shipped | [#27](https://github.com/bisheshabramhacharya/whisp/pull/27) |
@@ -29,10 +29,10 @@ confirm. Every claim cites the command that produced it in `docs/speed-log*.md`.
 | stage | before (ms) | after — short window | after — streaming |
 |---|---|---|---|
 | mic stop | 0 | 0 | 0 |
-| decode (release→text) | 124–131 | **39–57** | `finish()` flush — pending C |
+| decode (release→text) | 124–131 | **39–57** | `finish()` ≈ 82–84 |
 | cleanup | 2 (first take 46–67) | 2 (**0 added: prewarmed**) | same |
 | paste | 3 | 3 | 3 |
-| **release→paste** | **~130** | **~45–65** | pending C |
+| **release→paste** | **~130** | **~45–65** | **~85–90** |
 
 Owner's M1 decode (152/236 ms real-app) is dominated by the same fixed 15 s window; the
 short-window engine removes 2/3 of that work *by construction* on any hardware — on M1's ANE
@@ -44,16 +44,19 @@ Baseline `parakeet` vs `short`, 300 dictation clips, `--replay --offsets 0..1000
 
 | offset | parakeet p50 | short p50 | streaming p50 |
 |---|---|---|---|
-| +0 ms | 132 | **61** | pending C |
-| +100 ms | 123 | **54** | pending C |
-| +150 ms | 74 | **4** | pending C |
-| +200 ms | 25 | **0** | pending C |
-| +350 ms | 0 | **0** | pending C |
-| +600 ms | 0 | **0** | pending C |
+| +0 ms | 132 | **61** | 82 |
+| +100 ms | 123 | **54** | ~83 |
+| +150 ms | 74 | **4** | ~83 |
+| +200 ms | 25 | **0** | ~83 |
+| +350 ms | 0 | **0** | ~84 |
+| +600 ms | 0 | **0** | ~84 |
 
 last-word ok 99.0% at every offset for `short` — the 3-file floor (blip-059, word-043,
 word-051) is unchanged vs baseline, so zero NEW dropped final words. Speed/all @ f17a82f,
 `--replay --engine short` over the full 300-clip dictation set.
+Streaming column: `finish()` is a flat ~83 ms floor on this VM at every offset (15-file
+slice, lead-run @t2080 — the streaming encoder re-encodes a ~17.9 s window per step on
+CPU; ANE could collapse it). `short` dominates at every offset ≥ +100.
 
 ## Dead ends (measured, kept for the record)
 
@@ -137,9 +140,11 @@ Everything else is smaller and opt-in: the speculation window is now 180 ms (rel
 that land while you're still speaking hit a finished guess far more often); a second
 decoder lane can overlap the tail; a batched joint call trims per-token overhead —
 that one is a CPU wash here but should win on the Neural Engine. The streaming engine
-turns the release wait into just flushing held-back context (~80–90 ms VM) but its
-word agreement is 98.9% — below the strict gate — mostly because the streaming model
-writes "72" instead of "seventy two". It's opt-in only, verdict in the scorecard.
+turns the release wait into just flushing held-back context (~83 ms VM, flat at
+every offset) — but `short` beats it on latency *and* accuracy here, and its word
+agreement is 98.9%, below the strict gate, mostly because the streaming model writes
+"72" instead of "seventy two". It's opt-in only; the M1 check can tell us whether
+the Neural Engine changes that.
 
 Measured dead ends, honestly: the microphone drops the tail of the last word if you
 release mid-syllable (~4% on this VM, less on real hardware); streaming encoder windows

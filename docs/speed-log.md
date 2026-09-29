@@ -138,3 +138,14 @@ word-identical on dictation-300 AND edge-432 (no test-clean regression: 2.24 vs 
 
 Lead re-verify on speed/all @ 303ad8d+ (all merges): `--compare parakeet,short` on the
 full dictation-300 → **agree 1.0000**, WER 9.75 identical, decode 131.0→61.1 ms.
+
+## Streaming replay on speed/all (lead-run, streaming@t2080)
+
+15-file dictation slice, `--replay --engine streaming --offsets 0,150,350`:
+wait p50 **82–84 ms at every offset** (finish() floor; vs parakeet 127/56/0,
+vs short ~55/~4/0 on the same offsets). Last-word ok 93.3/86.7/93.3 — one extra
+drop vs parakeet at +150 (blip-057, "Up." — and blip-059 is the known floor file).
+Combined with C's 300-file agreement (0.9891 @2080, ITN-dominated diffs + 3
+tense swaps): **streaming is not the lever on this VM** — `short` beats it on
+both latency and accuracy. It stays opt-in; ANE could change finish() cost →
+include `streaming` in the M1 check's wider sweep.
