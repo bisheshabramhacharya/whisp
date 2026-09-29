@@ -22,14 +22,20 @@ Expect a reply within a week.
 - Audio is recorded only while the hotkey is held (or hands-free mode is on).
 - Transcription runs on-device via FluidAudio and NVIDIA's Parakeet. No cloud.
 - The only network request Whisp makes is the one-time model download from
-  Hugging Face.
+  Hugging Face (re-fetched automatically if the local copy is missing or
+  corrupt).
 - History, dictionary, and recordings live in
-  `~/Library/Application Support/Whisp/`. Recordings are kept by default so
-  you can build a fine-tuning set; **Keep recordings** in the menu turns that
-  off.
-- The global event taps match exactly two chords: Right Option (dictation)
-  and Cmd+Shift+V (re-paste last). Every other keystroke passes through
-  untouched.
+  `~/Library/Application Support/Whisp/` (locked to your user account,
+  0700/0600). Recordings are kept by default so you can build a fine-tuning
+  set; the folder is capped at ~2 GB and the oldest WAVs are pruned first.
+  **Keep recordings** in the menu turns recording off entirely.
+- The two global event taps are session-level and see only this login
+  session's keystrokes. The dictation tap (Right Option) is **listen-only**:
+  it can observe but cannot consume or inject events. The re-paste tap
+  (Cmd+Shift+V) is **active** and swallows that one chord system-wide —
+  apps that use Cmd+Shift+V for paste-without-formatting never see it
+  while Whisp runs. Every other keystroke passes through both taps
+  untouched; nothing read by the taps is stored or logged.
 
 ## What we deliberately don't claim
 
