@@ -452,6 +452,8 @@ do {
     _ = try! small.save(samples: wav, id: "huge")
     expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("huge.wav").path).description,
            "true", "just-saved wav is never pruned")
+}
+
 // MARK: - A2 Reliability
 
 // The capture buffer must cover the 10-minute take cap and be grown on the
@@ -467,7 +469,7 @@ do {
     _ = rec.stop()
     expect(rec.reservedSampleCapacity < 16_000 * 600 ? "shrunk" : "held",
            "shrunk", "buffer releases take-size capacity after stop()")
-// MARK: - A2 Reliability
+}
 
 // A character key pressed while Right Option is held is always an Option+char
 // chord (@, Option+Backspace, ...) — cancel at any hold length. chordGrace only
@@ -490,7 +492,7 @@ do {
            "modifier within grace cancels")
     expect(run([(.keyDown, 0), (.otherKey, 1), (.keyUp, 2)]), "start - stop",
            "modifier after grace ignored")
-// MARK: - A2 Reliability
+}
 
 // A crash or force-quit while muted must not leave system audio dead: mute()
 // leaves a JSON sentinel, restore() deletes it, and the next launch's
@@ -523,7 +525,7 @@ do {
         .write(to: sentinel, atomically: true, encoding: .utf8)
     SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
     expect(fm.fileExists(atPath: sentinel.path).description, "false", "volumes sentinel repaired + removed")
-// MARK: - A2 Reliability
+}
 
 // HotkeyPermissionTracker replaces the old 5 s polling timer: activation
 // events feed it the current grant/running state and it emits stop/start
@@ -547,10 +549,9 @@ do {
     expect("\(t2.check(hotkeyPermissionsGranted: true, hotkeyRunning: false))",
            "none", "regain without a stop doesn't start")
 }
-// MARK: - A2 Reliability
 
 @MainActor
-func a2ReliabilityTests() async {
+func a2RaceTests() async {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-a2-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
@@ -597,7 +598,7 @@ func a2ReliabilityTests() async {
     expect(paster.pasted.description, "[]", "shutdown drops the in-flight paste")
     expect(controller.state.rawValue, "idle", "idle after shutdown")
 }
-await a2ReliabilityTests()
+await a2RaceTests()
 
 // MARK: - A1 Speed
 
@@ -616,7 +617,6 @@ do {
     expect(SpeechSegmenter.trimSpeech(silence(2)).isEmpty.description, "true", "all silence trims to empty")
     expect(SpeechSegmenter.trimSpeech(tone(0.01)).count.description, "160", "sub-frame clip untouched")
 }
-// MARK: - A1 Speed
 
 // Paster: the restore snapshot is captured at target() and the user's
 // clipboard comes back after ⌘V. Runs against the real general pasteboard.
@@ -644,6 +644,7 @@ func pasterTests() async {
     expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
 }
 await pasterTests()
+
 // MARK: - Auto-learn
 
 // The learner's "real word" oracle is a set here; "Pychy" is the only unknown
