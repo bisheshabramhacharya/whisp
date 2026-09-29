@@ -19,10 +19,10 @@
 set -euo pipefail
 
 WAVDIR="${1:-}"
-ENGINES="${2:-parakeet,profiled}"
+ENGINES="${2:-parakeet,short}"
 if [ -z "$WAVDIR" ] || [ ! -d "$WAVDIR" ]; then
   echo "usage: $0 /path/to/wav-folder [engine,list]" >&2
-  echo "  engines default to parakeet,profiled — add track engines as they land" >&2
+  echo "  engines default to parakeet,short — e.g. parakeet,short,streaming,profiled" >&2
   exit 1
 fi
 
@@ -38,6 +38,8 @@ swift build -c release --scratch-path "$TMP/build" --product whisp-bench 2>&1 | 
 BENCH="$TMP/build/release/whisp-bench"
 
 # --- candidate models from draft release -------------------------------------
+# Engines that accept out-of-cache bundles honour $WHISP_MODEL_DIR (a scratch
+# dir the trap deletes) — nothing lands in ~/Library/Application Support.
 DL=0
 if command -v gh >/dev/null 2>&1; then
   TAG="$(gh release list -R bisheshabramhacharya/whisp --limit 50 2>/dev/null | awk '$1 ~ /^speed-models-/ {print $1; exit}' || true)"
