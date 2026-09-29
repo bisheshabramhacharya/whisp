@@ -19,7 +19,7 @@ confirm. Every claim cites the command that produced it in `docs/speed-log*.md`.
 | 3 | Streaming decode during capture (`asrEngine streaming`) | release→text = `finish()` ≈ 80–90 ms VM | kills the whole tail decode — only the right-context flush remains | **gate risk**: word agreement vs parakeet = 0.9602 (t640) / 0.9818 (t1120) / 0.9891 (t2080) — diffs are mostly ITN style ("72" vs "seventy two"); WER-vs-refs arbitrates | med — new decode path, batch fallback | **pending — agreement < 99.5% gate** | — |
 | 4a | FastRnnt wide-joint (`fast`, `fastall`) | joint calls ~120→46 per decode; VM-CPU p50 194.9 vs 193.4 — a wash on CPU (each call does 72× FLOPs) | dispatch-bound → **ANE is where it pays**; needs-M1 verdict | byte-identical transcripts (dictation+edge+test-clean dumps) | low — opt-in engine | shipped, needs-M1 | [#26](https://github.com/bisheshabramhacharya/whisp/pull/26) |
 | 4b | Parallel tail lane (`par2` engine, `unifiedLanes`) | wait = `max(rem,tail)` vs `rem+tail`; p95 357→309 ms at +0 offset | shrinks p95 on releases racing a decode; +600 MB/lane memory | text path unchanged — same decode of the same span | low — opt-in, default 1 lane = today | shipped | [#27](https://github.com/bisheshabramhacharya/whisp/pull/27) |
-| 4c | Speculation pause 200→150 ms | stitched: +100 ms p50 82 vs 111, +150 p50 32 vs 71 | earlier speculation → more releases hit spec-hit | last-word 100% at 150 ms; 100 ms fails (mid-word dips) | low — one constant (env-overridable) | **edge validation in flight** | [#27](https://github.com/bisheshabramhacharya/whisp/pull/27) |
+| 4c | Speculation pause 200→**180** ms | stitched: release-wait p50 −14 ms at +100/+150 offsets | earlier speculation → more releases hit spec-hit | **150 ms failed edge**: quiet-variant last-word 77.8% vs 83.3%; 180 ms keeps every offset identical to 200 | low — one constant (env-overridable) | shipped | [#27](https://github.com/bisheshabramhacharya/whisp/pull/27) |
 | 5 | Prewarm cleaner + dictionary at launch | clean() warm cost off critical path | removes 46–67 ms **first-take** cleanup | identical (same code, earlier) | none | shipped | [#23](https://github.com/bisheshabramhacharya/whisp/pull/23) |
 | 6 | Frontmost recheck before Cmd+V | none (µs read) | none — correctness, not speed | identical | none | shipped | [#24](https://github.com/bisheshabramhacharya/whisp/pull/24) |
 | 7 | `WHISP_MODEL_DIR` scan in ShortWindowEngine | none | none — enables the M1 check's ≤1 GB scratch assets | identical | none | shipped | [#25](https://github.com/bisheshabramhacharya/whisp/pull/25) |
@@ -70,10 +70,14 @@ From Track B's log (`docs/speed-log-b.md`):
 
 Lead audit items (from the independent review at 098dac7):
 
-- Mic stop discards post-release buffer (MicRecorder.swift:190-205) — **Track D owns the fix**;
-  replay `--mic-drop` quantifies it (in-flight IO quantum up to ~100 ms at risk).
-- Permission loss leaves capture running (DictationController:173-179) — correctness, tracked.
-- Cancelled work keeps decoding (DictationController:312-328) — wastes CPU, tracked.
+- Mic stop discards post-release buffer (MicRecorder.swift:190-205) — **dead end, measured**:
+  ~4% last-word loss at +0 release; no latency-free fix inside the owned files — the real fix is
+  draining the final audio buffer at release (MicRecorder, needs careful device-level work;
+  flagged for a follow-up, not this run).
+- Permission loss leaves capture running — **shipped**: `hotkeyPermissionLost` now cancels
+  capture (`if isRecording { cancelCapture() }`). speed/all @ 303ad8d.
+- Cancelled work keeps decoding — **shipped**: `enqueueTranscription` bails at task start when
+  `id <= cancelledThrough` — an Esc during the wait never spends a decode. speed/all @ 303ad8d.
 - Learner LCS O(n·m) on main (CorrectionLearner:76-101) — **shipped**: `diff` early-outs on
   unchanged text (the common case; output-identical). Prefix/suffix stripping rejected: it
   changes the LCS alignment and thus the learned blocks — kept the full table for edits.
