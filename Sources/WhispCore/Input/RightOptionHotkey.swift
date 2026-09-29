@@ -12,7 +12,8 @@ import Foundation
 ///                                                  distinguishable)
 ///   flagsChanged(other mods)  -> .otherKey          (only when a modifier bit is *newly* set)
 ///   keyDown(keyCode 53)       -> .escape
-///   keyDown(anything else)    -> .otherKey
+///   keyDown(anything else)    -> .characterKey  (a non-modifier press — always a
+///                                              chord while our key is held)
 ///
 /// The tap is re-enabled automatically if the system disables it for timeout/user
 /// input. `start()` throws `HotkeyError.permissionDenied` when the tap cannot be
@@ -161,7 +162,7 @@ public final class RightOptionHotkey: HotkeyMonitoring {
             if eventKeyCode == 53 { // kVK_Escape
                 emit(machine.handle(.escape, now: now))
             } else {
-                emit(machine.handle(.otherKey, now: now))
+                emit(machine.handle(.characterKey, now: now))
             }
 
         default:
