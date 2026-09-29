@@ -144,7 +144,17 @@ extension ShortWindowEngine {
             rnnt = try UnifiedGreedyRnnt(
                 decoderModel: decoder!, jointModel: joint!, config: config)
 
+            // WHISP_MODEL_DIR lets the M1 check point at a scratch dir of
+            // downloaded candidate bundles instead of touching the cache.
+            var extra: [WindowVariant] = []
+            if let env = ProcessInfo.processInfo.environment["WHISP_MODEL_DIR"] {
+                extra = Self.discoverVariants(in: URL(fileURLWithPath: env))
+            }
             variants = Self.discoverVariants(in: dir)
+            for variant in extra where variants.allSatisfy({ $0.windowSamples != variant.windowSamples }) {
+                variants.append(variant)
+            }
+            variants.sort { $0.windowSamples < $1.windowSamples }
             for variant in variants {
                 let model = try await MLModel.load(contentsOf: variant.url, configuration: encConfig)
                 encoders[variant.windowSamples] = model
