@@ -131,3 +131,7 @@ wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 �
 After the `gen-edge.sh` header fix (432 files now load through `loadSamples16kMono`):
 `--compare parakeet,short --runs 1 --idle 0` on the first 40 edge files →
 **agree 1.0000**, WER identical (9.17 both), decode 127.2→56.8 ms. Full-432 run in flight.
+
+Full-432 edge compare on speed/all: `parakeet` vs `short` → **agree 1.0000**,
+WER identical 8.57/8.57, decode 130.1→59.4 ms (−54%). `short` is now verified
+word-identical on dictation-300 AND edge-432 (no test-clean regression: 2.24 vs 2.36).
