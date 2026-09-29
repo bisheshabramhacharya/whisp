@@ -26,7 +26,7 @@ def read_wav(path):
 
 def write_wav(path, samples):
     pcm = struct.pack('<%df' % len(samples), *samples)
-    hdr = b'RIFF' + struct.pack('<I', 36+len(pcm)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16,3,1,16000,64000,4,16) + b'data' + struct.pack('<I', len(pcm))
+    hdr = b'RIFF' + struct.pack('<I', 36+len(pcm)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16,3,1,16000,64000,4,32) + b'data' + struct.pack('<I', len(pcm))
     open(path,'wb').write(hdr+pcm)
 
 def rms(x):

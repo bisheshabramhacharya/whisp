@@ -74,6 +74,16 @@ public final class CorrectionLearner {
     /// deletions (`to` empty) — in order. `atEnd` marks a block holding the
     /// last word(s) of `a`: its `to` also swallows everything after them in `b`.
     static func diff(_ a: [String], _ b: [String]) -> [(from: [String], to: [String], atEnd: Bool)] {
+        // Unchanged text is the common case (the watcher reviews every paste);
+        // skip the O(n*m) table entirely — equal arrays can produce no blocks.
+        guard a != b else { return [] }
+        // Only the middle can hold blocks: size the table to the edit, not the take.
+        var lo = 0
+        while lo < a.count, lo < b.count, a[lo] == b[lo] { lo += 1 }
+        var hi = 0
+        while hi < a.count - lo, hi < b.count - lo, a[a.count - 1 - hi] == b[b.count - 1 - hi] { hi += 1 }
+        let tailMatched = hi > 0
+        let a = Array(a[lo..<(a.count - hi)]), b = Array(b[lo..<(b.count - hi)])
         // LCS table over exact word equality (a case change is a change).
         var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
@@ -97,7 +107,7 @@ public final class CorrectionLearner {
             }
         }
         fa += a[i...]; fb += b[j...]
-        flush(atEnd: !fa.isEmpty)
+        flush(atEnd: !fa.isEmpty && !tailMatched)
         return blocks
     }
 
@@ -293,12 +303,18 @@ public final class PendingCorrections {
 
     private let fileURL: URL
     private var entries: [Entry] = []
+    /// The file existed but wouldn't decode — don't write our in-memory state
+    /// over it (same never-clobber rule as the dictionary file).
+    private var fileUnreadable = false
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
-            entries = decoded
+        if let data = try? Data(contentsOf: fileURL) {
+            if let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
+                entries = decoded
+            } else {
+                fileUnreadable = true
+            }
         }
     }
 
@@ -333,7 +349,8 @@ public final class PendingCorrections {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
+        guard !fileUnreadable,
+              let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 }

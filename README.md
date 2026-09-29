@@ -151,7 +151,7 @@ Whisp when you need the original chord.
 
 ```sh
 swift build                                   # debug build
-swift run -c release whisp-tests              # tests
+swift run -c release whisp-tests              # tests (WHISP_TEST_PASTEBOARD=1 adds the real-clipboard ones)
 swift run -c release whisp-bench clip.wav     # speed + accuracy benchmark
 ```
 

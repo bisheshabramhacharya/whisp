@@ -66,6 +66,10 @@ public struct ReleaseReplayer {
 
     /// The transcriber every decode goes through (engine under test).
     private let transcribe: (ArraySlice<Float>) async throws -> String
+    /// When the engine under test decodes live (`LiveDecoding`), releases are
+    /// simulated by feeding the captured audio in 100 ms slices and timing
+    /// `finish()` — the chunk/speculate event pass is skipped.
+    private let live: (any LiveDecoding)?
     /// Audio the app's `stop()` would drop: the in-flight IO quantum the real
     /// MicRecorder discards. Simulated releases truncate at
     /// `releaseAt - micDropSamples`.
@@ -73,6 +77,7 @@ public struct ReleaseReplayer {
 
     public init(transcriber: Transcribing, micDropSamples: Int = 0) {
         self.transcribe = { slice in try await transcriber.transcribe(Array(slice)) }
+        self.live = transcriber as? LiveDecoding
         self.micDropSamples = micDropSamples
     }
 
@@ -169,6 +174,18 @@ public struct ReleaseReplayer {
         // Reference: whole-clip decode, untruncated.
         let fullText = try await transcribe(samples[...])
         let lastWordEnd = Self.lastWordEnd(samples)
+
+        // LiveDecoding engine: each simulated release feeds the captured audio
+        // like the mic would have, then finish() is the release wait.
+        if let live {
+            let outcomes = try await streamingReleases(
+                live, samples: samples, lastWordEnd: lastWordEnd,
+                offsets: offsets, fullText: fullText)
+            return ReplayReport(
+                file: file, durationMs: samples.count / 16,
+                lastWordEndSample: lastWordEnd, fullText: fullText, outcomes: outcomes)
+        }
+
         let events = await collectEvents(samples)
 
         var outcomes: [ReleaseOutcome] = []
@@ -188,6 +205,55 @@ public struct ReleaseReplayer {
         return ReplayReport(
             file: file, durationMs: samples.count / 16,
             lastWordEndSample: lastWordEnd, fullText: fullText, outcomes: outcomes)
+    }
+
+    /// Token identifying one simulated take for `LiveDecoding` (the app passes
+    /// its `LiveChunks`); a fresh instance per release keeps takes isolated.
+    private final class StreamTakeToken {}
+
+    /// One fresh take per simulated release: feed the audio the capture would
+    /// have held at `releaseAt` in 100 ms slices (decode overlaps capture, as
+    /// live), then `finish()` is the wait. In-flight feed remainder is bounded
+    /// to one ~100 ms feed on the real path and is not modelled here.
+    private func streamingReleases(
+        _ live: any LiveDecoding, samples: [Float], lastWordEnd: Int,
+        offsets: [Int], fullText: String
+    ) async throws -> [ReleaseOutcome] {
+        var outcomes: [ReleaseOutcome] = []
+        var feedMs = 0.0
+        for offset in offsets {
+            // Same rule as the offline path: a release beyond the clip end
+            // never occurred, so it isn't simulated.
+            let releaseAt = lastWordEnd + offset * 16
+            guard releaseAt <= samples.count else { continue }
+            let captured = max(0, releaseAt - micDropSamples)
+            let take = StreamTakeToken()
+            var fed = 0
+            let feedTick = ProcessInfo.processInfo.environment["WHISP_FEED_TICK"].flatMap(Int.init) ?? SpeechSegmenter.tick
+            while fed < captured {
+                let end = min(fed + feedTick, captured)
+                let tFeed = DispatchTime.now().uptimeNanoseconds
+                try await live.feed(Array(samples[fed..<end]), take: take)
+                feedMs += Double(DispatchTime.now().uptimeNanoseconds - tFeed) / 1e6
+                fed = end
+            }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let text = try await live.finish(take: take)
+            let wait = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            outcomes.append(ReleaseOutcome(
+                offsetMs: offset, waitMs: wait, text: text,
+                lastWordSurvived: Self.lastWordSurvives(releaseText: text, fullText: fullText),
+                speculationHit: false))
+        }
+        // Feed busy% = total time spent inside feed() across all simulated
+        // releases vs the audio they covered — the live-path CPU tax.
+        let fedAudio = Double(outcomes.count * max(0, lastWordEnd - micDropSamples)) / 16.0
+        if fedAudio > 0 {
+            print(String(
+                format: "  [streaming] feed-busy %.0f ms over %d releases = %.1f%% of captured audio",
+                feedMs, outcomes.count, 100 * feedMs / fedAudio))
+        }
+        return outcomes
     }
 
     /// One simulated release: live state at `releaseAt`, the app's `finish()`

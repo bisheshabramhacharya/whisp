@@ -11,7 +11,7 @@ public enum ASREngine {
     public static let defaultName = "parakeet"
 
     /// Every name `make(named:)` accepts. Kept in sync with the switch.
-    public static let knownNames: [String] = ["parakeet", "short"]
+    public static let knownNames: [String] = ["parakeet", "short", "streaming", "par2", "fast", "fastall"]
 
     public static func isKnown(_ name: String) -> Bool {
         knownNames.contains(name)
@@ -26,6 +26,18 @@ public enum ASREngine {
             return ParakeetTranscriber()
         case "short":
             return ShortWindowEngine()
+        case "streaming":
+            return StreamingEngine()
+        // "par2": second decode lane for mid-chunk releases (waits max(rem,tail)
+        // instead of rem+tail). Costs ~600 MB for the extra model set — opt-in.
+        case "par2":
+            return ParakeetTranscriber(model: .unified, unifiedLanes: 2)
+        // "fast"/"fastall": one wide-joint call per emitted token instead of the
+        // ~120-step joint loop; byte-identical output. Hypothesis is ANE wins.
+        case "fast":
+            return FastRnnt(jointComputeUnits: .cpuOnly)
+        case "fastall":
+            return FastRnnt(jointComputeUnits: .all)
         default:
             return ParakeetTranscriber()
         }

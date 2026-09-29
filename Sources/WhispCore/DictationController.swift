@@ -175,6 +175,7 @@ public final class DictationController: ObservableObject {
     public func hotkeyPermissionLost() {
         guard isHotkeyRunning else { return }
         stopHotkey()
+        if isRecording { cancelCapture() }
         statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
     }
 
@@ -371,6 +372,20 @@ public final class DictationController: ObservableObject {
 
     private func transcribeFinishedChunk(_ chunks: LiveChunks) {
         guard chunks.inFlight == nil, !chunks.failed else { return }
+        // LiveDecoding engines (asrEngine=streaming): forward each ~100 ms of
+        // new audio to the streaming decoder instead of cutting at pauses —
+        // the transcript is already decoding while the user talks.
+        if let live = transcriber as? LiveDecoding {
+            let pending = recorder.samples(from: chunks.committed)
+            guard !pending.isEmpty else { return }
+            chunks.committed += pending.count
+            chunks.inFlight = Task {
+                do { try await live.feed(pending, take: chunks) }
+                catch { chunks.failed = true }
+                chunks.inFlight = nil
+            }
+            return
+        }
         let pending = recorder.samples(from: chunks.committed)
         guard let cut = SpeechSegmenter.nextCut(in: pending) else {
             speculate(on: pending, chunks)
@@ -409,11 +424,14 @@ public final class DictationController: ObservableObject {
     /// When a decode is still in flight at release and the tail's span is already final
     /// (non-silent tails can't rewind and have no usable speculation), the tail decode
     /// starts immediately so a parallel-capable transcriber overlaps it with the
-    /// in-flight one. On a serial transcriber it queues identically to today.
+    /// in-flight one. Serial transcribers skip it: the early decode could only queue
+    /// behind the in-flight one, and it is wasted when that in-flight speculation
+    /// ends up covering the tail.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
         var earlyTail: Task<String, Error>?
-        if chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
+        let parallel = ((transcriber as? ParakeetTranscriber)?.unifiedLanes ?? 1) > 1
+        if parallel, chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
             let spec = chunks.speculation.flatMap {
                 $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil
             }
@@ -426,6 +444,21 @@ public final class DictationController: ObservableObject {
             }
         }
         await chunks.inFlight?.value
+        // LiveDecoding engines (asrEngine=streaming): the take is already
+        // decoded — feed the tail buffer captured since the last tick, then
+        // finish() flushes the held-back right context. A failed feed falls
+        // back to the whole-clip decode.
+        if let live = transcriber as? LiveDecoding {
+            if chunks.failed { return try await transcriber.transcribe(samples) }
+            if chunks.committed < samples.count {
+                do {
+                    try await live.feed(Array(samples[chunks.committed...]), take: chunks)
+                } catch {
+                    return try await transcriber.transcribe(samples)
+                }
+            }
+            return try await live.finish(take: chunks)
+        }
         if chunks.failed {
             earlyTail?.cancel()
             return try await transcriber.transcribe(samples)
@@ -460,6 +493,8 @@ public final class DictationController: ObservableObject {
 
         let transcription = Task { [weak self] () -> Result<(String, Int), Error> in
             guard let self else { return .failure(CancellationError()) }
+            // Esc between enqueue and task start: don't spend a decode on a dead clip.
+            guard id > self.cancelledThrough else { return .failure(CancellationError()) }
             let start = DispatchTime.now()
             do {
                 let raw = try await self.transcribe(samples, chunks: chunks)
