@@ -447,16 +447,18 @@ do {
            "shrunk", "buffer releases take-size capacity after stop()")
 }
 
-// A character key pressed while Right Option is held is always an Option+char
-// chord (@, Option+Backspace, ...) — cancel at any hold length. chordGrace only
-// covers modifier presses; users dwell on Option for seconds before typing.
+// A character key early in a Right Option hold is an Option+char chord
+// (@, Option+Backspace, ...) even after a dwell — cancel within characterGrace.
+// Later it's a stray key during real dictation and must not discard the take.
 do {
     func run(_ inputs: [(HotkeyStateMachine.Input, Double)]) -> String {
         var m = HotkeyStateMachine()
         return inputs.map { m.handle($0.0, now: $0.1).map { "\($0)" } ?? "-" }.joined(separator: " ")
     }
-    expect(run([(.keyDown, 0), (.characterKey, 1), (.keyUp, 1.1)]), "start cancel -",
-           "late Option+char cancels")
+    expect(run([(.keyDown, 0), (.characterKey, 0.8), (.keyUp, 0.9)]), "start cancel -",
+           "Option+char after a dwell cancels")
+    expect(run([(.keyDown, 0), (.characterKey, 3), (.keyUp, 4)]), "start - stop",
+           "stray key mid-dictation keeps the take")
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.characterKey, 1.2), (.keyUp, 1.3)]),
            "start cancel start cancel -", "Option+char cancels a second hold")
     // Hands-free: our key is physically up — typed characters are just typing.

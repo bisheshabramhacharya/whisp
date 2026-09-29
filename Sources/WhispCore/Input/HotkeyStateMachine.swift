@@ -16,10 +16,10 @@ import Foundation
 ///   - Another *modifier* pressed within `chordGrace` (0.3 s) of a non-hands-free
 ///     hold start -> `.cancel` (the user is doing Option+Cmd+X, not dictating).
 ///     After the grace window modifier presses are ignored.
-///   - A *character* key pressed while our key is held -> `.cancel` at any hold
-///     length: it's always an Option+char chord (@, Option+Backspace, ...), never
-///     dictation, so chordGrace doesn't apply — users may dwell on Option for
-///     seconds before finding the letter.
+///   - A *character* key pressed within `characterGrace` (1 s) of a hold start
+///     -> `.cancel`: an Option+char chord (@, Option+Backspace, ...) where the user
+///     dwelt on Option before finding the letter. Later it's a stray key during a
+///     real dictation and is ignored, so the take isn't thrown away.
 ///   - Esc while recording (hold, second hold, or hands-free)   -> `.cancel`.
 ///   - Esc while not recording -> `.cancel` too; the controller uses it to drop a
 ///     dictation that is still transcribing and ignores it otherwise.
@@ -62,16 +62,19 @@ public struct HotkeyStateMachine {
     public var holdThreshold: TimeInterval
     public var doubleTapWindow: TimeInterval
     public var chordGrace: TimeInterval
+    public var characterGrace: TimeInterval
 
     /// When the last *tap* (short hold) was released; drives the double-tap window.
     private var lastTapRelease: TimeInterval = -.greatestFiniteMagnitude
 
     public init(holdThreshold: TimeInterval = 0.25,
                 doubleTapWindow: TimeInterval = 0.4,
-                chordGrace: TimeInterval = 0.3) {
+                chordGrace: TimeInterval = 0.3,
+                characterGrace: TimeInterval = 1.0) {
         self.holdThreshold = holdThreshold
         self.doubleTapWindow = doubleTapWindow
         self.chordGrace = chordGrace
+        self.characterGrace = characterGrace
     }
 
     /// Feed one input; returns the event to deliver (if any).
@@ -116,9 +119,8 @@ public struct HotkeyStateMachine {
             return nil
 
         // MARK: Other keys (Option+X chord detection)
-        // A character key while our key is held is always a chord, at any hold
-        // length — nobody holds Right Option to dictate and types a letter too.
-        case (.holding, .characterKey), (.secondHold, .characterKey):
+        case (.holding(let since), .characterKey), (.secondHold(let since), .characterKey):
+            guard now - since < characterGrace else { return nil }
             state = .idle
             return .cancel
 
