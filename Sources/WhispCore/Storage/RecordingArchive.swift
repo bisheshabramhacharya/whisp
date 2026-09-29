@@ -6,10 +6,16 @@ public final class RecordingArchive: Sendable {
 
     public let directory: URL
     public let sampleRate: Int
+    /// Total size cap for `directory`. Once a save pushes the folder past it,
+    /// the oldest WAVs are deleted first so recordings can't grow without
+    /// bound. ~17.5 h of 16 kHz PCM16 by default.
+    public let maxTotalBytes: UInt64
 
-    public init(directory: URL = AppPaths.recordingsDir, sampleRate: Int = 16_000) {
+    public init(directory: URL = AppPaths.recordingsDir, sampleRate: Int = 16_000,
+                maxTotalBytes: UInt64 = 2_000_000_000) {
         self.directory = directory
         self.sampleRate = sampleRate
+        self.maxTotalBytes = maxTotalBytes
     }
 
     /// Writes a RIFF/WAVE PCM16 file. Returns the file URL.
@@ -18,7 +24,35 @@ public final class RecordingArchive: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(id).wav")
         try wavData(samples).write(to: url, options: .atomic)
+        AppPaths.makeUserOnly(url)
+        prune(keeping: url)
         return url
+    }
+
+    /// Deletes oldest-first until the WAVs in `directory` fit `maxTotalBytes`.
+    /// `keeping` is never deleted, even when it alone exceeds the cap.
+    private func prune(keeping: URL) {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey]
+        guard let urls = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))
+        else { return }
+        var total: UInt64 = 0
+        var wavs: [(url: URL, size: Int, mtime: Date)] = []
+        for url in urls where url.pathExtension == "wav" {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  let size = values.fileSize else { continue }
+            total += UInt64(size)
+            wavs.append((url, size, values.contentModificationDate ?? .distantPast))
+        }
+        let kept = keeping.resolvingSymlinksInPath()
+        for wav in wavs.sorted(by: { $0.mtime < $1.mtime }) {
+            guard total > maxTotalBytes else { return }
+            // contentsOfDirectory resolves symlinks (e.g. /var -> /private/var),
+            // so compare resolved paths, not the original URLs.
+            guard wav.url.resolvingSymlinksInPath() != kept else { continue }
+            try? fm.removeItem(at: wav.url)
+            total -= UInt64(wav.size)
+        }
     }
 
     // MARK: - WAV encoding (PCM16, mono, little-endian)
