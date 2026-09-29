@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import WhispCore
@@ -21,6 +22,24 @@ enum Composition {
         let paster = Paster()
         let dictionary = PersonalDictionary(fileURL: AppPaths.dictionaryFile)
         let cleaner = FillerCleaner(dictionary: dictionary)
+        // Auto-learn: after each paste, the watcher reviews the pasted span once
+        // (next dictation / app switch / 90 s) and folds small owner fixes into
+        // dictionary.json. NSSpellChecker decides "real word" for the
+        // pending-twice gate — cheap and matches what the system underlines.
+        let learner = CorrectionLearner { word in
+            NSSpellChecker.shared.checkSpelling(
+                of: word, startingAt: 0, language: "en", wrap: false,
+                inSpellDocumentWithTag: 0, wordCount: nil
+            ).location == NSNotFound
+        }
+        let learnWatcher = EditWatcher(
+            learner: learner,
+            dictionaryFile: AppPaths.dictionaryFile,
+            pendingFile: AppPaths.pendingCorrectionsFile
+        ) { settings.learnFromCorrections }
+        paster.onInserted = { [weak learnWatcher] context, text, pid in
+            learnWatcher?.record(context, text: text, pid: pid)
+        }
         let muter = RealAudioMuter()
         let sounds = RealSounds(settings: settings)
         // Dictionary terms are applied as text fixes by the cleaner (reloaded on
@@ -39,6 +58,7 @@ enum Composition {
             history: history,
             recordings: recordings
         )
+        controller.correctionWatcher = learnWatcher
 
         // Status lines arrive on the main thread; the hop keeps the
         // @MainActor controller access explicit. Weak: the transcriber (which
@@ -54,7 +74,8 @@ enum Composition {
             settings: settings,
             history: history,
             permissions: RealPermissions(),
-            pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster)
+            pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster),
+            learnWatcher: learnWatcher
         )
     }
 }
