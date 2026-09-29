@@ -115,6 +115,7 @@ public struct CompareRunner {
         switch name {
         case "parakeet", "baseline": return ParakeetTranscriber()
         case "profiled": return ProfiledTranscriber()
+        case "short": return ShortWindowEngine()
         default: throw CompareError.unknownEngine(name)
         }
     }

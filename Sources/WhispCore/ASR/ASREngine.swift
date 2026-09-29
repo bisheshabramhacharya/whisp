@@ -11,7 +11,7 @@ public enum ASREngine {
     public static let defaultName = "parakeet"
 
     /// Every name `make(named:)` accepts. Kept in sync with the switch.
-    public static let knownNames: [String] = ["parakeet"]
+    public static let knownNames: [String] = ["parakeet", "short"]
 
     public static func isKnown(_ name: String) -> Bool {
         knownNames.contains(name)
@@ -24,6 +24,8 @@ public enum ASREngine {
         switch name {
         case "parakeet":
             return ParakeetTranscriber()
+        case "short":
+            return ShortWindowEngine()
         default:
             return ParakeetTranscriber()
         }
