@@ -406,13 +406,41 @@ public final class DictationController: ObservableObject {
     }
 
     /// Chunk transcripts first, then the tail. Falls back to the whole clip if any chunk failed.
+    /// When a decode is still in flight at release and the tail's span is already final
+    /// (non-silent tails can't rewind and have no usable speculation), the tail decode
+    /// starts immediately so a parallel-capable transcriber overlaps it with the
+    /// in-flight one. On a serial transcriber it queues identically to today.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
+        var earlyTail: Task<String, Error>?
+        if chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
+            let spec = chunks.speculation.flatMap {
+                $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil
+            }
+            let specCovers = spec.map {
+                SpeechSegmenter.quietAfter(samples, start: chunks.committed, end: $0.end)
+            } ?? false
+            if !specCovers, !SpeechSegmenter.isNearSilent(Array(samples[chunks.committed...])) {
+                let tail = Array(samples[chunks.committed...])
+                earlyTail = Task { [transcriber] in try await transcriber.transcribe(tail) }
+            }
+        }
         await chunks.inFlight?.value
         if chunks.failed {
+            earlyTail?.cancel()
             return try await transcriber.transcribe(samples)
         }
-        let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? ($0.end, $0.text) : nil }
+        let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil }
+        if let earlyTail {
+            // A speculation that completed during the wait still wins, as finish() would use it.
+            let covers = speculation.map {
+                SpeechSegmenter.quietAfter(samples, start: chunks.committed, end: $0.end)
+            } ?? false
+            if !covers {
+                return SpeechSegmenter.join(chunks.texts + [try await earlyTail.value])
+            }
+            earlyTail.cancel()
+        }
         return try await SpeechSegmenter.finish(
             samples, chunkStarts: chunks.starts, texts: chunks.texts, committed: chunks.committed,
             speculation: speculation, transcriber: transcriber)
