@@ -370,6 +370,55 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - Lead storage
+
+// Dictation data is private: the data dir and every file in it must be
+// readable only by the owner (~/Library/Application Support is world-readable).
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-root-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    setenv("WHISP_DATA_DIR", dir.path, 1)
+    func perm(_ url: URL) -> String {
+        let attrs = try! FileManager.default.attributesOfItem(atPath: url.path)
+        return String(format: "%o", attrs[.posixPermissions] as! Int)
+    }
+    try! AppPaths.ensureDirectories()
+    expect(perm(AppPaths.root), "700", "data dir is user-only")
+    expect(perm(AppPaths.recordingsDir), "700", "recordings dir is user-only")
+    let permHistory = HistoryStore(fileURL: AppPaths.historyFile)
+    try! permHistory.append(HistoryEntry(id: "t1", date: Date(), durationSec: 1, raw: "r", cleaned: "c", latencyMs: 1))
+    expect(perm(AppPaths.historyFile), "600", "history file is user-only")
+    AppPaths.ensureDictionaryTemplate()
+    expect(perm(AppPaths.dictionaryFile), "600", "dictionary file is user-only")
+    let permArchive = RecordingArchive(directory: AppPaths.recordingsDir)
+    _ = try! permArchive.save(samples: [0.1, 0.2], id: "t1")
+    expect(perm(AppPaths.recordingsDir.appendingPathComponent("t1.wav")), "600", "wav is user-only")
+}
+
+// Recordings prune: oldest WAVs are deleted once the folder passes the cap,
+// and the file just saved is never the one deleted.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-cap-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // ~32 KB per one-second WAV; 100 KB cap prunes the two oldest of four.
+    let archive = RecordingArchive(directory: dir, maxTotalBytes: 100_000)
+    let wav = [Float](repeating: 0.1, count: 16_000)
+    for id in ["a", "b", "c"] { _ = try! archive.save(samples: wav, id: id) }
+    for (id, age) in [("a", -300.0), ("b", -200.0), ("c", -100.0)] {
+        try! FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(age)],
+            ofItemAtPath: dir.appendingPathComponent("\(id).wav").path)
+    }
+    _ = try! archive.save(samples: wav, id: "d")
+    let files = try! FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+    expect(files.description, "[\"b.wav\", \"c.wav\", \"d.wav\"]", "prunes oldest beyond cap")
+    // A single file larger than the cap is still kept.
+    let small = RecordingArchive(directory: dir, maxTotalBytes: 1_000)
+    _ = try! small.save(samples: wav, id: "huge")
+    expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("huge.wav").path).description,
+           "true", "just-saved wav is never pruned")
+}
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
