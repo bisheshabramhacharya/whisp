@@ -95,12 +95,15 @@ gh release create speed-models-2026-09-29 --draft --repo bisheshabramhacharya/wh
 
 # then, from a clone at speed/all (or the PR head):
 scripts/speed/m1-check.sh /path/to/recordings-folder parakeet,short
-# optional wider sweep: parakeet,short,streaming,profiled
+# optional wider sweep: parakeet,short,fast,streaming,par2,profiled
 ```
 
 Downloads ≤1 GB into a scratch dir (auto-deleted; `WHISP_MODEL_DIR` keeps the owner's
 model cache untouched), prints stage timings + replay waits + word agreement + LibriSpeech
 WER, and the `defaults write com.bishesha.whisp asrEngine short` line to try it live.
+(Caveat: the `fast`/`par2`/`streaming` engines pull small extra FluidAudio bundles —
+`parakeet_unified_joint` and the streaming encoders, tens of MB — via ModelHub into the
+normal model cache on first use, same as any app update would.)
 
 ## Can p50 ≤ 100 ms land on the M1?
 
