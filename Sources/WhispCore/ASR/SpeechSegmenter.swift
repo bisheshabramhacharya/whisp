@@ -9,8 +9,8 @@ import Foundation
 /// Input is 16 kHz mono Float32, same as `Transcribing`.
 public enum SpeechSegmenter {
 
-    /// How often the live loop looks for a cut.
-    public static let tick = 16_000 / 4  // 250 ms
+    /// How often the live loop looks for a cut or a pause to speculate in.
+    public static let tick = 16_000 / 10  // 100 ms
     /// Don't cut before this much new audio — short chunks give the model too little context.
     public static let minChunk = 6 * 16_000
     /// With no pause found, cut anyway once this much audio is pending. Kept under the
@@ -19,6 +19,10 @@ public enum SpeechSegmenter {
     public static let forceChunk = 14 * 16_000
     /// A pause must be at least this long to cut in it.
     static let minPauseFrames = 35  // 350 ms
+    /// A pause this long is enough to decode ahead of release: most releases come
+    /// sooner than 350 ms after the last word, and a speculation is only used when
+    /// nothing audible follows it, so starting early can't change the text.
+    static let speculatePauseFrames = 20  // 200 ms
     static let frame = 160  // 10 ms
 
     /// Where to cut `samples` (audio pending since the last cut), or nil to wait for more.
@@ -74,7 +78,7 @@ public enum SpeechSegmenter {
         let energies = frameEnergies(samples)
         guard let loud = percentile(energies, 0.9), loud > 0 else { return false }
         let threshold = pauseThreshold(loud: loud)
-        return energies.suffix(minPauseFrames).allSatisfy { $0 < threshold }
+        return energies.suffix(speculatePauseFrames).allSatisfy { $0 < threshold }
     }
 
     /// Whether nothing from `end` on would be kept as speech next to `samples[start..<end]`,
@@ -83,8 +87,36 @@ public enum SpeechSegmenter {
         guard end < samples.count else { return true }
         let rest = Array(samples[end...])
         guard isNearSilent(rest) else { return false }
-        let peak = frameEnergies(Array(samples[start..<end])).max() ?? 0
-        return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: peak)
+        // Same reference as trimSpeech on samples[start...], so this predicts exactly
+        // what a re-decode would keep.
+        let loud = percentile(frameEnergies(Array(samples[start...])), 0.9) ?? 0
+        return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: loud)
+    }
+
+    /// Trim leading/trailing near-silence with a 150 ms safety margin.
+    /// A frame counts as speech when its RMS exceeds `speechThreshold` of the clip's
+    /// 90th-percentile frame — a percentile, not the max, so one cough or bump can't
+    /// raise the bar past quiet edge words.
+    public static func trimSpeech(_ samples: [Float]) -> [Float] {
+        let margin = 2400  // 150 ms
+        let frameCount = samples.count / frame
+        guard frameCount > 2 else { return samples }
+
+        let energies = frameEnergies(samples)
+        guard let peak = energies.max(), peak > 0 else { return [] }
+        let loud = percentile(energies, 0.9) ?? peak
+        let threshold = speechThreshold(peak: loud)
+
+        var first = 0
+        while first < frameCount, energies[first] < threshold { first += 1 }
+        var last = frameCount - 1
+        while last > first, energies[last] < threshold { last -= 1 }
+        guard first <= last else { return [] }
+
+        let start = max(0, first * frame - margin)
+        let end = min(samples.count, (last + 1) * frame + margin)
+        guard end > start else { return [] }
+        return Array(samples[start..<end])
     }
 
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
@@ -121,7 +153,7 @@ public enum SpeechSegmenter {
     /// during a pause; it is the tail's text when nothing audible came after it.
     /// A near-silent tail may still hold quiet trailing words the silence gate would
     /// drop, so the last chunk is then re-decoded together with it — unless no tail
-    /// frame reaches the level `trimSilence` would keep as speech next to that chunk,
+    /// frame reaches the level `trimSpeech` would keep as speech next to that chunk,
     /// in which case the re-decode would see the same audio and is skipped.
     public static func finish(
         _ samples: [Float], chunkStarts: [Int], texts: [String], committed: Int,
