@@ -109,3 +109,19 @@ wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 �
 
 - **corrections-pending clobber** (PR #28, merged 83ad3e7): undecodable file → `fileUnreadable` → `save()` skips. Never-clobber rule now holds.
 - **LCS quadratic on unchanged text** (PR #30, merged 83ad3e7): `a == b` early-out skips the O(n·m) table (audit: 59 ms/69 MB @ 3 000 words). Prefix/suffix strip evaluated and rejected — interior words can LCS-match suffix words (a="x A"/b="y x A": substitution vs insertion), so it changes learned blocks; table kept for edited text. Not release-path work.
+
+## Track D round 2 + Track A edge fix
+
+- `speculatePauseFrames` 20→18 (200→180 ms): edge grid — 150 ms drops a quiet-variant
+  last word (77.8% vs 83.3%); 180 ms matches 200 at every offset; dictation subset
+  wait p50 −14 ms at +100/+150. Shipped via PR #29 (`speed/track-d-runtime`).
+- Audit folds in `DictationController` (same PR): `enqueueTranscription` bails when
+  `id <= cancelledThrough` at task start (Esc no longer spends a decode);
+  `hotkeyPermissionLost` cancels capture (was running to the 10-min cap).
+- Track A bug fixed: `gen-edge.sh` wrote `bitsPerSample=16` on float32 data →
+  `AVAudioFile` rejected every edge file. Header now 32; **432-file edge set
+  regenerated and loads cleanly through `loadSamples16kMono`** (verified on
+  cmd-000-*.wav batch). Earlier edge numbers (D's 32-file /tmp fix) remain valid.
+- mic-drop nuance: VM IO quantum ~100 ms inflates the ~4% last-word exposure; on a
+  real M1 (~10–20 ms quantum) exposure is much smaller — still a dead end for a
+  latency-free fix inside owned files.
