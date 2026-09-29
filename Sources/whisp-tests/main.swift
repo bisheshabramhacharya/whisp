@@ -488,6 +488,29 @@ do {
         .write(to: sentinel, atomically: true, encoding: .utf8)
     SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
     expect(fm.fileExists(atPath: sentinel.path).description, "false", "volumes sentinel repaired + removed")
+// MARK: - A2 Reliability
+
+// HotkeyPermissionTracker replaces the old 5 s polling timer: activation
+// events feed it the current grant/running state and it emits stop/start
+// decisions with the same semantics (stop once on loss, restart once on regain).
+do {
+    var t = HotkeyPermissionTracker()
+    expect("\(t.check(hotkeyPermissionsGranted: true, hotkeyRunning: true))",
+           "none", "healthy: nothing to do")
+    expect("\(t.check(hotkeyPermissionsGranted: false, hotkeyRunning: true))",
+           "stopHotkey", "grant lost while running")
+    expect("\(t.check(hotkeyPermissionsGranted: false, hotkeyRunning: false))",
+           "none", "loss reported once")
+    expect("\(t.check(hotkeyPermissionsGranted: true, hotkeyRunning: false))",
+           "startHotkey", "grants returned")
+    expect("\(t.check(hotkeyPermissionsGranted: true, hotkeyRunning: true))",
+           "none", "settled: no repeat start")
+
+    var t2 = HotkeyPermissionTracker()
+    expect("\(t2.check(hotkeyPermissionsGranted: false, hotkeyRunning: false))",
+           "none", "lost while not running: nothing to stop")
+    expect("\(t2.check(hotkeyPermissionsGranted: true, hotkeyRunning: false))",
+           "none", "regain without a stop doesn't start")
 }
 
 // MARK: - Speed
