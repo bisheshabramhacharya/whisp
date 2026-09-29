@@ -18,8 +18,13 @@ func loadFiles(_ paths: [String]) -> [LoadedFile] {
     for path in paths {
         do {
             let samples = try loadSamples16kMono(path: path)
-            let ref = try? String(contentsOfFile: path + ".txt", encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // WER reference: "<file>.<ext>.txt" first, then "<file>.txt" —
+            // LibriSpeech refs are .flac.txt, generated dictation refs .txt.
+            let refPath = path + ".txt"
+            let altRefPath = URL(fileURLWithPath: path).deletingPathExtension().path + ".txt"
+            let refText = (try? String(contentsOfFile: refPath, encoding: .utf8))
+                ?? (try? String(contentsOfFile: altRefPath, encoding: .utf8))
+            let ref = refText?.trimmingCharacters(in: .whitespacesAndNewlines)
             out.append(LoadedFile(
                 name: URL(fileURLWithPath: path).lastPathComponent,
                 path: path, samples: samples,
