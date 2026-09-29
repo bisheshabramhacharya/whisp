@@ -127,7 +127,8 @@ into a measurement.
 
 ## Plain-language summary
 
-Whisp spent ~170 ms of your ~174 ms release→paste waiting on the speech model, and ~85%
+Whisp spent ~155 ms of your ~174 ms release→paste in the transcription stage (median
+152 ms on your M1), and ~85%
 of that was the encoder padding every take out to a fixed 15-second window — a 2-second
 command paid for 15 seconds of math. The fix that does almost all the work: encode only
 what you actually said. On this VM the decode for a typical take drops from ~128 ms to
