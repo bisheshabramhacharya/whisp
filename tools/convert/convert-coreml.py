@@ -40,7 +40,7 @@ from components import (
 MODEL_ID = "nvidia/parakeet-unified-en-0.6b"
 AUTHOR = "Fluid Inference"
 DEFAULT_NEMO_PATH = Path("parakeet-unified-en-0.6b.nemo")
-TRACE_AUDIO = Path(__file__).parent / "audio" / "yc_first_minute_16k_15s.wav"
+TRACE_AUDIO = Path(__file__).parent / "audio" / "validation_16k.wav"
 
 SAMPLE_RATE = 16000
 FEATURE_STRIDE_SAMPLES = 160  # 10 ms hop
@@ -61,7 +61,9 @@ def _save(model: ct.models.MLModel, path: Path, description: str) -> None:
 
 
 def _load_trace_audio(num_samples: int) -> torch.Tensor:
-    data, sr = sf.read(str(TRACE_AUDIO), dtype="float32")
+    from sample_audio import ensure_audio
+
+    data, sr = sf.read(str(ensure_audio(TRACE_AUDIO)), dtype="float32")
     assert sr == SAMPLE_RATE, f"trace audio must be {SAMPLE_RATE} Hz, got {sr}"
     if data.ndim > 1:
         data = data[:, 0]

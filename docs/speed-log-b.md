@@ -129,6 +129,47 @@ swift run -c release whisp-tests                       # 270/270
 * 4-bit palettization (`per_grouped_channel`): requires iOS18 — same dead end.
 * Weight sharing across window bundles: `weight.bin` layouts differ per window
   (window-dependent consts baked at trace time) — can't share one blob.
-* Release size: w2000_int8 + w5000_int8 = 1.12 GB > the 1 GB cap →
-  **w5000_int8 (563 MB / 524 MB zip) ships**; w2000 stays a documented local
-  drop-in (same naming convention) for the ~20 ms extra on <2 s clips.
+* Release size: w2000_int8 + w5000_int8 = 1.12 GB > the 1 GB cap → owner
+  decision: **no release upload at all** — m1-check builds w5000 on-device via
+  `tools/convert` (see "M1 check instructions" below); w2000 stays a
+  documented local drop-in (same naming convention).
+
+## M1 check instructions
+
+A scratch checkout can reproduce the whole lever on a stock Mac (Xcode CLT +
+`uv`) — no committed binaries, no GitHub release download. The w5000 encoder
+builds from the public HF `.nemo` checkpoint (~2.4 GB, auto-downloaded once):
+the compiled mlmodelc already in the FluidAudio cache is *not* a usable
+conversion input.
+
+```bash
+git clone https://github.com/bisheshabramhacharya/whisp && cd whisp
+git checkout speed/track-b-short-window   # or speed/all after merge
+swift build -c release
+
+# one-time: build + install the 5 s window encoder into the FluidAudio cache
+cd tools/convert
+uv sync
+uv pip install --no-deps --force-reinstall \
+  "nemo_toolkit @ git+https://github.com/NVIDIA-NeMo/NeMo.git@95f92737cfb8ee0123bb328b07a2d24c6d859aff"
+uv run --no-sync python convert-short-window.py --windows 5 --validate --install
+cd ../..
+```
+
+`--install` drops `parakeet_unified_encoder_w5000_int8.mlmodelc` into
+`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/` —
+the exact directory `ShortWindowEngine` scans (`w{ms}[_int8].mlmodelc`
+naming convention; `_int8` preferred per window).
+
+```bash
+# A/B timing: decode p50 parakeet vs short, warm + idle(30s)+rewarm
+.build/release/whisp-bench --compare parakeet,short --runs 20 --idle 30 <wavs...>
+
+# release replay over a WAV folder: last-word-ok per offset per engine
+.build/release/whisp-bench --replay --engine short <dictation wavs>
+.build/release/whisp-bench --replay --engine parakeet <same wavs>   # baseline
+```
+
+Generate clips if none exist: `scripts/speed/gen-dictation.sh` (300 `say`
+wavs into `testdata/dictation/`). For <2 s clips also build `--windows 2,5`
+(w2000 shaves ~20 ms more; not needed for the p50 gate).

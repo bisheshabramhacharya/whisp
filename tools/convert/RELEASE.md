@@ -1,47 +1,35 @@
-# Draft release: `speed-models-2026-09-29`
+# Short-window encoder — build instead of download
 
-Short-window Parakeet Unified encoders for `ShortWindowEngine` (`asrEngine
-short`). Same weights as the stock `parakeet_unified_encoder_int8.mlmodelc`,
-re-traced at a 5 s window and int8-quantized — see `tools/convert/` and
-`docs/speed-log-b.md`.
+Previously planned as a draft release (`speed-models-2026-09-29`, 524 MB
+zip). **Upload skipped**: the M1 check builds the encoder on-device via
+`convert-short-window.py` — zero model downloads (the 2.4 GB `.nemo`
+auto-fetches from HF once), and no binaries ever hit git.
 
-## Assets
-
-| asset | size | contents |
-|---|---|---|
-| `parakeet_unified_encoder_w5000_int8.mlmodelc.zip` | 524 MB | 5 s window encoder, mel `[1,128,501]`, int8, iOS17 |
-
-SHA256 `b1fde737224107f16c2f71e9ed5fda3fe9e1131267e412e6b873fefd7161a904`.
-
-A 2 s window (`w2000_int8`, 561 MB) also exists and is exercised by the engine
-when present; it is not attached here to keep the release under the 1 GB cap.
-Rebuild it with `convert-short-window.py --windows 2`.
-
-## Install
-
-```bash
-DEST="$HOME/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b"
-unzip -o parakeet_unified_encoder_w5000_int8.mlmodelc.zip -d /tmp
-mv /tmp/parakeet_unified_encoder_w5000_int8.mlmodelc "$DEST/"   # or ditto straight in
-defaults write com.bishesha.whisp asrEngine short
-```
-
-The engine discovers every `parakeet_unified_encoder_w{ms}[_int8].mlmodelc` in
-the cache dir and picks the smallest window ≥ the trimmed input length; absent
-bundles fall back to the stock 15 s encoder (and >15 s inputs to the chunked
-path), so removing the bundles restores stock behavior.
-
-## Recreate / upload
+## Build on a stock Mac (Xcode CLT + `uv` only)
 
 ```bash
 cd tools/convert
-uv run --no-sync python convert-short-window.py --windows 5
-(cd build/short_window/parakeet_unified_encoder_w5000_int8.mlmodelc && \
-  zip -qr /tmp/parakeet_unified_encoder_w5000_int8.mlmodelc.zip .)
+uv sync
+uv pip install --no-deps --force-reinstall \
+  "nemo_toolkit @ git+https://github.com/NVIDIA-NeMo/NeMo.git@95f92737cfb8ee0123bb328b07a2d24c6d859aff"
+uv run --no-sync python convert-short-window.py --windows 5 --validate --install
+```
 
-gh release create speed-models-2026-09-29 \
-  --repo bisheshabramhacharya/whisp --draft \
-  --title "Short-window Parakeet encoders (Track B)" \
-  --notes-file tools/convert/RELEASE.md \
-  /tmp/parakeet_unified_encoder_w5000_int8.mlmodelc.zip
+`--install` copies `parakeet_unified_encoder_w5000_int8.mlmodelc` into
+`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/` —
+the cache dir `ShortWindowEngine` scans. See README.md "Short-window
+encoders" for the full input/output/dir conventions.
+
+## If a release is ever wanted
+
+The w5000 int8 bundle zips to 524 MB; w2000 is another ~561 MB. Reference
+command (needs a `gh` login on the release owner's account):
+
+```bash
+cd build/short_window
+ditto -c -k --sequesterRsrc --keepParent parakeet_unified_encoder_w5000_int8.mlmodelc \
+  parakeet_unified_encoder_w5000_int8.mlmodelc.zip
+gh release create speed-models-2026-09-29 --draft \
+  --title "Speed-run models 2026-09-29" --notes-file ../../RELEASE.md \
+  parakeet_unified_encoder_w5000_int8.mlmodelc.zip
 ```

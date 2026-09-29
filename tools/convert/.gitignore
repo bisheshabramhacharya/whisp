@@ -4,3 +4,4 @@ __pycache__/
 *.nemo
 *.mlpackage
 *.mlmodelc
+audio/
