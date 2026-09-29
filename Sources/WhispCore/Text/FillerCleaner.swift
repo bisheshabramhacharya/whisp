@@ -11,7 +11,10 @@ import Foundation
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
 /// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
-public final class FillerCleaner: TextCleaning {
+///
+/// Sendable: `clean` is pure rules over the argument; `dictionary` is itself
+/// `Sendable` and is only read.
+public final class FillerCleaner: TextCleaning, @unchecked Sendable {
 
     private let dictionary: PersonalDictionary?
 
