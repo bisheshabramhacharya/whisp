@@ -132,10 +132,11 @@ model.
 
 **Intel Macs?** No. The model runs on the Apple Silicon Neural Engine.
 
-**Where is my data?** In `~/Library/Application Support/Whisp/`: your history
-(`history.jsonl`), dictionary, and recordings. Recordings are kept by default
-so you can build a fine-tuning set; turn this off in the menu with **Keep
-recordings**.
+**Where is my data?** In `~/Library/Application Support/Whisp/` (readable
+only by your user account): your history (`history.jsonl`), dictionary, and
+recordings. Recordings are kept by default so you can build a fine-tuning
+set — the folder self-prunes past ~2 GB, oldest files first. Turn this off
+in the menu with **Keep recordings**.
 
 **Why build from source instead of a download?** Apps from the internet need
 Apple notarization to open without warnings. Building locally avoids that, and
@@ -200,10 +201,15 @@ openssl pkcs12 -export -password pass:whisp-tmp \
   -inkey key.pem -in cert.pem -out id.p12
 security import id.p12 -k ~/Library/Keychains/login.keychain-db \
   -P whisp-tmp -T /usr/bin/codesign -T /usr/bin/security
-security add-trusted-cert -r trustRoot -p codeSign \
-  -k ~/Library/Keychains/login.keychain-db cert.pem
-security find-identity -p codesigning -v   # should list "Whisp Local Signing"
+security find-identity | grep "Whisp Local Signing"   # should list it
 ```
+
+The certificate is deliberately *not* trusted for code signing (no
+`add-trusted-cert`): `codesign` signs fine with an untrusted self-signed
+identity, and codeSign trust would let anything signed with that local key
+pass signature checks on your Mac. The first time `codesign` uses the key,
+macOS may ask once for your login keychain password — choose **Always
+Allow** and it never asks again.
 
 The legacy `PBE-SHA1-3DES`/`sha1` flags are required: macOS `security import`
 can't read OpenSSL 3's default AES-encrypted PKCS12.
@@ -241,8 +247,14 @@ scripts/             build-app.sh, icon generation
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0):
   runs Parakeet on Core ML and the Neural Engine
-- [NVIDIA Parakeet](https://huggingface.co/nvidia): the speech recognition
-  model
+- [NVIDIA Parakeet Unified English 0.6B](https://huggingface.co/nvidia/parakeet-unified-en-0.6b):
+  the speech recognition model, used via the
+  [Core ML build](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml)
+  packaged by FluidInference. Both model repos are licensed
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); NVIDIA's
+  upstream model card additionally references the NVIDIA Open Model License
+  Agreement. Whisp downloads the weights on first run and does not modify or
+  redistribute them.
 
 ## License
 
