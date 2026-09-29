@@ -60,10 +60,12 @@ public final class StreamingEngine: Transcribing, StatusReporting, LiveDecoding 
         }
     }
 
-    /// Default tier chosen by measurement (see docs/speed-log-c.md): 640 ms —
-    /// 320 costs ~3.5x the encoder work for little finish-time win on CPU;
-    /// 1120/2080 hold back more right context for no measured gain here.
-    public static let defaultTier: Tier = .t640
+    /// Default tier chosen by measurement (see docs/speed-log-c.md): 2080 ms —
+    /// the model card's best-WER streaming mode [70,13,13]. Measured on the
+    /// dictation set, agreement vs the offline engine climbs monotonically
+    /// with right context: 0.9602 (320/640-class) → 0.9818 (1120) → 0.9891
+    /// (2080), while each step's bigger window also lowers encoder busy%.
+    public static let defaultTier: Tier = .t2080
 
     /// Human-readable status updates ("Downloading model…", "Ready", …).
     /// Always invoked on the main thread.
@@ -219,9 +221,11 @@ public final class StreamingEngine: Transcribing, StatusReporting, LiveDecoding 
         }
 
         /// Skipped when the model ran recently enough to still be warm, or a
-        /// take is live (its feeds are the warm decodes).
+        /// take is live (its feeds are the warm decodes — a warm decode here
+        /// would adopt the warm token and reset the take's stream).
         func rewarm() async {
-            guard prepared, DispatchTime.now().uptimeNanoseconds - lastRun > 20_000_000_000 else { return }
+            guard prepared, currentTake == nil,
+                  DispatchTime.now().uptimeNanoseconds - lastRun > 20_000_000_000 else { return }
             let silence = [Float](repeating: 0, count: 16_000)
             try? await feedCore(silence, take: warmToken)
             _ = try? await finishTake(warmToken)
