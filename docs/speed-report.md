@@ -70,6 +70,12 @@ From Track B's log (`docs/speed-log-b.md`):
 
 Lead audit items (from the independent review at 098dac7):
 
+- Clipboard snapshot blocking (audit F4) — **dead end, reasoned**: `paster.target()` already
+  fires the snapshot on a detached task at *key release*, so it runs concurrently with the
+  ~130 ms decode, and `capturedOrFresh` reuses it; real-app logs show Paste median 3 ms,
+  p95 14 ms. Only an adversarial (>~100 MB) clipboard could outlast decode, and capping the
+  snapshot would change restore semantics (dropped clipboard items) for an unmeasured gain.
+  The frontmost-recheck half of F4 shipped ([#24]).
 - Mic stop discards post-release buffer (MicRecorder.swift:190-205) — **dead end, measured**:
   ~4% last-word loss at +0 release on this VM — but the VM's ~100 ms IO quantum inflates it;
   on a real M1 (~10–20 ms quantum) exposure is much smaller. No latency-free fix inside the
