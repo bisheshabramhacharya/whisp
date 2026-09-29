@@ -149,3 +149,9 @@ Combined with C's 300-file agreement (0.9891 @2080, ITN-dominated diffs + 3
 tense swaps): **streaming is not the lever on this VM** — `short` beats it on
 both latency and accuracy. It stays opt-in; ANE could change finish() cost →
 include `streaming` in the M1 check's wider sweep.
+
+## Full-300 replay on speed/all @ c14109c (spec=180 shipped)
+
+`--replay --engine parakeet --offsets 0,100,150,200,350,600` on all 300 dictation clips:
++0 131, +100 **101** (was 123 @200), +150 **51** (was 74), +200 2, +350 0, +600 0;
+spec-hit 84%/100%/99%/91%/90% at +100..600; last-word ok 99.0% at every offset.

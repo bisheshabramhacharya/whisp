@@ -40,19 +40,19 @@ the absolute numbers should be smaller still.
 
 ## Release replay — wait p50 by release offset (VM)
 
-Baseline `parakeet` vs `short`, 300 dictation clips, `--replay --offsets 0..1000`:
+Baseline `parakeet` vs `short`, 300 dictation clips, `--replay --offsets 0..600` (parakeet column @ spec=180 as shipped):
 
 | offset | parakeet p50 | short p50 | streaming p50 |
 |---|---|---|---|
-| +0 ms | 132 | **61** | 82 |
-| +100 ms | 123 | **54** | ~83 |
-| +150 ms | 74 | **4** | ~83 |
-| +200 ms | 25 | **0** | ~83 |
+| +0 ms | 131 | **61** | 82 |
+| +100 ms | 101 | **54** | ~83 |
+| +150 ms | 51 | **4** | ~83 |
+| +200 ms | 2 | **0** | ~83 |
 | +350 ms | 0 | **0** | ~84 |
 | +600 ms | 0 | **0** | ~84 |
 
 last-word ok 99.0% at every offset for `short` — the 3-file floor (blip-059, word-043,
-word-051) is unchanged vs baseline, so zero NEW dropped final words. Speed/all @ f17a82f,
+word-051) is unchanged vs baseline, so zero NEW dropped final words. Parakeet column re-verified on speed/all @ c14109c (spec=180); `short` column @ f17a82f,
 `--replay --engine short` over the full 300-clip dictation set.
 Streaming column: `finish()` is a flat ~83 ms floor on this VM at every offset (15-file
 slice, lead-run @t2080 — the streaming encoder re-encodes a ~17.9 s window per step on
