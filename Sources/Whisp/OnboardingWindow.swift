@@ -10,10 +10,12 @@ import WhispCore
 final class OnboardingController: NSWindowController, NSWindowDelegate {
 
     private let model: OnboardingModel
+    private weak var appDelegate: AppDelegate?
 
     init(services: AppServices, appDelegate: AppDelegate) {
         let model = OnboardingModel(permissions: services.permissions)
         self.model = model
+        self.appDelegate = appDelegate
 
         let view = OnboardingView(model: model, services: services) { [weak appDelegate] in
             appDelegate?.beginPermissionPolling()
@@ -48,6 +50,7 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
     /// Stop the refresh poll when the window isn't visible.
     func windowWillClose(_ notification: Notification) {
         model.stopPolling()
+        appDelegate?.onboardingClosed()
     }
 }
 
