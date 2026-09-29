@@ -430,30 +430,6 @@ do {
     expect(perm(AppPaths.recordingsDir.appendingPathComponent("t1.wav")), "600", "wav is user-only")
 }
 
-// Recordings prune: oldest WAVs are deleted once the folder passes the cap,
-// and the file just saved is never the one deleted.
-do {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-cap-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: dir) }
-    // ~32 KB per one-second WAV; 100 KB cap prunes the two oldest of four.
-    let archive = RecordingArchive(directory: dir, maxTotalBytes: 100_000)
-    let wav = [Float](repeating: 0.1, count: 16_000)
-    for id in ["a", "b", "c"] { _ = try! archive.save(samples: wav, id: id) }
-    for (id, age) in [("a", -300.0), ("b", -200.0), ("c", -100.0)] {
-        try! FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(age)],
-            ofItemAtPath: dir.appendingPathComponent("\(id).wav").path)
-    }
-    _ = try! archive.save(samples: wav, id: "d")
-    let files = try! FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
-    expect(files.description, "[\"b.wav\", \"c.wav\", \"d.wav\"]", "prunes oldest beyond cap")
-    // A single file larger than the cap is still kept.
-    let small = RecordingArchive(directory: dir, maxTotalBytes: 1_000)
-    _ = try! small.save(samples: wav, id: "huge")
-    expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("huge.wav").path).description,
-           "true", "just-saved wav is never pruned")
-}
-
 // MARK: - A2 Reliability
 
 // The capture buffer must cover the 10-minute take cap and be grown on the

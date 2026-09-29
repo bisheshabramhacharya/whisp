@@ -27,8 +27,7 @@ Expect a reply within a week.
 - History, dictionary, and recordings live in
   `~/Library/Application Support/Whisp/` (locked to your user account,
   0700/0600). Recordings are kept by default so you can build a fine-tuning
-  set; the folder is capped at ~2 GB and the oldest WAVs are pruned first.
-  **Keep recordings** in the menu turns recording off entirely.
+  set. **Keep recordings** in the menu turns recording off entirely.
 - The two global event taps are session-level and see only this login
   session's keystrokes. The dictation tap (Right Option) is **listen-only**:
   it can observe but cannot consume or inject events. The re-paste tap

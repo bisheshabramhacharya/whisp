@@ -135,8 +135,8 @@ model.
 **Where is my data?** In `~/Library/Application Support/Whisp/` (readable
 only by your user account): your history (`history.jsonl`), dictionary, and
 recordings. Recordings are kept by default so you can build a fine-tuning
-set — the folder self-prunes past ~2 GB, oldest files first. Turn this off
-in the menu with **Keep recordings**.
+set (about 1 MB per 30 s of speech). Turn this off in the menu with **Keep
+recordings**.
 
 **Why build from source instead of a download?** Apps from the internet need
 Apple notarization to open without warnings. Building locally avoids that, and
