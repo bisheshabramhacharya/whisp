@@ -17,6 +17,7 @@ public final class AppSettings: ObservableObject {
         static let pillScale = "pillScale"
         static let pillOrigin = "pillOrigin"
         static let alwaysShowPill = "alwaysShowPill"
+        static let asrEngine = "asrEngine"
     }
 
     private let defaults: UserDefaults
@@ -68,6 +69,11 @@ public final class AppSettings: ObservableObject {
     @Published public var alwaysShowPill: Bool {
         didSet { defaults.set(alwaysShowPill, forKey: Key.alwaysShowPill) }
     }
+
+    /// Hidden engine switch for A/B testing ASR backends
+    /// (`defaults write com.bishesha.whisp asrEngine <name>`). Read once at
+    /// launch; unknown names fall back to `ASREngine.defaultName`.
+    public let asrEngine: String
 
     /// SMAppService-backed login item. Reads actual registration status when the
     /// app is bundled; falls back to the stored intent when running as a bare
@@ -124,5 +130,10 @@ public final class AppSettings: ObservableObject {
         } else {
             self.pillOrigin = nil
         }
+        let engine = defaults.string(forKey: Key.asrEngine) ?? ASREngine.defaultName
+        if !ASREngine.isKnown(engine) {
+            logger.error("Unknown asrEngine '\(engine, privacy: .public)', using '\(ASREngine.defaultName, privacy: .public)'")
+        }
+        self.asrEngine = ASREngine.isKnown(engine) ? engine : ASREngine.defaultName
     }
 }
