@@ -103,4 +103,4 @@ wait p50: +0 → 132, +100 → 123, +150 → 74, +200 → 25, +350 → 0, +600 �
 
 ## `short` engine full replay (speed/all @ f17a82f, `--replay --engine short`, 300 files)
 
-wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 → **0**, +600 → **0** (vs parakeet 132/123/74/25/0/0); last-word ok 99.0% every offset — gate holds. Note +0 is 61 not B's 40: this run includes the >5 s files B's own runs excluded from the w5000 path (>5 s → 15 s window or multi-window fallback), plus p95 161 at +0 = the >5 s tail. The ≤5 s subset reproduces B's ~40.
+wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 → **0**, +600 → **0** (vs parakeet 132/123/74/25/0/0); last-word ok 99.0% every offset — gate holds. File mix: 266/300 <5 s (w5000), 31 at 5–15 s (stock window), 3 >15 s. The +0 median lands inside the <5 s group: w5000 decode ≈ 55–60 ms **on this VM** (`--compare` 57.7 warm p50) vs ~39 ms on B's VM — machine-relative, not a regression. p95 161 at +0 is the 5–15 s + >15 s tail still paying the stock window — the remaining M1-check question for >5 s takes.
