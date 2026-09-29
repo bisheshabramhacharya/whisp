@@ -45,11 +45,18 @@ WHISP_STREAM_TIER=640|1120|2080 ./.build/release/whisp-bench \
 
 ### LibriSpeech test-clean (2620 files, `--compare --runs 1`, refs `<file>.flac.txt`)
 
-PENDING
+@2080: parakeet WER **2.22** / streaming WER **2.35** (**+0.13 pt**, gate ≤ +0.1 — just over);
+agreement 0.9941, 170 disagreement files. For scale: FluidAudio's own
+published gap for this model pair is +0.31 pt (offline 1.83 / streaming
+2.14) — our harness measures a tighter delta.
+
+Timing columns on that run are inflated (three bench processes contended
+for CPU); see the dedicated timing section.
 
 ### LibriSpeech test-other (500-file subset)
 
-PENDING
+@2080: parakeet WER **5.79** / streaming WER **6.31** (**+0.52 pt**),
+agreement 0.9848, 83 disagreement files.
 
 ### Dictation set (300 `say` TTS clips) — word agreement vs parakeet, by tier
 
@@ -97,9 +104,53 @@ inflated by normalization mismatches (a correct `94110` counts 5 word
 errors vs `nine four one one zero`). Across the full 300-file set the
 mean ref-WER delta is ≈ +0.011 pt (287/300 files decode identically).
 
-### Release replay (dictation, parakeet vs streaming@2080)
+### Release replay (60 dictation files × 8 offsets, `--mic-drop 30`)
 
-PENDING
+Parakeet (live-loop replay):
+
+| offset | wait p50 | wait p95 | last-word ok |
+|---|---|---|---|
+| +0 ms | 237 | 268 | 93.3% |
+| +50 | 238 | 277 | 100% |
+| +100 | 225 | 256 | 100% |
+| +150 | 177 | 243 | 100% |
+| +200 | 127 | 193 | 100% |
+| +350 | 0 | 103 | 100% |
+| +600 | 0 | 0 | 100% |
+| +1000 | 0 | 0 | 100% |
+
+Streaming @2080 (feed during capture, `finish()` at release, with the
+empty-finish rescue):
+
+| offset | wait p50 | wait p95 | last-word ok |
+|---|---|---|---|
+| +0 ms | 89 | 97 | 93.3% |
+| +50 | 88 | 94 | 96.7% |
+| +100 | 88 | 95 | 95.0% |
+| +150 | 89 | 95 | 93.3% |
+| +200 | 88 | 98 | 95.0% |
+| +350 | 88 | 96 | 96.7% |
+| +600 | 88 | 96 | 96.7% |
+| +1000 | 87 | 98 | 95.0% |
+
+Streaming's finish is offset-invariant (~88 ms VM) — decode happened
+during capture; the wait is one final holdback-0 window re-encode.
+
+**Last-word gate misses: 23/480 releases lose or mis-hear the final word
+vs parakeet's ~1%** (parakeet: 4/480, all at +0 where the release lands
+inside the word). Breakdown:
+- ~6 were *empty-output dead zones* — deterministic total-frame-count
+  alignments where the streaming decoder emits zero tokens (reproduced
+  in FluidAudio's own `--streaming` harness → upstream model quirk, not
+  the engine). Fixed by the empty-finish rescue: `finish()` returning
+  "" on non-silent audio retries one padded batch decode
+  (`takeAudio + rightSamples` zeros). All dead cases rescued; cost ~170 ms
+  on the rescued path only.
+- ~17 are *tail-word drift*: the stream's final emission mis-transcribes
+  the last word ("Cheapanis"→"Cheapennis", "Screenshot this"→"Screenshot
+  is"). Not a missing-tail issue — persists at +1000 ms where ~1 s of
+  post-word silence was captured. The streaming model's last-emission
+  token path is simply less reliable than the offline decode's.
 
 ### Timing
 
@@ -108,9 +159,9 @@ PENDING: busy%, finish p50/p95 per tier, warm + idle+rewarm N≥30.
 ### Tier decision
 
 640's 80 ms right context starves ambiguous words ("ounces"→"answers",
-"schedule a meeting"→"schedule made"); 1120 restores most of the loss;
-2080 (the model card's best-WER streaming mode) is best on agreement and
-lowest busy%. Default: **t2080** PENDING final numbers.
+"schedule a meeting"→"schedule made", WER 13.24 vs 9.78 on the dictation
+set @320-class); 1120 restores most of the loss; 2080 (the model card's
+best-WER streaming mode) is best on every accuracy axis. Default: **t2080**.
 
 ### Disagreement analysis
 
@@ -119,8 +170,23 @@ times: "72", "94110", "6:45 am") where offline parakeet spells numbers
 out. Most remaining diffs are that convention split — semantically equal
 or better for paste-into-doc use — plus a small lexical remainder.
 
+### Verdict
+
+VM numbers: release→text p50 ≈ **88 ms** (vs parakeet ~127–238 ms at
+early release offsets) — well under the 100 ms target *before* ANE
+speedup. But the accuracy gates are missed by the letter: WER +0.13 pt
+(test-clean) / +0.52 pt (test-other), agreement 0.9891, and ~4% more
+last-word failures than parakeet. Recommendation: **ship opt-in only**
+(`asrEngine=streaming` stays non-default) with this caveat documented —
+the tail-word drift needs an M1 check and/or a FluidAudio upstream fix
+before this can replace the default path.
+
 ### Known issues
 
 - `--replay --engine parakeet` traps (Trace/BPT 5) on the 267 s
   `long-103.wav` — preexisting shared-code bug on very long clips
-  (Track A replayer); streaming replay unaffected (skips collectEvents).
+  (Track A replayer, fixed on speed/all @113e28c); streaming replay
+  unaffected (skips collectEvents).
+- Streaming-model dead zones: empty transcript at certain total frame
+  counts (deterministic, upstream); mitigated by the empty-finish rescue
+  in `StreamingEngine.finish`.
