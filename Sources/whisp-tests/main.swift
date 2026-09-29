@@ -877,6 +877,47 @@ do {
     }
 }
 
+// MARK: - Model download
+
+// RemoteBundle.install: checksum first, and the bundle only appears under its
+// final name once fully unpacked.
+do {
+    let fm = FileManager.default
+    let work = fm.temporaryDirectory.appendingPathComponent("whisp-bundle-\(UUID().uuidString)")
+    let src = work.appendingPathComponent("src"), cache = work.appendingPathComponent("cache")
+    try fm.createDirectory(at: src.appendingPathComponent("weights"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+    try Data("mil".utf8).write(to: src.appendingPathComponent("coremldata.bin"))
+    try Data("w".utf8).write(to: src.appendingPathComponent("weights/weight.bin"))
+    try Data("junk".utf8).write(to: src.appendingPathComponent("._metadata.json"))
+    let zip = work.appendingPathComponent("b.zip")
+    let ditto = Process()
+    ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    ditto.arguments = ["-c", "-k", src.path, zip.path]
+    try ditto.run(); ditto.waitUntilExit()
+    let sum = try RemoteBundle.sha256Hex(of: zip)
+
+    let name = "parakeet_unified_encoder_w5000_int8.mlmodelc"
+    let bad = RemoteBundle(name: name, url: zip, sha256: String(repeating: "0", count: 64))
+    expect((try? bad.install(zip: zip, into: cache)) == nil ? "rejected" : "installed",
+           "rejected", "checksum mismatch installs nothing")
+    expect(fm.fileExists(atPath: cache.appendingPathComponent(name).path) ? "present" : "absent",
+           "absent", "no bundle after a bad checksum")
+
+    let good = RemoteBundle(name: name, url: zip, sha256: sum)
+    let installed = try await good.fetch(into: cache)  // file:// URL: same path as a real download
+    expect(installed.lastPathComponent, name, "bundle installed under its final name")
+    expect(fm.fileExists(atPath: installed.appendingPathComponent("weights/weight.bin").path) ? "ok" : "missing",
+           "ok", "bundle contents unpacked")
+    expect(fm.fileExists(atPath: installed.appendingPathComponent("._metadata.json").path) ? "kept" : "dropped",
+           "dropped", "AppleDouble files dropped")
+    let leftovers = try fm.contentsOfDirectory(atPath: cache.path).filter { $0 != name }
+    expect(leftovers.joined(separator: ","), "", "no staging dirs left behind")
+    try? fm.removeItem(at: work)
+}
+expect(ASREngine.defaultName, "short", "default engine is the short-window one")
+expect(String(describing: type(of: ASREngine.make(named: "typo"))), "ShortWindowEngine", "unknown engine name falls back")
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
