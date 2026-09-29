@@ -194,3 +194,28 @@ Compiles each `.mlpackage` to `.mlmodelc`, exports `vocab.json`
   output (hold back right context), carry (h, c, last_token) across chunks.
 - Vocab 1024 + blank=1024; tokenizer is the bundled SentencePiece model inside
   the `.nemo` (extract `*_tokenizer.model`).
+
+## Short-window encoders (whisp Track B)
+
+`convert-short-window.py` re-traces the *same* NeMo encoder weights at shorter
+fixed windows so decoding a short clip doesn't pay the stock 15 s
+(`[1,128,1501]` mel) encoder pass:
+
+```bash
+uv run --no-sync python convert-short-window.py --windows 2,5 --validate
+```
+
+produces `parakeet_unified_encoder_w{ms}.mlmodelc` + `_int8.mlmodelc` under
+`build/short_window/` (w2000 → mel `[1,128,201]`, w5000 → `[1,128,501]`), plus a
+`short_windows.json` manifest. `--validate` compares valid-region encoder
+outputs against the torch NeMo encoder (full attention masks only by
+`mel_length`, so outputs match up to quantization noise).
+
+Install: drop the `_int8.mlmodelc` bundles into
+`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/` and
+select the engine with `defaults write com.bishesha.whisp asrEngine short`.
+
+Notes: bundle size is weight-dominated — one int8 window ≈ 560 MB regardless of
+window length; multifunction bundles would dedup weights but require
+iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` for the draft
+`speed-models-2026-09-29` release.
