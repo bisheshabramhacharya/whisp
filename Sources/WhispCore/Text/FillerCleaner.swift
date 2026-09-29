@@ -30,11 +30,20 @@ public final class FillerCleaner: TextCleaning {
     }
 
     /// Parakeet writes "five thirty" as "5.30". Use a colon when the context says it's a
-    /// clock time: followed by am/pm, or after at/by/until/… ("version 2.45" is untouched).
-    private static let clockTimeRules: [(NSRegularExpression, String)] = [
-        (#"(?<![\d.])(1[0-2]|0?[1-9])\.([0-5]\d)(?=\s*[ap]\.?m\b)"#, "$1:$2"),
-        (#"\b(at|by|until|till|around|from|before|after) (1[0-2]|0?[1-9])\.([0-5]\d)(?!\.?\d)"#, "$1 $2:$3"),
-    ].map { (try! NSRegularExpression(pattern: $0.0, options: [.caseInsensitive]), $0.1) }
+    /// clock time: followed by am/pm, or after at/by/until/… A number followed by a
+    /// measurement unit is a quantity, never a time ("at 3.14 percent", "version 2.45"
+    /// are untouched).
+    private static let clockTimeRules: [(NSRegularExpression, String)] = {
+        let units = #"(?:percent|per cent|%|points?|kilo(?:s|grams?)?|kg|pounds?|lbs?|dollars?|bucks|euros?|cents|meters?|metres?|miles?|degrees?|millions?|billions?|thousands?|gigabytes?|gb|megabytes?|mb|kilobytes?|kb|terabytes?|tb|inches|inch|feet|foot|cm|mm|millimeters?|millimetres?|seconds?|secs?|mins?|minutes?|hours?|hrs?|days?|weeks?|months?|years?|volts?|watts?|amps?|ohms?|hertz|khz|mhz|ghz|liters?|litres?|gallons?|ounces?|oz|grams?|milligrams?|mg|acres?|hectares?|pixels?|px|dpi|fps|kph|mph|rpm|bpm|decibels?|db|times|x|stars?|floors|stor(?:e|)ys|episodes?|chapters?|versions?|levels?|laps?|pages?|verses?|steps?|reps?|sets?|calories?)"#
+        let time = #"(1[0-2]|0?[1-9])\.([0-5]\d)"#
+        let timeRef = #"(?:1[0-2]|0?[1-9])\.[0-5]\d"#
+        return [
+            ("(?<![\\d.])" + time + #"(?=\s*[ap]\.?m\b)"#, "$1:$2"),
+            // Ranges: "from 9.00 to 5.30", "between 8.30 and 6.00", "at 5.30 or 6.00", "at 5.30-6.00".
+            ("\\b(from|between|at|by|until|till|around|before|after) " + time + "(\\s*(?:to|or|and|-|–|—)\\s*)" + time + "(?!\\.?\\d|\\s*" + units + "\\b)", "$1 $2:$3$4$5:$6"),
+            ("\\b(at|by|until|till|around|from|before|after) " + time + "(?!\\.?\\d|\\s*" + units + "\\b|\\s*(?:to|or|and|-|–|—)\\s*" + timeRef + "\\s*" + units + "\\b)", "$1 $2:$3"),
+        ].map { (try! NSRegularExpression(pattern: $0.0, options: [.caseInsensitive]), $0.1) }
+    }()
 
     private static func fixClockTimes(_ text: String) -> String {
         guard text.contains(".") else { return text }
@@ -63,6 +72,14 @@ public final class FillerCleaner: TextCleaning {
         "ha", "haha", "hey", "go", "well", "please", "more", "again", "too", "many", "much", "blah",
         "knock", "now", "wait", "come", "there", "far", "long", "over", "round", "up", "down", "wow",
         "tick", "tock", "cha", "boo", "choo", "yay", "hip", "bang", "night", "done", "fine", "sure",
+        // Expressions, names and wordplay people say twice on purpose.
+        "hear", "hush", "do", "test", "stop", "fifty", "twenty", "nineteen",
+        "mahi", "bora", "walla", "pago", "sing", "chow", "yo", "mu", "bon",
+        "na", "la", "goo", "ga", "woo", "yadda", "yada", "hee", "haw", "gee",
+        "nudge", "wink", "tut", "tsk", "rah", "ring", "ding", "honk", "quack",
+        "moo", "woof", "meow", "vroom", "bam", "pow", "dee", "dum", "poo", "wee",
+        "si", "oui", "ja", "da", "ma", "pa", "oink", "buzz", "hiss", "tweet",
+        "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
     ]
 
     /// Sentence-initial lead-ins whose comma survives when a following filler is removed ("So, um, we" -> "So, we").
@@ -135,7 +152,14 @@ public final class FillerCleaner: TextCleaning {
                     if gap == 1, !Self.abandonable.contains(tokens[i + n].word) { continue }
                     guard tokens[i..<second].allSatisfy({ !$0.endsSentence && $0.leading.isEmpty }),
                           first.indices.allSatisfy({ tokens[$0].word == tokens[$0 + n + gap].word }),
-                          !first.allSatisfy({ Self.intentionalDoubles.contains($0.word) || $0.word.isEmpty })
+                          // Chants of one intentional double ("no no no no") aren't restarts,
+                          // but a phrase merely made of protectable words still is ("do that do that").
+                          !first.allSatisfy({
+                              ($0.word == tokens[i].word && Self.intentionalDoubles.contains($0.word))
+                                  || $0.word.isEmpty }),
+                          // A repeat that runs to the end of the take ("Let's go let's go!") or
+                          // keeps alternating ("ran and ran and ran") is emphasis, not a restart.
+                          second + n < tokens.count, tokens[second + n].word != tokens[i].word
                     else { continue }
                     // Keep the first copy's casing (sentence start stays capitalized).
                     let firstCore = tokens[i].core
@@ -165,11 +189,9 @@ public final class FillerCleaner: TextCleaning {
     }
 
     private func remove(_ tokens: inout [Token], _ range: Range<Int>, requireFence: Bool) {
-        let first = tokens[range.lowerBound]
         let last = tokens[range.upperBound - 1]
         let prevIndex = range.lowerBound > 0 ? range.lowerBound - 1 : nil
         let atSentenceStart = prevIndex.map { tokens[$0].endsSentence } ?? true
-        let wasCapitalized = first.core.first?.isUppercase == true
 
         if last.endsSentence, let p = prevIndex, !tokens[p].endsSentence {
             // "I think, um." -> "I think."
@@ -183,7 +205,7 @@ public final class FillerCleaner: TextCleaning {
 
         tokens.removeSubrange(range)
 
-        if atSentenceStart, wasCapitalized, range.lowerBound < tokens.count {
+        if atSentenceStart, range.lowerBound < tokens.count {
             tokens[range.lowerBound].capitalizeFirst()
         }
     }
@@ -199,13 +221,18 @@ public final class FillerCleaner: TextCleaning {
 /// A whitespace-delimited word split into leading punctuation, core, and trailing punctuation.
 private struct Token {
     var leading: String
-    var core: String
+    var core: String {
+        didSet { word = core.lowercased() }
+    }
     var trailing: String
+    /// Lowercased `core`, cached at init instead of recomputed on every comparison.
+    private(set) var word: String
 
     init(leading: String, core: String, trailing: String) {
         self.leading = leading
         self.core = core
         self.trailing = trailing
+        self.word = core.lowercased()
     }
 
     init(_ raw: String) {
@@ -221,7 +248,6 @@ private struct Token {
     }
 
     var text: String { leading + core + trailing }
-    var word: String { core.lowercased() }
     var endsSentence: Bool { trailing.contains { ".?!".contains($0) } }
 
     mutating func capitalizeFirst() {
