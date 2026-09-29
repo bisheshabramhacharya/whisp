@@ -79,8 +79,8 @@ left = 70 (`att_chunk_context_size`). For ~1.12 s latency use `70,7,7`.
 ## Validate
 
 ```bash
-uv run --no-sync python compare-models.py \
-  --coreml-dir ./build/parakeet_unified_coreml --audio-file audio/yc_first_minute_16k.wav
+uv run --no-sync python compare-models.py --coreml-dir ./build/parakeet_unified_coreml
+# (audio auto-generated via `say`; pass --audio-file <16kHz wav> to use your own)
 ```
 
 Results on M-series (2026-06-12):
@@ -199,23 +199,40 @@ Compiles each `.mlpackage` to `.mlmodelc`, exports `vocab.json`
 
 `convert-short-window.py` re-traces the *same* NeMo encoder weights at shorter
 fixed windows so decoding a short clip doesn't pay the stock 15 s
-(`[1,128,1501]` mel) encoder pass:
+(`[1,128,1501]` mel) encoder pass.
+
+### Self-contained on a stock Mac (Xcode CLT + `uv` only)
 
 ```bash
-uv run --no-sync python convert-short-window.py --windows 2,5 --validate
+cd tools/convert
+uv sync        # python 3.10 + torch + coremltools + deps (one-time, ~2 GB)
+uv pip install --no-deps --force-reinstall \
+  "nemo_toolkit @ git+https://github.com/NVIDIA-NeMo/NeMo.git@95f92737cfb8ee0123bb328b07a2d24c6d859aff"
+uv run --no-sync python convert-short-window.py --windows 5 --validate --install
 ```
 
-produces `parakeet_unified_encoder_w{ms}.mlmodelc` + `_int8.mlmodelc` under
-`build/short_window/` (w2000 → mel `[1,128,201]`, w5000 → `[1,128,501]`), plus a
-`short_windows.json` manifest. `--validate` compares valid-region encoder
-outputs against the torch NeMo encoder (full attention masks only by
-`mel_length`, so outputs match up to quantization noise).
+- **Inputs**: none committed. The `.nemo` checkpoint auto-downloads from HF
+  (`nvidia/parakeet-unified-en-0.6b`, ~2.4 GB, public — or drop
+  `parakeet-unified-en-0.6b.nemo` in this dir / pass `--nemo-path`).
+  `--validate` synthesizes its speech clip with `say` + `afconvert` when
+  `--audio-file` is absent (16 kHz mono WAV otherwise).
+- **Outputs**: `build/short_window/parakeet_unified_encoder_w{ms}.mlmodelc`
+  (fp16) + `_int8.mlmodelc` + `short_windows.json`.
+- **Engine search dir** — `ShortWindowEngine` discovers every
+  `parakeet_unified_encoder_w{ms}[_int8].mlmodelc` in
+  `~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/`
+  (same cache FluidAudio uses). `--install` copies the int8 bundles there
+  automatically. Pick the smallest window ≥ input; absent bundles → stock 15 s
+  encoder; >15 s input → `UnifiedAsrManager` chunked path.
+- `whisp-bench` needs no flag: `--compare parakeet,short` / `--engine short`.
+  For the app: `defaults write com.bishesha.whisp asrEngine short`.
 
-Install: drop the `_int8.mlmodelc` bundles into
-`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/` and
-select the engine with `defaults write com.bishesha.whisp asrEngine short`.
+`--validate` compares valid-region encoder outputs against the torch NeMo
+encoder (full attention masks only by `mel_length`, so outputs match up to
+quantization noise). Note: a clip longer than the window is skipped — the
+generated `say` clip is ~3.3 s, covering w5000.
 
 Notes: bundle size is weight-dominated — one int8 window ≈ 560 MB regardless of
 window length; multifunction bundles would dedup weights but require
-iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` for the draft
-`speed-models-2026-09-29` release.
+iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` / `docs/speed-log-b.md`
+"M1 check instructions" for the exact m1-check commands.

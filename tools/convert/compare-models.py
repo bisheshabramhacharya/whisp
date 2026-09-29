@@ -11,7 +11,7 @@ state, and compares against the NeMo offline transcript.
 
 Usage:
     uv run --no-sync python compare-models.py --coreml-dir ./build/parakeet_unified_coreml \
-        --audio-file audio/yc_first_minute_16k.wav
+        [--audio-file some_16k.wav]   # default: speech synthesized via `say`
 """
 from __future__ import annotations
 
@@ -40,10 +40,13 @@ def load_audio(path: Path, max_seconds: Optional[float] = None) -> np.ndarray:
 
 def run_offline(args, asr_model, blank_idx: int) -> None:
     print("\n=== OFFLINE (15 s window) ===")
-    audio = load_audio(args.audio_file, max_seconds=15.0)
+    from sample_audio import ensure_audio
+
+    audio_path = args.audio_file or ensure_audio()
+    audio = load_audio(audio_path, max_seconds=15.0)
 
     with torch.inference_mode():
-        ref = asr_model.transcribe([str(args.audio_file)])
+        ref = asr_model.transcribe([str(audio_path)])
     ref_text = ref[0].text
     print(f"NeMo   : {ref_text}")
 
@@ -73,7 +76,10 @@ def run_streaming(args, asr_model, blank_idx: int) -> None:
     print(f"\n=== STREAMING (context [{left},{chunk},{right}], "
           f"latency {(chunk + right) * 0.08:.2f} s) ===")
 
-    audio = load_audio(args.audio_file, max_seconds=args.streaming_seconds)
+    from sample_audio import ensure_audio
+
+    audio_path = args.audio_file or ensure_audio()
+    audio = load_audio(audio_path, max_seconds=args.streaming_seconds)
     cm = CoreMLRnnt(args.coreml_dir, blank_idx, streaming_suffix=f"{left}_{chunk}_{right}")
 
     # NeMo offline reference on the same audio span
@@ -90,7 +96,8 @@ def run_streaming(args, asr_model, blank_idx: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--coreml-dir", type=Path, default=Path("build/parakeet_unified_coreml"))
-    parser.add_argument("--audio-file", type=Path, default=Path("audio/yc_first_minute_16k_15s.wav"))
+    parser.add_argument("--audio-file", type=Path, default=None,
+                        help="16 kHz WAV; default: synthesized via `say`")
     parser.add_argument("--nemo-path", type=Path, default=Path("parakeet-unified-en-0.6b.nemo"))
     parser.add_argument("--streaming-context", type=str, default="70,13,13")
     parser.add_argument("--streaming-seconds", type=float, default=30.0)

@@ -14,14 +14,18 @@ Exports each requested window as:
   parakeet_unified_encoder_w{MS}_int8.mlpackage   (per-channel int8)
 and compiles .mlmodelc bundles next to them with coremlcompiler.
 
+Inputs: only the .nemo checkpoint (auto-downloaded from HF when missing) — no
+binary assets are committed; --validate synthesizes speech with `say` when
+--audio-file is absent. --install copies each *_int8.mlmodelc into the
+FluidAudio model cache (the dir ShortWindowEngine scans).
+
 Validation (--validate): for each window, compares encoder activations on a
 real audio file against the NeMo torch encoder and against the shipped 15 s
-CoreML encoder (valid frames only — must be ~identical), and prints the greedy
-transcript from both window sizes.
+CoreML encoder (valid frames only — must be ~identical).
 
 Usage:
     uv run --no-sync python convert-short-window.py \
-        --windows 2,5 --output-dir ./build/short_window --validate
+        --windows 2,5 --output-dir ./build/short_window --validate --install
 """
 from __future__ import annotations
 
@@ -45,12 +49,28 @@ from components import (
 )
 
 MODEL_ID = "nvidia/parakeet-unified-en-0.6b"
+NEMO_FILENAME = "parakeet-unified-en-0.6b.nemo"
 AUTHOR = "Fluid Inference"
-DEFAULT_NEMO_PATH = Path("parakeet-unified-en-0.6b.nemo")
-TRACE_AUDIO = Path(__file__).parent / "audio" / "yc_first_minute_16k_15s.wav"
-VALIDATE_AUDIO = Path(__file__).parent / "audio" / "yc_first_minute_16k.wav"
+DEFAULT_NEMO_PATH = Path(NEMO_FILENAME)
 
 SAMPLE_RATE = 16000
+
+# Where ShortWindowEngine looks for bundles — mirrors FluidAudio's cache.
+MODEL_CACHE = (
+    Path.home()
+    / "Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b"
+)
+
+
+def ensure_nemo(path: Path) -> Path:
+    """Return the .nemo checkpoint, downloading it from HF on first use."""
+    if path.exists():
+        return path
+    from huggingface_hub import hf_hub_download
+
+    print(f"{path} not found — downloading from HF {MODEL_ID} (~2.4 GB)…")
+    downloaded = hf_hub_download(MODEL_ID, NEMO_FILENAME)
+    return Path(downloaded)
 
 
 def _tensor_shape(tensor: torch.Tensor) -> tuple:
@@ -206,15 +226,27 @@ def main() -> None:
         help="comma-separated window sizes in seconds (default 2,5)",
     )
     parser.add_argument("--validate", action="store_true")
-    parser.add_argument("--audio-file", type=Path, default=VALIDATE_AUDIO)
+    parser.add_argument(
+        "--audio-file",
+        type=Path,
+        default=None,
+        help="16 kHz WAV for --validate; default: synthesizes one with `say`",
+    )
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="copy each _int8.mlmodelc into the FluidAudio model cache "
+        "(the dir ShortWindowEngine scans)",
+    )
     args = parser.parse_args()
 
     windows = sorted(float(x) for x in args.windows.split(","))
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading {args.nemo_path}…")
+    nemo_path = ensure_nemo(args.nemo_path)
+    print(f"Loading {nemo_path}…")
     asr_model = nemo_asr.models.EncDecRNNTBPEModel.restore_from(
-        str(args.nemo_path), map_location="cpu"
+        str(nemo_path), map_location="cpu"
     )
     asr_model.eval()
     # Full attention — never the streaming chunked mask.
@@ -231,8 +263,23 @@ def main() -> None:
     }
     (args.output_dir / "short_windows.json").write_text(json.dumps(meta, indent=2))
 
+    if args.install:
+        MODEL_CACHE.mkdir(parents=True, exist_ok=True)
+        for r in results:
+            ms = int(round(r["window_seconds"] * 1000))
+            src = args.output_dir / f"parakeet_unified_encoder_w{ms}_int8.mlmodelc"
+            dst = MODEL_CACHE / src.name
+            if dst.exists():
+                print(f"installed already: {dst.name}")
+                continue
+            subprocess.run(["cp", "-R", str(src), str(dst)], check=True)
+            print(f"installed {dst}")
+
     if args.validate:
-        validate(asr_model, args.output_dir, windows, args.audio_file)
+        from sample_audio import ensure_audio
+
+        audio = args.audio_file or ensure_audio()
+        validate(asr_model, args.output_dir, windows, audio)
 
 
 if __name__ == "__main__":
