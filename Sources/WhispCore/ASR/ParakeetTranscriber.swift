@@ -124,16 +124,19 @@ public final class ParakeetTranscriber: Transcribing, StatusReporting {
 
         // A dictation during launch waits for the model instead of failing.
         try await prepare()
-        var text = try await engine.transcribe(input, vocabulary: vocabulary)
-        if text.contains("<unk>") {
-            text = text.replacingOccurrences(of: "<unk>", with: "")
-                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        }
+        var text = Self.removingUnknownTokens(try await engine.transcribe(input, vocabulary: vocabulary))
 
         if inverseTextNormalization, !text.isEmpty {
             text = normalizer.normalizeSentence(text)
         }
         return text
+    }
+
+    /// Drops the model's `<unk>` tokens ("Bis<unk>s." -> "Biss.") and the spacing they leave.
+    static func removingUnknownTokens(_ text: String) -> String {
+        guard text.contains("<unk>") else { return text }
+        return text.replacingOccurrences(of: "<unk>", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     @MainActor
