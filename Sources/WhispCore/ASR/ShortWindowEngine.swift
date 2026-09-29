@@ -55,7 +55,7 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
             input.append(contentsOf: [Float](repeating: 0, count: minSamples - input.count))
         }
         try await prepare()
-        return try await engine.transcribe(input)
+        return ParakeetTranscriber.removingUnknownTokens(try await engine.transcribe(input))
     }
 
     @MainActor
