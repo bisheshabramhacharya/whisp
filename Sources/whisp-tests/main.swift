@@ -125,13 +125,18 @@ let speech = tone(4) + silence(0.6) + tone(4)
 let cut = SpeechSegmenter.nextCut(in: speech)
 expect(cut.map { $0 >= 64_000 && $0 <= 73_600 ? "in pause" : "at \($0)" } ?? "nil", "in pause", "cut lands in the pause")
 expect(SpeechSegmenter.nextCut(in: tone(3) + silence(0.6) + tone(1)).map(String.init) ?? "nil", "nil", "waits for minChunk")
+expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.5)).description, "true", "speech then pause")
+expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.2)).description, "false", "pause too short")
+expect(SpeechSegmenter.endsInPause(silence(2)).description, "false", "no speech")
 expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4)).map(String.init) ?? "nil", "nil",
        "keeps near-silent chunk attached")
 expect(SpeechSegmenter.nextCut(in: tone(8)).map(String.init) ?? "nil", "nil", "no pause, below forceChunk")
-expect(SpeechSegmenter.nextCut(in: tone(26)) != nil ? "cut" : "nil", "cut", "forced cut")
+expect(SpeechSegmenter.nextCut(in: tone(15)) != nil ? "cut" : "nil", "cut", "forced cut")
 expect(SpeechSegmenter.plan(tone(5) + silence(0.6) + tone(5) + silence(0.6) + tone(5)).count.description, "2", "plan")
 expect(SpeechSegmenter.join(["I went to", "The store and then.", "The end."]), "I went to the store and then. The end.")
 expect(SpeechSegmenter.join(["Hello", "", "Bishesha said hi."]), "Hello Bishesha said hi.")
+expect(SpeechSegmenter.join(["It stops.", "changing words."]), "It stops changing words.", "seam period dropped")
+expect(SpeechSegmenter.join(["Meet at 5 p.m.", "tomorrow."]), "Meet at 5 p.m. tomorrow.", "abbreviation kept")
 
 // MARK: - SpeechSegmenter.finish
 
@@ -141,7 +146,7 @@ final class CountingTranscriber: Transcribing {
     func prepare() async throws {}
     func transcribe(_ samples: [Float]) async throws -> String {
         calls.append(samples.count)
-        return "tail"
+        return "Tail."
     }
 }
 
@@ -161,7 +166,7 @@ do {
     // A short quiet trailing word: the whole tail passes the near-silence gate, but the
     // word is loud enough that trimSilence would keep it — must still re-decode.
     let (text, calls) = await finishCalls(tail: silence(0.5) + tone(0.06, amplitude: 0.02) + silence(0.44))
-    expect(text, "tail", "quiet word in tail re-decodes last chunk")
+    expect(text, "Tail.", "quiet word in tail re-decodes last chunk")
     expect(calls.description, "[\(7 * 16_000 + 16_000)]", "re-decode covers chunk + tail")
 }
 do {
@@ -172,8 +177,23 @@ do {
     expect(calls.description, "[]", "sub-threshold tail: no model call")
 }
 do {
+    // Speculation covers the tail and only silence followed: no model call.
+    let chunk = tone(7), fake = CountingTranscriber()
+    let samples = chunk + tone(2) + silence(1)
+    let text = try! await SpeechSegmenter.finish(
+        samples, chunkStarts: [0], texts: ["Chunk one."], committed: chunk.count,
+        speculation: (chunk.count + 2 * 16_000 + 8_000, "Spec."), transcriber: fake)
+    expect(text, "Chunk one. Spec.", "speculation reused")
+    expect(fake.calls.description, "[]", "speculation: no model call")
+    // Speech after the speculation: decode the tail instead.
+    let resumed = try! await SpeechSegmenter.finish(
+        samples + tone(1), chunkStarts: [0], texts: ["Chunk one."], committed: chunk.count,
+        speculation: (chunk.count + 2 * 16_000 + 8_000, "Spec."), transcriber: fake)
+    expect(resumed, "Chunk one. Tail.", "stale speculation ignored")
+}
+do {
     let (text, calls) = await finishCalls(tail: tone(2))
-    expect(text, "Chunk one. tail", "speech tail decoded alone")
+    expect(text, "Chunk one. Tail.", "speech tail decoded alone")
     expect(calls.description, "[32000]", "only the tail is decoded")
 }
 

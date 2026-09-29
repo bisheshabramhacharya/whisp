@@ -20,8 +20,8 @@ public enum MicRecorderError: Error {
 ///  - `init` reserves sample-buffer capacity and calls `engine.prepare()` so hardware
 ///    resources are pre-allocated. `start()` only has to install a tap (if needed) and
 ///    spin up the engine.
-///  - The engine is fully stopped on `stop()`/`cancel()`, so the orange mic indicator
-///    never stays on while idle.
+///  - The engine is fully stopped on `stop()`, and 0.5 s after `cancel()`, so the
+///    orange mic indicator never stays on while idle.
 ///  - Device changes (AirPods connect/disconnect) are handled by observing
 ///    `AVAudioEngineConfigurationChange`: the converter is rebuilt for the new input
 ///    format and, if we were recording, capture resumes transparently.
@@ -146,8 +146,11 @@ public final class MicRecorder: AudioRecording {
             throw error
         }
         do {
-            engine.prepare()
-            try engine.start()
+            // Still running after a tap (first half of a double-tap): keep it.
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
         } catch {
             teardownLocked()
             engineLock.unlock()
@@ -196,13 +199,13 @@ public final class MicRecorder: AudioRecording {
     }
 
     public func cancel() {
-        engineLock.lock()
-        teardownLocked()
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         recording = false
         lock.unlock()
-        engineLock.unlock()
+        // A tap is usually the first half of a double-tap: leave the mic running long
+        // enough for the second press to record without restarting it.
+        teardownWhenIdle(after: 0.5)
         endLevelReporting()
     }
 
@@ -211,8 +214,8 @@ public final class MicRecorder: AudioRecording {
     /// Stops the engine in the background unless a new recording started first.
     /// Holding `engineLock` serializes it with start() and device changes, so the
     /// mic is never left running while idle.
-    private func teardownWhenIdle() {
-        teardownQueue.async { [weak self] in
+    private func teardownWhenIdle(after delay: TimeInterval = 0) {
+        teardownQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.engineLock.lock()
             self.lock.lock()

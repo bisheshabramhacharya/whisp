@@ -9,10 +9,14 @@ import Foundation
 /// Input is 16 kHz mono Float32, same as `Transcribing`.
 public enum SpeechSegmenter {
 
+    /// How often the live loop looks for a cut.
+    public static let tick = 16_000 / 4  // 250 ms
     /// Don't cut before this much new audio — short chunks give the model too little context.
     public static let minChunk = 6 * 16_000
-    /// With no pause found, cut anyway once this much audio is pending.
-    public static let forceChunk = 25 * 16_000
+    /// With no pause found, cut anyway once this much audio is pending. Kept under the
+    /// model's fixed 15 s encoder window: longer audio costs a second window, and clips
+    /// just over 15 s lose punctuation and casing.
+    public static let forceChunk = 14 * 16_000
     /// A pause must be at least this long to cut in it.
     static let minPauseFrames = 35  // 350 ms
     static let frame = 160  // 10 ms
@@ -23,7 +27,7 @@ public enum SpeechSegmenter {
         guard samples.count >= minChunk else { return nil }
         let energies = frameEnergies(samples)
         guard let loud = percentile(energies, 0.9), loud > 0 else { return nil }
-        let threshold = max(Float(1.5e-3), loud * 0.08)
+        let threshold = pauseThreshold(loud: loud)
         let earliest = minChunk / 2 / frame
 
         // Latest pause of >= minPauseFrames that starts after `earliest`.
@@ -63,6 +67,26 @@ public enum SpeechSegmenter {
         return isNearSilent(Array(samples[..<cut])) ? nil : cut
     }
 
+    /// Whether `samples` (audio pending since the last cut) holds speech and ends in a
+    /// pause: the user may be done, so its transcript is worth computing ahead of release.
+    public static func endsInPause(_ samples: [Float]) -> Bool {
+        guard samples.count > minPauseFrames * frame, !isNearSilent(samples) else { return false }
+        let energies = frameEnergies(samples)
+        guard let loud = percentile(energies, 0.9), loud > 0 else { return false }
+        let threshold = pauseThreshold(loud: loud)
+        return energies.suffix(minPauseFrames).allSatisfy { $0 < threshold }
+    }
+
+    /// Whether nothing from `end` on would be kept as speech next to `samples[start..<end]`,
+    /// i.e. decoding `samples[start...]` would give the same text as `samples[start..<end]`.
+    public static func quietAfter(_ samples: [Float], start: Int, end: Int) -> Bool {
+        guard end < samples.count else { return true }
+        let rest = Array(samples[end...])
+        guard isNearSilent(rest) else { return false }
+        let peak = frameEnergies(Array(samples[start..<end])).max() ?? 0
+        return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: peak)
+    }
+
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
     public static func isNearSilent(_ samples: [Float], rmsThreshold: Float = 0.004) -> Bool {
         guard !samples.isEmpty else { return true }
@@ -77,7 +101,7 @@ public enum SpeechSegmenter {
 
     /// Replays the live loop offline (bench/tests): every `tick` samples, look for a cut
     /// in the audio pending since the previous one. Returns absolute cut indices.
-    public static func plan(_ samples: [Float], tick: Int = 16_000) -> [Int] {
+    public static func plan(_ samples: [Float]) -> [Int] {
         var cuts: [Int] = []
         var committed = 0
         var available = tick
@@ -93,21 +117,24 @@ public enum SpeechSegmenter {
 
     /// Release step: transcribe the tail and join it to the chunk transcripts.
     /// `chunkStarts[i]` is where the audio behind `texts[i]` began; the tail starts at
-    /// `committed`. A near-silent tail may still hold quiet trailing words the silence
-    /// gate would drop, so the last chunk is then re-decoded together with it — unless
-    /// no tail frame reaches the level `trimSilence` would keep as speech next to that
-    /// chunk, in which case the re-decode would see the same audio and is skipped.
+    /// `committed`. `speculation` is a transcript of `samples[committed..<end]` made
+    /// during a pause; it is the tail's text when nothing audible came after it.
+    /// A near-silent tail may still hold quiet trailing words the silence gate would
+    /// drop, so the last chunk is then re-decoded together with it — unless no tail
+    /// frame reaches the level `trimSilence` would keep as speech next to that chunk,
+    /// in which case the re-decode would see the same audio and is skipped.
     public static func finish(
         _ samples: [Float], chunkStarts: [Int], texts: [String], committed: Int,
-        transcriber: Transcribing
+        speculation: (end: Int, text: String)? = nil, transcriber: Transcribing
     ) async throws -> String {
+        if let speculation, quietAfter(samples, start: committed, end: speculation.end) {
+            return join(texts + [speculation.text])
+        }
         var texts = texts
         var tailStart = committed
-        if tailStart < samples.count, isNearSilent(Array(samples[tailStart...])),
-           let last = chunkStarts.last, !texts.isEmpty, last < committed {
-            let chunkPeak = frameEnergies(Array(samples[last..<committed])).max() ?? 0
-            let tailPeak = frameEnergies(Array(samples[tailStart...])).max() ?? 0
-            if tailPeak < speechThreshold(peak: chunkPeak) {
+        if tailStart < samples.count, let last = chunkStarts.last, !texts.isEmpty, last < committed,
+           isNearSilent(Array(samples[tailStart...])) {
+            if quietAfter(samples, start: last, end: committed) {
                 return join(texts)
             }
             texts.removeLast()
@@ -121,11 +148,17 @@ public enum SpeechSegmenter {
     /// Joins chunk transcripts. A chunk boundary sits in a pause, which the model often
     /// reads as a sentence start; when the previous chunk didn't end a sentence and the
     /// next starts with a capitalized common word ("And", "The"), lowercase it back.
+    /// Likewise a chunk ending in "." followed by one starting lowercase ("so it stops."
+    /// + "changing…") is one sentence, so the period goes.
     public static func join(_ parts: [String]) -> String {
         var result = ""
         for part in parts {
             var text = part.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
+            if result.hasSuffix("."), text.first?.isLowercase == true,
+               let lastWord = result.split(separator: " ").last, lastWord.filter({ $0 == "." }).count == 1 {
+                result.removeLast()
+            }
             if !result.isEmpty {
                 let endsSentence = result.last.map { ".?!".contains($0) } ?? true
                 let firstWord = text.prefix { $0.isLetter }
@@ -151,6 +184,12 @@ public enum SpeechSegmenter {
     /// in the clip. Deliberately low so quiet consonants are never clipped.
     static func speechThreshold(peak: Float) -> Float {
         max(1.5e-3, peak * 0.06)
+    }
+
+    /// A 10 ms frame counts as pause when its RMS is below this, given the clip's
+    /// 90th-percentile frame.
+    static func pauseThreshold(loud: Float) -> Float {
+        max(1.5e-3, loud * 0.08)
     }
 
     static func frameEnergies(_ samples: [Float]) -> [Float] {

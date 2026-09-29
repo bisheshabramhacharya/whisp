@@ -9,6 +9,12 @@ public protocol Transcribing: AnyObject {
     func prepare() async throws
     /// Returns the raw transcript (punctuated/capitalized by the model, no cleanup applied).
     func transcribe(_ samples: [Float]) async throws -> String
+    /// Wakes the model ahead of a decode, e.g. at key press after idle. Optional.
+    func rewarm() async
+}
+
+public extension Transcribing {
+    func rewarm() async {}
 }
 
 /// Microphone capture. Always delivers 16 kHz mono Float32 samples.
