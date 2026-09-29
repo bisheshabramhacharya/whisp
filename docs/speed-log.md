@@ -125,3 +125,9 @@ wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 �
 - mic-drop nuance: VM IO quantum ~100 ms inflates the ~4% last-word exposure; on a
   real M1 (~10–20 ms quantum) exposure is much smaller — still a dead end for a
   latency-free fix inside owned files.
+
+## New edge coverage for `short`
+
+After the `gen-edge.sh` header fix (432 files now load through `loadSamples16kMono`):
+`--compare parakeet,short --runs 1 --idle 0` on the first 40 edge files →
+**agree 1.0000**, WER identical (9.17 both), decode 127.2→56.8 ms. Full-432 run in flight.
