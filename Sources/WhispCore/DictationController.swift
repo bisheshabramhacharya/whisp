@@ -233,6 +233,9 @@ public final class DictationController: ObservableObject {
         recordingStartedAt = Date()
         recomputeState()
         startChunkLoop()
+        // The Neural Engine slows down after a short idle; one throwaway decode now keeps
+        // the first real decode of this take fast.
+        Task { [transcriber] in await transcriber.rewarm() }
 
         // 3. Mute system output so the model hears the user, not the speakers —
         //    after the start sound has played, since muting the device cuts it off.
@@ -331,14 +334,15 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Transcribe while recording
 
-    /// Every second, cut the audio pending since the last cut at a pause and transcribe
+    /// Every tick, cut the audio pending since the last cut at a pause and transcribe
     /// it in the background, so on release only the tail is left to decode.
     private func startChunkLoop() {
         let chunks = LiveChunks()
         live = chunks
+        let tickNs = UInt64(SpeechSegmenter.tick) * 1_000_000_000 / UInt64(sampleRate)
         chunkLoop = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: tickNs)
                 guard !Task.isCancelled, let self, self.live === chunks else { return }
                 self.transcribeFinishedChunk(chunks)
             }
@@ -355,7 +359,10 @@ public final class DictationController: ObservableObject {
     private func transcribeFinishedChunk(_ chunks: LiveChunks) {
         guard chunks.inFlight == nil, !chunks.failed else { return }
         let pending = recorder.samples(from: chunks.committed)
-        guard let cut = SpeechSegmenter.nextCut(in: pending) else { return }
+        guard let cut = SpeechSegmenter.nextCut(in: pending) else {
+            speculate(on: pending, chunks)
+            return
+        }
         let chunk = Array(pending[..<cut])
         chunks.starts.append(chunks.committed)
         chunks.committed += cut
@@ -369,18 +376,33 @@ public final class DictationController: ObservableObject {
         }
     }
 
+    /// When the user pauses, transcribe everything pending since the last cut without
+    /// cutting, so a release that follows the pause finds the tail already decoded.
+    /// Skipped when the last speculation already covers the audio up to now.
+    private func speculate(on pending: [Float], _ chunks: LiveChunks) {
+        guard SpeechSegmenter.endsInPause(pending) else { return }
+        let start = chunks.committed
+        if let previous = chunks.speculation, previous.start == start,
+           SpeechSegmenter.quietAfter(pending, start: 0, end: previous.end - start) { return }
+        chunks.inFlight = Task { [transcriber] in
+            if let text = try? await transcriber.transcribe(pending) {
+                chunks.speculation = (start, start + pending.count, text)
+            }
+            chunks.inFlight = nil
+        }
+    }
+
     /// Chunk transcripts first, then the tail. Falls back to the whole clip if any chunk failed.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
-        guard let chunks, chunks.committed > 0 else {
-            return try await transcriber.transcribe(samples)
-        }
+        guard let chunks else { return try await transcriber.transcribe(samples) }
         await chunks.inFlight?.value
         if chunks.failed || chunks.committed > samples.count {
             return try await transcriber.transcribe(samples)
         }
+        let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? ($0.end, $0.text) : nil }
         return try await SpeechSegmenter.finish(
             samples, chunkStarts: chunks.starts, texts: chunks.texts, committed: chunks.committed,
-            transcriber: transcriber)
+            speculation: speculation, transcriber: transcriber)
     }
 
     // MARK: - Serial transcription pipeline
@@ -440,10 +462,16 @@ public final class DictationController: ObservableObject {
 
         let cleaned = cleaner.clean(raw)
         let cleanMs = Self.ms(since: transcribedAt)
+        if raw.isEmpty, duration >= 1 {
+            statusMessage = "Didn't hear any speech — check the microphone input"
+        }
 
         let pasteStart = DispatchTime.now()
         var outcome = PasteResult.pasted
         if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // paste() waits for this lookup; Esc during that wait must still stop the paste.
+            _ = await target.precedingCharacter.value
+            guard id > cancelledThrough else { return }
             outcome = await paster.paste(cleaned, into: target)
         }
         let pasteMs = Self.ms(since: pasteStart)
@@ -509,4 +537,6 @@ private final class LiveChunks {
     var texts: [String] = []
     var inFlight: Task<Void, Never>?
     var failed = false
+    /// Transcript of the audio from `start` to `end`, made during a pause.
+    var speculation: (start: Int, end: Int, text: String)?
 }

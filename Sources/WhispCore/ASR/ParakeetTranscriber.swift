@@ -90,6 +90,12 @@ public final class ParakeetTranscriber: Transcribing {
         await engine.prepareVocabulary(vocabulary)
     }
 
+    /// Runs one throwaway decode so the next real one doesn't pay the Neural Engine's
+    /// wake-up after idle. No-op until the model is prepared.
+    public func rewarm() async {
+        await engine.rewarm()
+    }
+
     /// Transcribe 16 kHz mono Float32 samples. Serialized internally.
     /// Returns "" for silent/near-silent audio.
     public func transcribe(_ samples: [Float]) async throws -> String {
@@ -176,6 +182,8 @@ extension ParakeetTranscriber {
         /// The in-flight prepare, shared by concurrent callers; cleared on failure so a
         /// later call retries.
         private var preparing: Task<Void, Error>?
+        /// When the model last ran (uptime ns).
+        private var lastRun: UInt64 = 0
 
         // TDT backend
         private var asrManager: AsrManager?
@@ -275,6 +283,7 @@ extension ParakeetTranscriber {
         /// One full encoder pass over silent audio so the first real
         /// dictation never pays model-compile / first-dispatch cost.
         private func warmUp() async throws {
+            lastRun = DispatchTime.now().uptimeNanoseconds
             let silence = [Float](repeating: 0, count: 16_000)  // 1 s
             switch model {
             case .unified:
@@ -287,8 +296,16 @@ extension ParakeetTranscriber {
             }
         }
 
+        /// Skipped when the model ran recently enough to still be warm (and so a
+        /// double-tap's two presses warm it once).
+        func rewarm() async {
+            guard prepared, DispatchTime.now().uptimeNanoseconds - lastRun > 20_000_000_000 else { return }
+            try? await warmUp()
+        }
+
         /// Transcribe already-cleaned samples; returns post-rescored text.
         func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+            defer { lastRun = DispatchTime.now().uptimeNanoseconds }
             switch model {
             case .unified:
                 guard let unifiedManager else { throw TranscriberError.notPrepared }
