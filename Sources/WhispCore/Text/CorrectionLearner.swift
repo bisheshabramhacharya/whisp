@@ -293,12 +293,18 @@ public final class PendingCorrections {
 
     private let fileURL: URL
     private var entries: [Entry] = []
+    /// The file existed but wouldn't decode — don't write our in-memory state
+    /// over it (same never-clobber rule as the dictionary file).
+    private var fileUnreadable = false
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
-            entries = decoded
+        if let data = try? Data(contentsOf: fileURL) {
+            if let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
+                entries = decoded
+            } else {
+                fileUnreadable = true
+            }
         }
     }
 
@@ -333,7 +339,8 @@ public final class PendingCorrections {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
+        guard !fileUnreadable,
+              let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 }
