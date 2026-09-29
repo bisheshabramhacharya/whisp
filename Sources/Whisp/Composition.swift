@@ -16,7 +16,7 @@ enum Composition {
         let history = HistoryStore()
         let recordings = RecordingArchive()
 
-        let transcriber = ParakeetTranscriber()
+        let transcriber = ASREngine.make(named: settings.asrEngine)
         let recorder = MicRecorder()
         let hotkey = RightOptionHotkey(keyCode: UInt16(clamping: settings.hotkeyKeyCode))
         let paster = Paster()
@@ -63,7 +63,7 @@ enum Composition {
         // Status lines arrive on the main thread; the hop keeps the
         // @MainActor controller access explicit. Weak: the transcriber (which
         // stores this closure) is owned by the controller.
-        transcriber.onStatus = { [weak controller] status in
+        (transcriber as? StatusReporting)?.onStatus = { [weak controller] status in
             Task { @MainActor [weak controller] in
                 controller?.modelStatus = status
             }

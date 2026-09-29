@@ -23,7 +23,7 @@ public enum TranscriberError: Error, LocalizedError {
 /// model emits them — optionally passed through NeMo inverse text
 /// normalization ("twenty five dollars" -> "$25") and custom-vocabulary
 /// rescoring.
-public final class ParakeetTranscriber: Transcribing {
+public final class ParakeetTranscriber: Transcribing, StatusReporting {
 
     /// ASR model backend.
     public enum Model: String, Sendable, CaseIterable {
