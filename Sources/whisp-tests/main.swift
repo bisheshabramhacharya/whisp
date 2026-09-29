@@ -370,6 +370,31 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - A2 Reliability
+
+// A character key pressed while Right Option is held is always an Option+char
+// chord (@, Option+Backspace, ...) — cancel at any hold length. chordGrace only
+// covers modifier presses; users dwell on Option for seconds before typing.
+do {
+    func run(_ inputs: [(HotkeyStateMachine.Input, Double)]) -> String {
+        var m = HotkeyStateMachine()
+        return inputs.map { m.handle($0.0, now: $0.1).map { "\($0)" } ?? "-" }.joined(separator: " ")
+    }
+    expect(run([(.keyDown, 0), (.characterKey, 1), (.keyUp, 1.1)]), "start cancel -",
+           "late Option+char cancels")
+    expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.characterKey, 1.2), (.keyUp, 1.3)]),
+           "start cancel start cancel -", "Option+char cancels a second hold")
+    // Hands-free: our key is physically up — typed characters are just typing.
+    expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4),
+                (.characterKey, 2), (.characterKey, 2.1), (.keyDown, 3), (.keyUp, 3.1)]),
+           "start cancel start - - - stop -", "chars in hands-free are ignored")
+    // Modifier presses keep the chordGrace semantics.
+    expect(run([(.keyDown, 0), (.otherKey, 0.1), (.keyUp, 0.5)]), "start cancel -",
+           "modifier within grace cancels")
+    expect(run([(.keyDown, 0), (.otherKey, 1), (.keyUp, 2)]), "start - stop",
+           "modifier after grace ignored")
+}
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
