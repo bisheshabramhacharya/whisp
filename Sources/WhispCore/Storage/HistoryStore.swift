@@ -61,6 +61,7 @@ public final class HistoryStore: @unchecked Sendable {
         if !fm.fileExists(atPath: fileURL.path) {
             try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try line.write(to: fileURL, options: .atomic)
+            AppPaths.makeUserOnly(fileURL)
             return
         }
 

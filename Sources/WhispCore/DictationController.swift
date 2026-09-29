@@ -10,6 +10,12 @@ public protocol AudioMuting: AnyObject {
     func restore()
 }
 
+/// Reviews the previous paste when a new dictation begins (auto-learn watcher).
+@MainActor
+public protocol CorrectionWatching: AnyObject {
+    func dictationStarting()
+}
+
 /// UI feedback sounds. Implementations may keep their own `enabled` flag;
 /// DictationController additionally guards every call with `AppSettings.sounds`.
 public protocol SoundPlaying: AnyObject {
@@ -76,6 +82,8 @@ public final class DictationController: ObservableObject {
     private var isRecording = false
     private var systemMuted = false
     private var pendingTranscriptions = 0
+    /// Optional auto-learn watcher (nil in tests/fakes).
+    public var correctionWatcher: CorrectionWatching?
     private var recordingStartedAt: Date?
     private var capTask: Task<Void, Never>?
     private var muteTask: Task<Void, Never>?
@@ -213,6 +221,11 @@ public final class DictationController: ObservableObject {
 
     private func startCapture() {
         guard !isRecording else { return } // already recording (e.g. double .start)
+
+        // A new dictation ends the previous paste's review window.
+        correctionWatcher?.dictationStarting()
+        // A fresh take means the user is past whatever the last warning said.
+        statusMessage = nil
 
         // 1. Feedback first so the user hears the ack even if the mic fails.
         if settings.sounds { sounds.playStart() }
@@ -396,7 +409,7 @@ public final class DictationController: ObservableObject {
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
         await chunks.inFlight?.value
-        if chunks.failed || chunks.committed > samples.count {
+        if chunks.failed {
             return try await transcriber.transcribe(samples)
         }
         let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? ($0.end, $0.text) : nil }
@@ -464,6 +477,11 @@ public final class DictationController: ObservableObject {
         let cleanMs = Self.ms(since: transcribedAt)
         if raw.isEmpty, duration >= 1 {
             statusMessage = "Didn't hear any speech — check the microphone input"
+            if settings.sounds { sounds.playError() }
+        } else if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Spoke only fillers ("um uh"): it lands in history but nothing pastes — say so.
+            statusMessage = "Only filler words heard — nothing to paste"
+            if settings.sounds { sounds.playError() }
         }
 
         let pasteStart = DispatchTime.now()

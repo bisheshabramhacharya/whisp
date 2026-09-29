@@ -34,11 +34,30 @@ public enum AppPaths {
         root.appendingPathComponent("dictionary.json")
     }
 
-    /// Creates root + recordings dir if missing.
+    /// root/corrections-pending.json — real-word fixes seen once, waiting for a
+    /// second sighting before they become dictionary entries.
+    public static var pendingCorrectionsFile: URL {
+        root.appendingPathComponent("corrections-pending.json")
+    }
+
+    /// Creates root + recordings dir if missing, and locks the whole data dir
+    /// down to the current user: transcripts and voice recordings are private,
+    /// but `~/Library/Application Support` is world-readable by default.
+    /// Tightens permissions on existing installs too.
     public static func ensureDirectories() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         try fm.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recordingsDir.path)
+        for file in [historyFile, dictionaryFile] where fm.fileExists(atPath: file.path) {
+            makeUserOnly(file)
+        }
+    }
+
+    /// Makes `url` readable/writable only by the current user (0600). Best-effort.
+    public static func makeUserOnly(_ url: URL) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     /// Creates dictionary.json with an empty template if it does not exist yet.
@@ -55,6 +74,7 @@ public enum AppPaths {
                 """
             try? template.write(to: dictionaryFile, atomically: true, encoding: .utf8)
         }
+        makeUserOnly(dictionaryFile)
         return dictionaryFile
     }
 }
