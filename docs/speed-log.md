@@ -25,7 +25,33 @@ Command: `whisp-bench --replay --offsets 0,50,100,150,200,350,600,1000 <clips>`
 
 Mechanics confirmed on a padded 2.4 s clip: release at last-word +0/+100 ms → full tail decode (~124 ms VM); +200 ms → speculation fired but still in-flight → ~42 ms wait (remainder); +350 ms+ → speculation hit → ~0 ms. Today's app only wins when the owner holds ≥350 ms past the last word.
 
-300-clip dictation set baseline: (running serially — fills in when the run lands)
+300-clip dictation-set baseline (command above over all 300 clips, serial, fixed build):
+
+| release offset | wait p50 | wait p95 | wait mean | no-wait | spec-hit | last-word ok |
+|---|---|---|---|---|---|---|
+| +0 ms | 131 | 167 | 134 | 0% | 2% | 99.0% |
+| +50 ms | 130 | 163 | 131 | 0% | 16% | 99.0% |
+| +100 ms | 122 | 158 | 113 | 0% | 66% | 99.0% |
+| +150 ms | 73 | 123 | 71 | 3% | 100% | 99.0% |
+| +200 ms | 24 | 77 | 29 | 32% | 99% | 99.0% |
+| +350 ms | 0 | 113 | 10 | 91% | 90% | 99.0% |
+| +600 ms | 0 | 0 | 0 | 100% | 90% | 99.0% |
+| +1000 ms | 0 | 0 | 0 | 100% | 89% | 99.0% |
+
+Baseline floor: last-word ok is 99.0% at every offset — exactly 3 clips lose the last word even today: **blip-059.wav** ("In"), **word-043.wav** ("Thanks."), **word-051.wav** ("Seven.") — short quiet clips whose clipped decode returns empty at every offset. The accuracy gate for new engines is "zero NEW dropped final words" vs this floor.
+
+Caveat: a second aggregate (`--show` rerun while other benches contended) read p50 187 / p95 224 at +0 — use the serial table above; ~30–40% inflation under parallel load is the norm on this VM.
+
+## Compare + profile baseline (VM, serial)
+
+`--compare parakeet,profiled --runs 20 --idle 30` over 40 files (30 dictation + 10 test-clean):
+
+- parakeet: warm p50 130.6 / p95 165.8; idle 30 s + rewarm p50 130.4 / max 174.9 — rewarm fully hides the cold-start on this VM.
+- profiled (ported internals driving the same .mlmodelc): warm p50 129.4 / p95 164.8; word agreement vs parakeet **1.0000**; WER identical.
+- WER on the mixed set: 6.56 (dictation refs = the `say` source text; includes normalization losses). Baseline for the ±0.1 pt gate.
+- WER baselines (parakeet, `--runs 1 --idle 0`): test-clean 100 files → **3.45**; test-other 50 files → **1.28** (odd but measured — the sorted-first-50 slice happens to be easy; use same-subset deltas, not absolute). profiled differs only on `1688-142285-0000.flac` (one word, favors profiled). Longer LibriSpeech clips decode at warm p50 ~216–221 ms (>15 s files go multi-window).
+- Ref-lookup fix: `loadFiles` now tries `<file>.<ext>.txt` then `<file>.txt` — dictation refs were silently skipped before (WER 0.00 by omission). Commit dc6f81d.
+- Clean serial `--profile` (39 dictation files, 3 runs): mel 3.1 / encoder 119.4 (92%) / joint 4.1 (23 calls) / decoder 2.7 (8 calls) / overhead 0.1 → total 129.6 ms, 32 CoreML calls, 15 encoder frames, 7 tokens. Earlier 148 ms mean was ~14% CPU-contended.
 
 Tooling fix during this run: `collectEvents` indexed `pending[..<cut]` where `pending` is a `samples[committed..<tick]` slice (index base `committed`) but `cut` is 0-based — `Trace/BPT trap: 5` on the second chunk event, i.e. only on takes long enough to commit ≥2 chunks (the 4.5–9 min `long-*` clips). Fixed with `pending.prefix(cut)` (speed/track-a-tools @ 113e28c, merged to speed/all @ 9441327). The same style of bug would silently under-feed a decode whenever `committed < cut` — no corrupted data was recorded: first cuts always ran with `committed == 0`, and no run survived to write results.
 
