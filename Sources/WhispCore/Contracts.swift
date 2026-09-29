@@ -61,10 +61,15 @@ public struct PasteTarget: Sendable {
     /// Character before the cursor, looked up in the background so the Accessibility
     /// round-trips overlap transcription instead of delaying the paste.
     public let precedingCharacter: Task<Character?, Never>
+    /// General-pasteboard contents captured at key release, off the main thread, so
+    /// the restore snapshot doesn't have to wait on the pasteboard server at paste time.
+    public let clipboard: Task<ClipboardCapture, Never>?
 
-    public init(pid: pid_t?, precedingCharacter: Task<Character?, Never>) {
+    public init(pid: pid_t?, precedingCharacter: Task<Character?, Never>,
+                clipboard: Task<ClipboardCapture, Never>? = nil) {
         self.pid = pid
         self.precedingCharacter = precedingCharacter
+        self.clipboard = clipboard
     }
 }
 
