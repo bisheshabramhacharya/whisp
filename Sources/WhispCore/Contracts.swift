@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 // Shared contracts between modules. Each module's concrete type conforms to one of these,
@@ -54,16 +55,47 @@ public enum HotkeyError: Error {
     case permissionDenied
 }
 
+/// The focused text element at key release: the one time-boxed AX lookup that
+/// serves the leading-space heuristic (preceding), and — for auto-learn —
+/// the element + cursor + ~40 chars of anchor text before it.
+public struct FocusedContext: @unchecked Sendable { // AXUIElement is a CFType
+    public let element: AXUIElement
+    /// UTF-16 offset of the insertion point (where the paste will land).
+    public let cursorLocation: Int
+    /// Character immediately before the cursor.
+    public let preceding: Character?
+    /// Up to 40 UTF-16 characters of text before the cursor (the anchor).
+    public let beforeText: String
+
+    public init(element: AXUIElement, cursorLocation: Int, preceding: Character?, beforeText: String) {
+        self.element = element
+        self.cursorLocation = cursorLocation
+        self.preceding = preceding
+        self.beforeText = beforeText
+    }
+}
+
 /// Where a dictation should land, captured at key release.
 public struct PasteTarget: Sendable {
     /// Frontmost app at key release.
     public let pid: pid_t?
-    /// Character before the cursor, looked up in the background so the Accessibility
-    /// round-trips overlap transcription instead of delaying the paste.
+    /// The focused-element lookup running in the background so the
+    /// Accessibility round-trips overlap transcription instead of delaying
+    /// the paste.
+    public let focused: Task<FocusedContext?, Never>
+    /// Character before the cursor, derived from `focused`.
     public let precedingCharacter: Task<Character?, Never>
 
+    public init(pid: pid_t?, focused: Task<FocusedContext?, Never>) {
+        self.pid = pid
+        self.focused = focused
+        self.precedingCharacter = Task { await focused.value?.preceding }
+    }
+
+    /// For fakes and callers that only care about the preceding character.
     public init(pid: pid_t?, precedingCharacter: Task<Character?, Never>) {
         self.pid = pid
+        self.focused = Task { nil }
         self.precedingCharacter = precedingCharacter
     }
 }

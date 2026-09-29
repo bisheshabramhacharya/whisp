@@ -10,6 +10,12 @@ public protocol AudioMuting: AnyObject {
     func restore()
 }
 
+/// Reviews the previous paste when a new dictation begins (auto-learn watcher).
+@MainActor
+public protocol CorrectionWatching: AnyObject {
+    func dictationStarting()
+}
+
 /// UI feedback sounds. Implementations may keep their own `enabled` flag;
 /// DictationController additionally guards every call with `AppSettings.sounds`.
 public protocol SoundPlaying: AnyObject {
@@ -76,6 +82,8 @@ public final class DictationController: ObservableObject {
     private var isRecording = false
     private var systemMuted = false
     private var pendingTranscriptions = 0
+    /// Optional auto-learn watcher (nil in tests/fakes).
+    public var correctionWatcher: CorrectionWatching?
     private var recordingStartedAt: Date?
     private var capTask: Task<Void, Never>?
     private var muteTask: Task<Void, Never>?
@@ -213,6 +221,9 @@ public final class DictationController: ObservableObject {
 
     private func startCapture() {
         guard !isRecording else { return } // already recording (e.g. double .start)
+
+        // A new dictation ends the previous paste's review window.
+        correctionWatcher?.dictationStarting()
 
         // 1. Feedback first so the user hears the ack even if the mic fails.
         if settings.sounds { sounds.playStart() }

@@ -370,6 +370,130 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - Auto-learn
+
+// The learner's "real word" oracle is a set here; "Pychy" is the only unknown
+// (model-junk) word in the fixtures.
+let knownWords: Set<String> = [
+    "soul", "use", "the", "model", "open", "now", "we", "sell", "on", "vinted",
+    "meet", "tuesday", "monday", "should", "ship", "it", "send", "to", "him",
+    "hello", "there", "with", "and", "more", "typed", "after", "pi", "cli",
+    "fully", "rewritten", "this", "is", "a", "different", "story", "today", "i",
+]
+let learner = CorrectionLearner(isKnownWord: { knownWords.contains($0.lowercased()) })
+
+func checkLearn(_ pasted: String, _ current: String,
+                _ expected: [CorrectionLearner.Decision],
+                rules: [(from: [String], to: String)] = [],
+                _ label: String, line: Int = #line) {
+    let decisions = learner.decide(pasted: pasted, current: current, existingRules: rules)
+    expect((decisions == expected).description, "true",
+           "\(label) — got \(decisions)", line: line)
+}
+
+// The required table from the brief.
+checkLearn("I use the soul model.", "I use the Sol model.",
+           [.pending(from: "soul", to: "Sol", kind: .replacement)], "soul→Sol: pending")
+checkLearn("Open Pychy now.", "Open pi CLI now.",
+           [.replacement(from: "Pychy", to: "pi CLI")], "junk from learns right away")
+checkLearn("We sell on vinted.", "We sell on Vinted.",
+           [.pending(from: "vinted", to: "Vinted", kind: .term)], "case-only pending")
+checkLearn("Meet on Tuesday.", "Meet on Monday.", [], "Tuesday→Monday never")
+checkLearn("We should ship it.", "We should not ship it.", [], "insertion ignored")
+checkLearn("Send it to him.", "Send it too him.", [], "stoplist ignored")
+checkLearn("Hello there.", "Hello there!", [], "punctuation-only ignored")
+checkLearn("We should ship it today.", "A fully rewritten different story.", [],
+           "rewrite learns nothing")
+checkLearn("Open Pychy now.", "Open pi CLI now. And more typed after.",
+           [.replacement(from: "Pychy", to: "pi CLI")], "typed-after still learns")
+checkLearn("Open Pychy now.", "", [], "deletion learns nothing")
+checkLearn("I use the Sol model.", "I use the soul model.",
+           [.removed(from: "soul", to: "Sol")],
+           rules: [(["soul"], "Sol")], "undo removes the rule")
+checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
+           [.replacement(from: "Pychy", to: "pi CLI"),
+            .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
+
+// Anchor search with shifted offsets: the owner typed before the pasted span,
+// so the anchor sits at a different position in the re-read window — the span
+// is still found exactly once.
+do {
+    let window = "The owner added a sentence first. I use the soul model. Trailing."
+    let shifted = window.replacingOccurrences(of: "The owner added", with: "The owner really added")
+    let r1 = EditWatcher.singleOccurrence(of: "I use the ", in: window)
+    let r2 = EditWatcher.singleOccurrence(of: "I use the ", in: shifted)
+    expect(r1 != nil && r2 != nil ? "found" : "nil", "found", "anchor found at shifted offset")
+    if let r2 {
+        expect(String(shifted[r2.upperBound...]), "soul model. Trailing.", "text after shifted anchor")
+    }
+    // An anchor that occurs twice in the window is ambiguous: learn nothing.
+    let repeatWindow = "I use the soul model. Again I use the Sol model."
+    expect(EditWatcher.singleOccurrence(of: "I use the ", in: repeatWindow) == nil ? "nil" : "found",
+           "nil", "ambiguous anchor learns nothing")
+    // Paste at document start: empty anchor pins to the window start.
+    let empty = EditWatcher.singleOccurrence(of: "", in: "Sol model.")
+    expect(empty != nil && String("Sol model."[empty!.upperBound...]) == "Sol model." ? "ok" : "bad",
+           "ok", "empty anchor = document start")
+}
+
+// Apply path: pending file + dictionary.json in a temp dir.
+let learnDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("whisp-learn-\(UUID().uuidString)", isDirectory: true)
+try FileManager.default.createDirectory(at: learnDir, withIntermediateDirectories: true)
+let dictFile = learnDir.appendingPathComponent("dictionary.json")
+let pendFile = learnDir.appendingPathComponent("corrections-pending.json")
+try """
+{
+  "terms": [],
+  "replacements": []
+}
+""".write(to: dictFile, atomically: true, encoding: .utf8)
+
+let watcher = EditWatcher(learner: learner, dictionaryFile: dictFile,
+                          pendingFile: pendFile, isEnabled: { true })
+
+func dictHas(_ needle: String) -> Bool {
+    (try? String(contentsOf: dictFile, encoding: .utf8).contains(needle)) ?? false
+}
+
+// 1st sighting of a real-word fix: pending only, dictionary untouched.
+watcher.apply(learner.decide(pasted: "I use the soul model.",
+                                   current: "I use the Sol model.", existingRules: []))
+expect(dictHas("Sol").description, "false", "pending writes nothing to dictionary")
+expect((try? String(contentsOf: pendFile, encoding: .utf8))?
+        .contains("soul") == true ? "pending" : "empty", "pending", "fix counted in pending file")
+
+// 2nd sighting: promoted into dictionary.json.
+watcher.apply(learner.decide(pasted: "I use the soul model.",
+                                   current: "I use the Sol model.", existingRules: []))
+expect(dictHas("soul").description, "true", "second sighting writes the rule")
+expect(dictHas("Sol").description, "true", "rule maps to Sol")
+expect(watcher.lastSummary?.contains("soul → Sol") ?? false ? "shown" : "hidden",
+       "shown", "menu shows Learned: soul → Sol")
+
+// Junk fix writes immediately.
+watcher.apply(learner.decide(pasted: "Open Pychy now.",
+                                   current: "Open pi CLI now.", existingRules: []))
+expect(dictHas("Pychy").description, "true", "junk fix writes at once")
+expect(dictHas("pi CLI").description, "true", "junk fix target saved")
+
+// Undo of the learned batch restores the pre-learn state.
+watcher.undoLast()
+expect(dictHas("Pychy").description, "false", "undo removes the junk fix")
+
+// Undo: owner corrects a pasted Sol back to soul — the from is removed.
+watcher.apply(learner.decide(pasted: "I use the Sol model.",
+                                   current: "I use the soul model.",
+                                   existingRules: PersonalDictionary.loadPairs(fileURL: dictFile)))
+expect(dictHas("soul").description, "false", "undone rule loses its from")
+
+// Malformed dictionary.json: no write, no crash.
+try "not json at all {{{".write(to: dictFile, atomically: true, encoding: .utf8)
+watcher.apply(learner.decide(pasted: "Open Pychy now.",
+                                   current: "Open pi CLI now.", existingRules: []))
+expect((try? String(contentsOf: dictFile, encoding: .utf8)) ?? "", "not json at all {{{",
+       "malformed dictionary never clobbered")
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)

@@ -11,6 +11,7 @@ public final class AppSettings: ObservableObject {
         static let sounds = "sounds"
         static let autoMute = "autoMute"
         static let keepRecordings = "keepRecordings"
+        static let learnFromCorrections = "learnFromCorrections"
         static let launchAtLoginDesired = "launchAtLoginDesired"
         static let hotkeyKeyCode = "hotkeyKeyCode"
         static let pillScale = "pillScale"
@@ -33,6 +34,12 @@ public final class AppSettings: ObservableObject {
     /// Keep WAVs of every dictation next to history.jsonl (fine-tuning data).
     @Published public var keepRecordings: Bool {
         didSet { defaults.set(keepRecordings, forKey: Key.keepRecordings) }
+    }
+
+    /// After each paste, watch for small manual fixes and learn them into the
+    /// dictionary (menu: "Learn from my corrections").
+    @Published public var learnFromCorrections: Bool {
+        didSet { defaults.set(learnFromCorrections, forKey: Key.learnFromCorrections) }
     }
 
     /// Carbon/virtual key code for the push-to-talk key. Default 61 = Right Option.
@@ -99,6 +106,7 @@ public final class AppSettings: ObservableObject {
             Key.sounds: true,
             Key.autoMute: true,
             Key.keepRecordings: true,
+            Key.learnFromCorrections: true,
             Key.launchAtLoginDesired: false,
             Key.hotkeyKeyCode: 61, // Right Option
             Key.pillScale: 0.75,
@@ -107,6 +115,7 @@ public final class AppSettings: ObservableObject {
         self.sounds = defaults.bool(forKey: Key.sounds)
         self.autoMute = defaults.bool(forKey: Key.autoMute)
         self.keepRecordings = defaults.bool(forKey: Key.keepRecordings)
+        self.learnFromCorrections = defaults.bool(forKey: Key.learnFromCorrections)
         self.hotkeyKeyCode = defaults.integer(forKey: Key.hotkeyKeyCode)
         self.pillScale = defaults.double(forKey: Key.pillScale)
         self.alwaysShowPill = defaults.bool(forKey: Key.alwaysShowPill)
