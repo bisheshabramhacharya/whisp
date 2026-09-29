@@ -120,3 +120,34 @@ work that's ~100 ms off decode → release→paste ≈ **75–100 ms** for ≤5 
 ANE being faster per MAC than this VM's CPU. p95 needs the streaming/finish work (C) and the
 D-side joint/decoder loop to trim the >5 s and cold-path tails. The M1 check turns "likely"
 into a measurement.
+
+## Plain-language summary
+
+Whisp spent ~170 ms of your ~174 ms release→paste waiting on the speech model, and ~85%
+of that was the encoder padding every take out to a fixed 15-second window — a 2-second
+command paid for 15 seconds of math. The fix that does almost all the work: encode only
+what you actually said. On this VM the decode for a typical take drops from ~128 ms to
+~57 ms, the transcripts are byte-identical across all 300 dictation clips and all 432
+hostile edge clips, and real WER slightly improves. On your M1 that predicts a median
+release→paste of roughly 75–100 ms — the target — before the Neural Engine's speed is
+even counted. It's behind a hidden setting until the M1 check confirms it:
+`defaults write com.bishesha.whisp asrEngine short`.
+
+Everything else is smaller and opt-in: the speculation window is now 180 ms (releases
+that land while you're still speaking hit a finished guess far more often); a second
+decoder lane can overlap the tail; a batched joint call trims per-token overhead —
+that one is a CPU wash here but should win on the Neural Engine. The streaming engine
+turns the release wait into just flushing held-back context (~80–90 ms VM) but its
+word agreement is 98.9% — below the strict gate — mostly because the streaming model
+writes "72" instead of "seventy two". It's opt-in only, verdict in the scorecard.
+
+Measured dead ends, honestly: the microphone drops the tail of the last word if you
+release mid-syllable (~4% on this VM, less on real hardware); streaming encoder windows
+below the stock one fail accuracy; the clipboard snapshot is already off the critical
+path. Correctness fixes riding along: permission loss no longer leaves the mic running,
+Esc no longer pays a decode, the frontmost app is rechecked before ⌘V, a corrupt
+corrections file can never be overwritten, first-take cleanup is prewarmed.
+
+One command on your Mac measures the real thing:
+`scripts/speed/m1-check.sh <recordings-folder> parakeet,short` — prints the same tables
+against your actual dictations, then deletes its downloads.
