@@ -71,9 +71,10 @@ From Track B's log (`docs/speed-log-b.md`):
 Lead audit items (from the independent review at 098dac7):
 
 - Mic stop discards post-release buffer (MicRecorder.swift:190-205) — **dead end, measured**:
-  ~4% last-word loss at +0 release; no latency-free fix inside the owned files — the real fix is
-  draining the final audio buffer at release (MicRecorder, needs careful device-level work;
-  flagged for a follow-up, not this run).
+  ~4% last-word loss at +0 release on this VM — but the VM's ~100 ms IO quantum inflates it;
+  on a real M1 (~10–20 ms quantum) exposure is much smaller. No latency-free fix inside the
+  owned files — draining the final audio buffer at release is real follow-up work (MicRecorder),
+  flagged for the owner.
 - Permission loss leaves capture running — **shipped**: `hotkeyPermissionLost` now cancels
   capture (`if isRecording { cancelCapture() }`). speed/all @ 303ad8d.
 - Cancelled work keeps decoding — **shipped**: `enqueueTranscription` bails at task start when
