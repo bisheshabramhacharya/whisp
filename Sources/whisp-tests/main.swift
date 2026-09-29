@@ -688,6 +688,19 @@ checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
             .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
 
+// Long takes: one fix in the middle of ~3000 words learns just that fix, and
+// the diff stays cheap because only the changed middle is compared.
+do {
+    let filler = Array(repeating: "we sell on the model and more", count: 215).joined(separator: " ")
+    let pasted = filler + " Open Pychy now. " + filler + "."
+    let current = filler + " Open pi CLI now. " + filler + ". And more typed after."
+    let start = DispatchTime.now()
+    checkLearn(pasted, current, [.replacement(from: "Pychy", to: "pi CLI")], "one fix in a 3000-word take")
+    checkLearn(pasted, pasted + " And more typed after.", [], "3000-word take, only typed after")
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6
+    print(String(format: "learner on 2 x 3000-word takes: %.2f ms", ms))
+}
+
 // Anchor search with shifted offsets: the owner typed before the pasted span,
 // so the anchor sits at a different position in the re-read window — the span
 // is still found exactly once.
