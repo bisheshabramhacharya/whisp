@@ -115,6 +115,8 @@ public struct CompareRunner {
         switch name {
         case "parakeet", "baseline": return ParakeetTranscriber()
         case "profiled": return ProfiledTranscriber()
+        case "fast": return FastRnnt(jointComputeUnits: .cpuOnly)
+        case "fastall": return FastRnnt(jointComputeUnits: .all)
         default: throw CompareError.unknownEngine(name)
         }
     }
