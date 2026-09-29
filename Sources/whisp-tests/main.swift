@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import WhispCore
 
@@ -582,6 +583,34 @@ do {
     expect(SpeechSegmenter.trimSpeech(silence(2)).isEmpty.description, "true", "all silence trims to empty")
     expect(SpeechSegmenter.trimSpeech(tone(0.01)).count.description, "160", "sub-frame clip untouched")
 }
+// MARK: - A1 Speed
+
+// Paster: the restore snapshot is captured at target() and the user's
+// clipboard comes back after ⌘V. Runs against the real general pasteboard.
+@MainActor
+func pasterTests() async {
+    let board = NSPasteboard.general
+    let paster = Paster()
+    let marker = "whisp-test-marker-\(UUID().uuidString.prefix(6))"
+
+    board.clearContents()
+    board.setString(marker, forType: .string)
+    let t = paster.target()
+    _ = await paster.paste("dictated words", into: t)
+    expect(board.string(forType: .string) ?? "?", "dictated words", "paste writes text")
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    expect(board.string(forType: .string) ?? "?", marker, "clipboard restored after paste")
+
+    // The user copies between key release and paste -> the newer clipboard wins.
+    let t2 = paster.target()
+    _ = await t2.clipboard?.value // let the key-release capture see `marker` first
+    board.clearContents()
+    board.setString("user copy", forType: .string)
+    _ = await paster.paste("more words", into: t2)
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
+}
+await pasterTests()
 
 // MARK: - Speed
 
