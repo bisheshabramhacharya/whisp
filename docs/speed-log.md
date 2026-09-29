@@ -25,7 +25,15 @@ Command: `whisp-bench --replay --offsets 0,50,100,150,200,350,600,1000 <clips>`
 
 Mechanics confirmed on a padded 2.4 s clip: release at last-word +0/+100 ms → full tail decode (~124 ms VM); +200 ms → speculation fired but still in-flight → ~42 ms wait (remainder); +350 ms+ → speculation hit → ~0 ms. Today's app only wins when the owner holds ≥350 ms past the last word.
 
-300-clip dictation set baseline: (pending — rerun serially; first pass was CPU-contended by a parallel job)
+300-clip dictation set baseline: (running serially — fills in when the run lands)
+
+Tooling fix during this run: `collectEvents` indexed `pending[..<cut]` where `pending` is a `samples[committed..<tick]` slice (index base `committed`) but `cut` is 0-based — `Trace/BPT trap: 5` on the second chunk event, i.e. only on takes long enough to commit ≥2 chunks (the 4.5–9 min `long-*` clips). Fixed with `pending.prefix(cut)` (speed/track-a-tools @ 113e28c, merged to speed/all @ 9441327). The same style of bug would silently under-feed a decode whenever `committed < cut` — no corrupted data was recorded: first cuts always ran with `committed == 0`, and no run survived to write results.
+
+Verified after fix on long-103.wav (267.8 s, 20+ chunk events): full replay completes; +0 ms release → 154 ms wait (full tail decode), +150/+200 → spec in-flight remainder 117/67 ms, +350+ → spec hit 0 ms, last-word ok 100% at every offset.
+
+## Replay mechanics (why the app looks the way it does)
+
+The serial-pipeline model (one decode in flight; a decode at tick T masks ticks until T+D — matching `DictationController`'s `chunks.inFlight` early-return) reproduces the owner's observation that speculation only pays ≥350 ms after the last word: a speculation needs ~200 ms of trailing pause to trigger, then ~decode-time to land. Release inside that window waits out the in-flight remainder; release before it decodes the whole tail. So the big wins are (a) a cheaper tail decode and (b) earlier speculation triggers — exactly Tracks B/C/D.
 
 ## FluidAudio bump (lever: library version)
 
@@ -35,7 +43,7 @@ Mechanics confirmed on a padded 2.4 s clip: release at last-word +0/+100 ms → 
 ## Test sets
 
 - LibriSpeech test-clean 2620 + test-other 500 (`scripts/speed/fetch-librispeech.sh`, refs as `.flac.txt`).
-- Dictation set 300 `say` clips: short commands, questions, one-word, ≤0.3 s blips, trailing names/products, numbers/times/money, multi-sentence takes, 1–3 min takes; 8 voices × 3 rates; 0.15 s lead + 1.2 s tail silence (`scripts/speed/gen-dictation.sh`).
+- Dictation set 300 `say` clips: short commands, questions, one-word, ≤0.3 s blips, trailing names/products, numbers/times/money, multi-sentence takes, plus 3 long takes that came out 4.5–9 min (longer than spec — kept: they exercise the multi-chunk path and caught a replay bug); 8 voices × 3 rates; 0.15 s lead + 1.2 s tail silence (`scripts/speed/gen-dictation.sh`).
 - Edge set 432 clips: quiet final word −20/−30 dB, cough mid-take, noise 10/20 dB SNR, −15 dB low gain, hard clipping, trailing breath, mid-word truncation (`scripts/speed/gen-edge.sh`).
 
 ## Track logs
