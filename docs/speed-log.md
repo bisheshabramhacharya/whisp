@@ -92,3 +92,11 @@ The serial-pipeline model (one decode in flight; a decode at tick T masks ticks 
 - **PR #26 FastRnnt** (speed/d-fast-rnnt): batched wide joint (`parakeet_unified_joint.mlmodelc` from the HF repo via `additionalModelNames`) — logits valid across blank runs → joint calls ~120→46/decode, decoder calls unchanged. Byte-identical dumps on dictation+edge+test-clean. VM-CPU wash (194.9 vs 193.4 p50, `--compare parakeet,fast --runs 30 --idle 20` 27-file subset) — the win is dispatch-bound, i.e. ANE → needs-M1. Engine names `fast` (.cpuOnly joint) / `fastall` (.all).
 - **PR #27 pipeline** (speed/d-pipeline): `earlyTail` — release during in-flight decode + no covering speculation + non-silent tail → tail decode starts immediately; lanes=1 queues identically (ordering preserved), `par2` overlaps → wait `max(rem,tail)` vs `rem+tail`, p95 357→309 @ +0. Segmenter knobs `WHISP_MIN_PAUSE_FRAMES`/`WHISP_SPEC_PAUSE_FRAMES`; grid: spec=150 ms safe (100% last-word), 100 ms fails; minPause 35 optimal. Shipped default unchanged pending edge validation.
 - speed/all @ f17a82f: 270/270; `--compare parakeet,short,fast` 15 files ×5: p50 128.2/55.9/127.5, WER 16.67 all, agree 1.0000.
+
+## Post-D-merge full replay (speed/all @ f17a82f, 300 files, `--replay --engine parakeet`)
+
+wait p50: +0 → 132, +100 → 123, +150 → 74, +200 → 25, +350 → 0, +600 → 0; last-word ok 99.0% at every offset — identical to the pre-merge baseline: the serial parakeet path is unchanged (earlyTail only races in-flight decodes; lanes=1 preserves ordering). `--compare parakeet,short,fast` post-merge: WER 16.67 / agree 1.0000 across all three.
+
+## Lead fix: pending-corrections clobber (PR #28)
+
+`PendingCorrections.init` turned an undecodable file into `entries = []`, then `save()` overwrote it — violating the documented never-clobber rule (audit repro confirmed). Now flags `fileUnreadable` on existing-but-undecodable input and `save()` skips until it parses. Not a speed lever; folded in because the audit flagged it.
