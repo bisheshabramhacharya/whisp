@@ -100,3 +100,7 @@ wait p50: +0 → 132, +100 → 123, +150 → 74, +200 → 25, +350 → 0, +600 �
 ## Lead fix: pending-corrections clobber (PR #28)
 
 `PendingCorrections.init` turned an undecodable file into `entries = []`, then `save()` overwrote it — violating the documented never-clobber rule (audit repro confirmed). Now flags `fileUnreadable` on existing-but-undecodable input and `save()` skips until it parses. Not a speed lever; folded in because the audit flagged it.
+
+## `short` engine full replay (speed/all @ f17a82f, `--replay --engine short`, 300 files)
+
+wait p50: +0 → **61**, +100 → **54**, +150 → **4**, +200 → **0**, +350 → **0**, +600 → **0** (vs parakeet 132/123/74/25/0/0); last-word ok 99.0% every offset — gate holds. Note +0 is 61 not B's 40: this run includes the >5 s files B's own runs excluded from the w5000 path (>5 s → 15 s window or multi-window fallback), plus p95 161 at +0 = the >5 s tail. The ≤5 s subset reproduces B's ~40.
