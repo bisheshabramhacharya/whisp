@@ -12,8 +12,8 @@ import Foundation
 ///                                                  distinguishable)
 ///   flagsChanged(other mods)  -> .otherKey          (only when a modifier bit is *newly* set)
 ///   keyDown(keyCode 53)       -> .escape
-///   keyDown(anything else)    -> .characterKey  (a non-modifier press — always a
-///                                              chord while our key is held)
+///   keyDown(anything else)    -> .characterKey  (a non-modifier press — a chord
+///                                              early in a hold)
 ///
 /// The tap is re-enabled automatically if the system disables it for timeout/user
 /// input. `start()` throws `HotkeyError.permissionDenied` when the tap cannot be
