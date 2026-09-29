@@ -78,3 +78,11 @@ The serial-pipeline model (one decode in flight; a decode at tick T masks ticks 
 - Track B (short encoder window): `docs/speed-log-b.md` on `speed/track-b-*`.
 - Track C (streaming engine): `docs/speed-log-c.md` on `speed/track-c-*`.
 - Track D (RNNT/pipeline): `docs/speed-log-d.md` on `speed/track-d-*`.
+
+## Lead work since B merged (2026-09-29)
+
+- **w5000 encoder rebuilt on this VM** (`uv run --no-sync python tools/convert/convert-short-window.py --windows 5 --validate --install`, coremltools on macOS 26.5.2 arm64): NeMo→CoreML parity `enc_len torch=41 coreml=41, mean_abs 0.0012, max_abs 0.048`. `whisp-bench --compare parakeet,short` on 30 dictation files ×20 runs: **warm p50 128.7→57.7 ms (-55%), WER 8.75=8.75, agree 1.0000** — reproduces B's win on a second machine.
+- **Release asset staged**: `parakeet_unified_encoder_w5000_int8.mlmodelc.zip` = 501 MB (≤1 GB cap). One manual step remains for the owner (no GitHub auth on this box): `gh release create speed-models-2026-09-29 --draft --repo bisheshabramhacharya/whisp <zip>` then m1-check downloads it.
+- **Prewarm cleanup** (PR #23): `cleaner.clean("warm at 5.30")` detached at launch pays clockTimeRules+dictionary lazy costs; targets the 46–67 ms first-take cleanup the review measured.
+- **Frontmost recheck** (PR #24): recheck `frontmostApplication` immediately before `postCommandV` — closes the wrong-window race between the clipboard-snapshot await and the HID post (review finding 4 residual).
+- Compare caveat: `idle+rewarm p50 0.0` — with `--idle 0` the >20 s rewarm threshold never trips; the column is only meaningful at `--idle ≥ 20`.
