@@ -370,6 +370,23 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - A2 Reliability
+
+// The capture buffer must cover the 10-minute take cap and be grown on the
+// caller's thread (start() calls reserveTakeCapacity() before touching the
+// engine, which can't run on this VM), then shrink back after the take.
+do {
+    let rec = MicRecorder()
+    expect(rec.reservedSampleCapacity < 16_000 * 600 ? "idle" : "full",
+           "idle", "capture buffer starts at idle reserve")
+    rec.reserveTakeCapacity()
+    expect(rec.reservedSampleCapacity >= 16_000 * 600 ? "full" : "under",
+           "full", "capture buffer covers 10-min cap")
+    _ = rec.stop()
+    expect(rec.reservedSampleCapacity < 16_000 * 600 ? "shrunk" : "held",
+           "shrunk", "buffer releases take-size capacity after stop()")
+}
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
