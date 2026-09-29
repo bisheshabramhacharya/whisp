@@ -21,9 +21,11 @@ Expect a reply within a week.
 
 - Audio is recorded only while the hotkey is held (or hands-free mode is on).
 - Transcription runs on-device via FluidAudio and NVIDIA's Parakeet. No cloud.
-- The only network request Whisp makes is the one-time model download from
-  Hugging Face (re-fetched automatically if the local copy is missing or
-  corrupt).
+- The only network requests Whisp makes are one-time model downloads: the
+  speech model from Hugging Face (re-fetched automatically if the local copy
+  is missing or corrupt) and the 5-second encoder from this repo's `models-v1`
+  GitHub release, which is rejected unless its SHA-256 matches the value
+  compiled into the app. No audio, text, or usage data is ever sent.
 - History, dictionary, and recordings live in
   `~/Library/Application Support/Whisp/` (locked to your user account,
   0700/0600). Recordings are kept by default so you can build a fine-tuning

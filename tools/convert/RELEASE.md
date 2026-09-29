@@ -1,11 +1,19 @@
-# Short-window encoder — build instead of download
+# Short-window encoder release (`models-v1`)
 
-Previously planned as a draft release (`speed-models-2026-09-29`, 524 MB
-zip). **Upload skipped**: the M1 check builds the encoder on-device via
-`convert-short-window.py` — zero model downloads (the 2.4 GB `.nemo`
-auto-fetches from HF once), and no binaries ever hit git.
+Whisp's default engine fetches `parakeet_unified_encoder_w5000_int8.mlmodelc`
+from the `models-v1` GitHub release on first run and refuses it unless the
+zip's SHA-256 matches `ShortWindowEngine.fastBundle` in the app.
 
-## Build on a stock Mac (Xcode CLT + `uv` only)
+| asset | SHA-256 |
+|---|---|
+| `parakeet_unified_encoder_w5000_int8.mlmodelc.zip` (525 MB) | `2ebd982a4e5b896f41d6cc05554de76c04a837c7879e07d7b9475d80129f4584` |
+
+Licensed by NVIDIA Corporation under the
+[NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/):
+the weights of `nvidia/parakeet-unified-en-0.6b`, re-traced at a 5 s input
+window and int8-quantized. No weights were changed beyond quantization.
+
+## Rebuild it yourself (Xcode CLT + `uv`)
 
 ```bash
 cd tools/convert
@@ -15,21 +23,20 @@ uv pip install --no-deps --force-reinstall \
 uv run --no-sync python convert-short-window.py --windows 5 --validate --install
 ```
 
-`--install` copies `parakeet_unified_encoder_w5000_int8.mlmodelc` into
-`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/` —
-the cache dir `ShortWindowEngine` scans. See README.md "Short-window
-encoders" for the full input/output/dir conventions.
+`--install` copies the bundle into
+`~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/`,
+where `ShortWindowEngine` finds it; the app then skips the download.
 
-## If a release is ever wanted
-
-The w5000 int8 bundle zips to 524 MB; w2000 is another ~561 MB. Reference
-command (needs a `gh` login on the release owner's account):
+## Publishing a new bundle
 
 ```bash
 cd build/short_window
-ditto -c -k --sequesterRsrc --keepParent parakeet_unified_encoder_w5000_int8.mlmodelc \
+ditto -c -k --norsrc parakeet_unified_encoder_w5000_int8.mlmodelc \
   parakeet_unified_encoder_w5000_int8.mlmodelc.zip
-gh release create speed-models-2026-09-29 --draft \
-  --title "Speed-run models 2026-09-29" --notes-file ../../RELEASE.md \
+shasum -a 256 parakeet_unified_encoder_w5000_int8.mlmodelc.zip
+gh release create models-v2 --title "Models v2" --notes-file ../../RELEASE.md \
   parakeet_unified_encoder_w5000_int8.mlmodelc.zip
 ```
+
+Then point `ShortWindowEngine.fastBundle` at the new tag and checksum. The zip
+holds the bundle's contents at its root (no enclosing folder).

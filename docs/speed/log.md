@@ -75,9 +75,9 @@ The serial-pipeline model (one decode in flight; a decode at tick T masks ticks 
 ## Track logs
 
 - Track A (this file): profiler, replay, compare, test sets, baselines.
-- Track B (short encoder window): `docs/speed-log-b.md` on `speed/track-b-*`.
-- Track C (streaming engine): `docs/speed-log-c.md` on `speed/track-c-*`.
-- Track D (RNNT/pipeline): `docs/speed-log-d.md` on `speed/track-d-*`.
+- Track B (short encoder window): `docs/speed/log-b-short-window.md` on `speed/track-b-*`.
+- Track C (streaming engine): `docs/speed/log-c-streaming.md` on `speed/track-c-*`.
+- Track D (RNNT/pipeline): `docs/speed/log-d-decoder.md` on `speed/track-d-*`.
 
 ## Lead work since B merged (2026-09-29)
 
