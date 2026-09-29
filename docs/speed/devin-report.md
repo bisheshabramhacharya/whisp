@@ -6,7 +6,7 @@ cleanup 2/46 ms, paste 3/14 ms — **decode is ~90% of the budget** (transcripti
 
 All numbers below are **VM numbers** (VirtualMac2,1, M4 virtual, no Neural Engine — CPU/GPU only)
 unless marked M1. They are relative A/B evidence, not M1 predictions; the M1 check exists to
-confirm. Every claim cites the command that produced it in `docs/speed-log*.md`.
+confirm. Every claim cites the command that produced it in `docs/speed/log*.md`.
 
 ## Scorecard
 
@@ -61,7 +61,7 @@ could collapse it). `short` dominates at every offset ≥ +100 — and streaming
 
 ## Dead ends (measured, kept for the record)
 
-From Track B's log (`docs/speed-log-b.md`):
+From Track B's log (`docs/speed/log-b-short-window.md`):
 
 - **Fixed [1,128,1501] mel tensor**: the encoder model pins its input shape; can't slice the
   mel window — re-tracing at a shorter window is the only route (that's the shipped lever).
@@ -72,7 +72,7 @@ From Track B's log (`docs/speed-log-b.md`):
   self-contained (w5000 = 563 MB; w2000+w5000 = 1.12 GB > 1 GB cap → w5000 ships alone,
   w2000 documented as a local drop-in).
 
-From Track C's log (`docs/speed-log-c.md`):
+From Track C's log (`docs/speed/log-c-streaming.md`):
 
 - **Single-buffer feeds vs 100 ms ticks**: identical output — the resample-boundary theory
   for tail-word drift is ruled out; drift is intrinsic to the streaming model's last emission.

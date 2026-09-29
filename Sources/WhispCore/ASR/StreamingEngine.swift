@@ -60,7 +60,7 @@ public final class StreamingEngine: Transcribing, StatusReporting, LiveDecoding 
         }
     }
 
-    /// Default tier chosen by measurement (see docs/speed-log-c.md): 2080 ms —
+    /// Default tier chosen by measurement (see docs/speed/log-c-streaming.md): 2080 ms —
     /// the model card's best-WER streaming mode [70,13,13]. Measured on the
     /// dictation set, agreement vs the offline engine climbs monotonically
     /// with right context: 0.9602 (320/640-class) → 0.9818 (1120) → 0.9891

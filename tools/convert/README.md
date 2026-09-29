@@ -234,5 +234,5 @@ generated `say` clip is ~3.3 s, covering w5000.
 
 Notes: bundle size is weight-dominated — one int8 window ≈ 560 MB regardless of
 window length; multifunction bundles would dedup weights but require
-iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` / `docs/speed-log-b.md`
+iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` / `docs/speed/log-b-short-window.md`
 "M1 check instructions" for the exact m1-check commands.
