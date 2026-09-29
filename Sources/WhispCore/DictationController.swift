@@ -275,6 +275,8 @@ public final class DictationController: ObservableObject {
         let stopMs = Self.ms(since: releasedAt)
         if recorder.lostInput {
             statusMessage = "Microphone disconnected mid-recording — only the audio before it was used"
+        } else if recorder.inputSwitched {
+            statusMessage = "Microphone changed mid-recording — a moment of audio may be missing"
         }
 
         let duration = Double(samples.count) / Double(sampleRate)

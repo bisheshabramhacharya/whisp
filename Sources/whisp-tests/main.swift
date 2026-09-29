@@ -257,6 +257,7 @@ do {
 final class FakeRecorder: AudioRecording {
     var onLevel: ((Float) -> Void)?
     var lostInput = false
+    var inputSwitched = false
     var next: [Float] = []
     func start() throws {}
     func samples(from start: Int) -> [Float] { [] }
@@ -369,6 +370,44 @@ func pipelineTests() async {
     expect(wavs.count.description, "5", "one WAV per pasted dictation")
 }
 await pipelineTests()
+
+// MARK: - A2 Reliability
+
+@MainActor
+func a2ReliabilityTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-a2-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    try! controller.startHotkey()
+
+    func dictate(seconds: Double) {
+        recorder.next = [Float](repeating: 0.1, count: Int(seconds * 16_000))
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.stop)
+    }
+    func settle() async {
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    // Input device changed mid-take but capture recovered (AirPods handoff etc.):
+    // the paste still lands and the gap is surfaced instead of silently clipped.
+    recorder.inputSwitched = true
+    dictate(seconds: 1)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 1.\"]", "switched input still pastes")
+    expect((controller.statusMessage?.contains("changed mid-recording") ?? false).description,
+           "true", "device switch is surfaced")
+}
+await a2ReliabilityTests()
 
 // MARK: - Speed
 

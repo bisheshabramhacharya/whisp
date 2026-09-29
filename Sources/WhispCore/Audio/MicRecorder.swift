@@ -29,6 +29,9 @@ public final class MicRecorder: AudioRecording {
 
     public var onLevel: ((Float) -> Void)?
     public private(set) var lostInput = false
+    /// The input device changed mid-recording and capture resumed — audio during
+    /// the rebuild (~0.2–1 s) is missing from the returned samples.
+    public private(set) var inputSwitched = false
 
     private let logger = Logger(subsystem: "com.bishesha.whisp", category: "Mic")
 
@@ -59,6 +62,9 @@ public final class MicRecorder: AudioRecording {
     private var recording = false
     /// Set when a device change could not be recovered mid-recording.
     private var inputLost = false
+    /// The input device changed mid-recording; capture resumed but audio during
+    /// the rebuild is missing. Published to `inputSwitched` at stop().
+    private var inputWasSwitched = false
     /// When `start()` was called, and when the first converted buffer arrived (uptime ns).
     private var startedAtNs: UInt64 = 0
     private var firstBufferAtNs: UInt64 = 0
@@ -130,6 +136,7 @@ public final class MicRecorder: AudioRecording {
         samples.removeAll(keepingCapacity: true)
         recording = true
         inputLost = false
+        inputWasSwitched = false
         startedAtNs = DispatchTime.now().uptimeNanoseconds
         firstBufferAtNs = 0
         firstBufferSamples = 0
@@ -180,6 +187,7 @@ public final class MicRecorder: AudioRecording {
         samples.removeAll(keepingCapacity: true)
         recording = false
         lostInput = inputLost
+        inputSwitched = inputWasSwitched
         let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
         lock.unlock()
         teardownWhenIdle()
@@ -373,6 +381,8 @@ public final class MicRecorder: AudioRecording {
                 try engine.start()
                 lock.lock()
                 inputLost = false
+                // Recovered, but audio during the teardown+restart is missing.
+                inputWasSwitched = true
                 lock.unlock()
             } catch {
                 // New device unusable. `recording` stays true so a later device change

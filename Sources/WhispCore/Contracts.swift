@@ -24,6 +24,9 @@ public protocol AudioRecording: AnyObject {
     /// True when the input device went away mid-recording and capture could not resume,
     /// so the last `stop()` returned only the audio from before the device change.
     var lostInput: Bool { get }
+    /// True when the input device changed mid-recording and capture resumed — a
+    /// moment of audio around the switch is missing. Default `false`.
+    var inputSwitched: Bool { get }
     func start() throws
     /// Copy of the audio captured so far, from sample `start` on (empty when not recording).
     func samples(from start: Int) -> [Float]
@@ -31,6 +34,10 @@ public protocol AudioRecording: AnyObject {
     func stop() -> [Float]
     /// Stops capture and discards audio.
     func cancel()
+}
+
+public extension AudioRecording {
+    var inputSwitched: Bool { false }
 }
 
 public enum HotkeyEvent: Sendable {
