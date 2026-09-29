@@ -22,6 +22,11 @@ enum Composition {
         let paster = Paster()
         let dictionary = PersonalDictionary(fileURL: AppPaths.dictionaryFile)
         let cleaner = FillerCleaner(dictionary: dictionary)
+        // First clean() pays the lazy costs — clock-time regexes compile and
+        // dictionary.json loads+compiles its rules (~40–70 ms on M1, measured
+        // in real-app logs as first-take cleanup). Pay them off the main actor
+        // at startup instead of inside the first release→paste.
+        Task.detached(priority: .utility) { _ = cleaner.clean("warm at 5.30") }
         // Auto-learn: after each paste, the watcher reviews the pasted span once
         // (next dictation / app switch / 90 s) and folds small owner fixes into
         // dictionary.json. NSSpellChecker decides "real word" for the
