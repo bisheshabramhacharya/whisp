@@ -62,6 +62,12 @@ public final class ParakeetTranscriber: Transcribing, StatusReporting {
     /// The model backend in use.
     public let model: Model
 
+    /// Parallel decode lanes for the unified backend: a release-time tail decode
+    /// can overlap an in-flight chunk/speculation decode on a second
+    /// `UnifiedAsrManager`. Costs ~600 MB per extra lane; 1 = strictly serial
+    /// (current behavior).
+    public let unifiedLanes: Int
+
     private let engine: Engine
     private let normalizer = TextNormalizer()
 
@@ -75,9 +81,10 @@ public final class ParakeetTranscriber: Transcribing, StatusReporting {
     }
 
     /// Create a transcriber with a specific model backend.
-    public init(model: Model) {
+    public init(model: Model, unifiedLanes: Int = 1) {
         self.model = model
-        self.engine = Engine(model: model)
+        self.unifiedLanes = unifiedLanes
+        self.engine = Engine(model: model, unifiedLanes: unifiedLanes)
     }
 
     /// Download (first run), load and warm up the model.
@@ -155,14 +162,46 @@ extension ParakeetTranscriber {
 
         // Unified backend
         private var unifiedManager: UnifiedAsrManager?
+        /// Parallel decode lanes for the unified backend (lane 0 == unifiedManager).
+        /// Each is a full UnifiedAsrManager, so extra lanes cost ~600 MB each.
+        private var lanes: [UnifiedAsrManager] = []
+        private var laneBusy: [Bool] = []
+        private var laneWaiters: [CheckedContinuation<Int, Never>] = []
+        private let unifiedLaneCount: Int
 
         // Vocabulary boosting (lazily downloaded CTC spotter + rescorer)
         private var ctcModels: CtcModels?
         private var boostSession: VocabularyBoostingSession?
         private var boostTerms: [String] = []
 
-        init(model: ParakeetTranscriber.Model) {
+        init(model: ParakeetTranscriber.Model, unifiedLanes: Int = 1) {
             self.model = model
+            self.unifiedLaneCount = max(1, unifiedLanes)
+        }
+
+        /// Take an idle lane; suspend until one frees when all are busy.
+        private func acquireLane() -> UnifiedAsrManager? {
+            for i in lanes.indices where !laneBusy[i] {
+                laneBusy[i] = true
+                return lanes[i]
+            }
+            return nil
+        }
+
+        private func awaitLane() async -> UnifiedAsrManager? {
+            if let lane = acquireLane() { return lane }
+            let i = await withCheckedContinuation { laneWaiters.append($0) }
+            return lanes[i]
+        }
+
+        /// Free `lane`, handing it straight to the oldest waiter when one exists.
+        private func releaseLane(_ lane: UnifiedAsrManager) {
+            guard let i = lanes.firstIndex(where: { $0 === lane }) else { return }
+            if laneWaiters.isEmpty {
+                laneBusy[i] = false
+            } else {
+                laneWaiters.removeFirst().resume(returning: i)
+            }
         }
 
         func prepare(status: @Sendable @escaping (String) async -> Void) async throws {
@@ -219,6 +258,14 @@ extension ParakeetTranscriber {
             await status("Downloading model…")
             let manager = UnifiedAsrManager()
             try await manager.loadModels(progressHandler: progress)
+            var lanes: [UnifiedAsrManager] = [manager]
+            for _ in 1..<unifiedLaneCount {
+                let extra = UnifiedAsrManager()
+                try await extra.loadModels()
+                lanes.append(extra)
+            }
+            self.lanes = lanes
+            self.laneBusy = [Bool](repeating: false, count: lanes.count)
             self.unifiedManager = manager
         }
 
@@ -268,15 +315,20 @@ extension ParakeetTranscriber {
         }
 
         /// Transcribe already-cleaned samples; returns post-rescored text.
+        /// Unified decodes run on whichever lane is idle, so a tail decode can
+        /// overlap an in-flight chunk/speculation decode when lanes > 1.
         func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
             defer { lastRun = DispatchTime.now().uptimeNanoseconds }
             switch model {
             case .unified:
-                guard let unifiedManager else { throw TranscriberError.notPrepared }
-                if vocabulary.isEmpty {
-                    return try await unifiedManager.transcribe(samples)
+                guard !lanes.isEmpty, let manager = await awaitLane() else {
+                    throw TranscriberError.notPrepared
                 }
-                let result = try await unifiedManager.transcribeWithTimings(samples)
+                defer { releaseLane(manager) }
+                if vocabulary.isEmpty {
+                    return try await manager.transcribe(samples)
+                }
+                let result = try await manager.transcribeWithTimings(samples)
                 return await rescoreIfNeeded(
                     text: result.text, tokenTimings: result.tokenTimings,
                     audioSamples: samples, vocabulary: vocabulary)
