@@ -115,6 +115,11 @@ expect(fileDict.apply("vinted on depop"), "vinted on Depop", "reloads on change"
 try! #"{"terms": ["#.write(to: tmp, atomically: true, encoding: .utf8)
 try! FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: tmp.path)
 expect(fileDict.apply("depop"), "Depop", "malformed edit keeps last good")
+try! FileManager.default.removeItem(at: tmp)
+expect(fileDict.apply("depop"), "Depop", "transiently missing file keeps last good")
+try! #"{"terms": ["Grailed"], "replacements": [{"from": "depop", "to": "Depop App"}]}"#
+    .write(to: tmp, atomically: true, encoding: .utf8)
+expect(fileDict.apply("grailed"), "Grailed", "recovers after the file returns")
 
 // MARK: - SpeechSegmenter
 
