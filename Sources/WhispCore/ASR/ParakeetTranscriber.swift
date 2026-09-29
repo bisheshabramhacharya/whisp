@@ -1,4 +1,3 @@
-import Accelerate
 import FluidAudio
 import Foundation
 
@@ -106,7 +105,7 @@ public final class ParakeetTranscriber: Transcribing {
 
         // Trim leading/trailing silence, keeping a 150 ms margin so no
         // speech onset/offset is ever cut.
-        let trimmed = Self.trimSilence(samples)
+        let trimmed = SpeechSegmenter.trimSpeech(samples)
         let speech = trimmed.isEmpty ? samples : trimmed
 
         // Pad to the model's minimum (300 ms).
@@ -133,41 +132,6 @@ public final class ParakeetTranscriber: Transcribing {
     @MainActor
     private func emitStatus(_ message: String) {
         onStatus?(message)
-    }
-
-    // MARK: - Silence trimming
-
-    /// Trim leading/trailing near-silence with a 150 ms safety margin.
-    /// Uses 10 ms frame energies; a frame counts as speech when its RMS
-    /// exceeds max(1.5e-3, 6% of the loudest frame) — deliberately low so
-    /// quiet consonants are never clipped.
-    private static func trimSilence(_ samples: [Float]) -> [Float] {
-        let frameSize = 160  // 10 ms @ 16 kHz
-        let margin = 2400  // 150 ms
-        let frameCount = samples.count / frameSize
-        guard frameCount > 2 else { return samples }
-
-        var energies = [Float](repeating: 0, count: frameCount)
-        samples.withUnsafeBufferPointer { buf in
-            for f in 0..<frameCount {
-                var rms: Float = 0
-                vDSP_rmsqv(buf.baseAddress! + f * frameSize, 1, &rms, vDSP_Length(frameSize))
-                energies[f] = rms
-            }
-        }
-        guard let peak = energies.max(), peak > 0 else { return [] }
-        let threshold = SpeechSegmenter.speechThreshold(peak: peak)
-
-        var first = 0
-        while first < frameCount, energies[first] < threshold { first += 1 }
-        var last = frameCount - 1
-        while last > first, energies[last] < threshold { last -= 1 }
-        guard first <= last else { return [] }
-
-        let start = max(0, first * frameSize - margin)
-        let end = min(samples.count, (last + 1) * frameSize + margin)
-        guard end > start else { return [] }
-        return Array(samples[start..<end])
     }
 }
 

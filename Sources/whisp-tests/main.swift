@@ -370,6 +370,24 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - A1 Speed
+
+// trimSpeech: a loud mid-clip noise must not set the bar for quiet edge words.
+do {
+    let quiet = { (s: Double) in tone(s, amplitude: 0.02) }
+    let coughy = silence(0.5) + quiet(0.5) + silence(0.5) + tone(0.3, amplitude: 0.9) + silence(0.5) + quiet(0.5) + silence(0.5)
+    // With a max-based threshold (6% of the 0.9 cough) the quiet words fall below it
+    // and trim keeps only ~0.9 s around the cough. A p90 reference keeps them.
+    expect(SpeechSegmenter.trimSpeech(coughy).count > 2 * 16_000 ? "kept edges" : "\(SpeechSegmenter.trimSpeech(coughy).count)",
+           "kept edges", "trim keeps quiet words next to a cough")
+    // Ordinary loud speech trims exactly as before: speech plus the 150 ms margins.
+    let clean = silence(0.5) + tone(2) + silence(0.5)
+    let kept = SpeechSegmenter.trimSpeech(clean).count
+    expect(abs(kept - 36_800) <= 320 ? "in margin" : "\(kept)", "in margin", "loud speech keeps 150 ms margins")
+    expect(SpeechSegmenter.trimSpeech(silence(2)).isEmpty.description, "true", "all silence trims to empty")
+    expect(SpeechSegmenter.trimSpeech(tone(0.01)).count.description, "160", "sub-frame clip untouched")
+}
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
