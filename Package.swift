@@ -9,7 +9,7 @@ let package = Package(
         .executable(name: "whisp-bench", targets: ["whisp-bench"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.7"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.4"),
     ],
     targets: [
         .target(

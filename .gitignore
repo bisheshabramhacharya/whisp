@@ -4,3 +4,6 @@
 *.app
 .DS_Store
 .build-*/
+
+# Local benchmark data (LibriSpeech, generated dictation clips) — never commit
+testdata/
