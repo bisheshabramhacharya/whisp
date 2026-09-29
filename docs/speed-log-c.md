@@ -18,7 +18,9 @@ the held-back right-context frames.
   (`feed`/`finish` keyed by a per-take token), tiers via
   `defaults write com.bishesha.whisp streamingTier <ms>` or
   `WHISP_STREAM_TIER` env, warmup on load + rewarm>20s-idle, mid-stream
-  failure falls back to a batch decode of the take's retained audio.
+  failure falls back to a batch decode of the take's retained audio, and
+  an empty `finish()` on audible audio retries once with right-context
+  silence padding (rescues deterministic upstream decode dead zones).
 - `DictationController.swift`: one `as? LiveDecoding` branch in
   `transcribeFinishedChunk` (feed the new-audio delta each tick) and one
   in `transcribe` (feed tail + `finish()`); parakeet path untouched.
@@ -154,7 +156,35 @@ inside the word). Breakdown:
 
 ### Timing
 
-PENDING: busy%, finish p50/p95 per tier, warm + idle+rewarm N≥30.
+Interleaved `--compare parakeet,streaming --runs 30 --idle 20` on 5
+dictation files (extra-123/128/133, names-065, med-095), quiet VM:
+
+| engine | warm p50 | warm p95 | idle+rewarm p50 | idle+rewarm max |
+|---|---|---|---|---|
+| parakeet | 131.2 ms | 163.7 ms | 127.2 ms | 156.5 ms |
+| streaming@2080 (batch path) | 87.8 ms | 529.1 ms | 86.2 ms | 507.1 ms |
+
+Notes: streaming's batch `transcribe` p50 beats parakeet's outright
+(windowed chunked decode is cheaper per call than the 15 s offline
+window); its p95 tail is worse (~5× — occasional multi-window cold
+decodes; under CPU contention earlier runs inflated further). On the
+live path none of that matters: the release wait is `finish()` only —
+p50 **88 ms**, p95 ~96 ms (replay table above) vs parakeet's
+131–238 ms tail decode at release offsets ≤200 ms.
+
+Feed-busy (time inside `feed()` per captured audio, from the replay
+instrumentation, % of capture duration):
+
+| tier | feed-busy | finish p50 |
+|---|---|---|
+| 320 | ~33–41% | 66 ms |
+| 640 | ~8–12% | 67 ms |
+| 1120 | ~5–13% | 70 ms |
+| 2080 | p50 1.8%, mean 2.6%, max 7.3% (60 files) | 88 ms |
+
+320 is unworkable as a live engine (a third of a CPU while talking);
+640/1120 are cheap; 2080 is cheapest AND most accurate — the bigger
+window means fewer, larger steps.
 
 ### Tier decision
 
