@@ -681,6 +681,13 @@ checkLearn("We should ship it today.", "A fully rewritten different story.", [],
            "rewrite learns nothing")
 checkLearn("Open Pychy now.", "Open pi CLI now. And more typed after.",
            [.replacement(from: "Pychy", to: "pi CLI")], "typed-after still learns")
+// The last pasted word fixed, then more typed (or already there) after it:
+// only the fix is learned, never the words that follow it.
+checkLearn("Open Pychy.", "Open pi CLI. Thanks", [.replacement(from: "Pychy", to: "pi CLI")],
+           "edited last word + typed after learns only the fix")
+checkLearn("Open Pychy.", "Open pi CLI. Text that was already after the cursor.",
+           [.replacement(from: "Pychy", to: "pi CLI")], "edited last word + existing text after")
+checkLearn("Open Pychy", "Open pi CLI Thanks", [], "unpunctuated last word + text after: end unknown")
 checkLearn("Open Pychy now.", "", [], "deletion learns nothing")
 checkLearn("I use the Sol model.", "I use the soul model.",
            [.removed(from: "soul", to: "Sol")],

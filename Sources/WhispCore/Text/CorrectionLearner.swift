@@ -71,8 +71,9 @@ public final class CorrectionLearner {
     }
 
     /// Every diff block — including pure insertions (`from` empty) and pure
-    /// deletions (`to` empty) — in order.
-    static func diff(_ a: [String], _ b: [String]) -> [(from: [String], to: [String])] {
+    /// deletions (`to` empty) — in order. `atEnd` marks a block holding the
+    /// last word(s) of `a`: its `to` also swallows everything after them in `b`.
+    static func diff(_ a: [String], _ b: [String]) -> [(from: [String], to: [String], atEnd: Bool)] {
         // LCS table over exact word equality (a case change is a change).
         var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
@@ -80,11 +81,11 @@ public final class CorrectionLearner {
                 dp[i][j] = a[i] == b[j] ? dp[i + 1][j + 1] + 1 : max(dp[i + 1][j], dp[i][j + 1])
             }
         }
-        var blocks: [(from: [String], to: [String])] = []
+        var blocks: [(from: [String], to: [String], atEnd: Bool)] = []
         var i = 0, j = 0
         var fa: [String] = [], fb: [String] = []
-        func flush() {
-            if !fa.isEmpty || !fb.isEmpty { blocks.append((fa, fb)); fa = []; fb = [] }
+        func flush(atEnd: Bool = false) {
+            if !fa.isEmpty || !fb.isEmpty { blocks.append((fa, fb, atEnd)); fa = []; fb = [] }
         }
         while i < a.count && j < b.count {
             if a[i] == b[j] {
@@ -96,7 +97,7 @@ public final class CorrectionLearner {
             }
         }
         fa += a[i...]; fb += b[j...]
-        flush()
+        flush(atEnd: !fa.isEmpty)
         return blocks
     }
 
@@ -116,8 +117,17 @@ public final class CorrectionLearner {
         existingRules: [(from: [String], to: String)]
     ) -> [Decision] {
         let pastedWords = Self.words(pasted)
-        guard !pastedWords.isEmpty else { return [] }
-        let blocks = Self.diff(pastedWords, Self.words(current))
+        guard let lastPasted = pastedWords.last else { return [] }
+        var blocks = Self.diff(pastedWords, Self.words(current))
+        // `current` runs past the paste, so an edited last word drags in
+        // whatever follows it: "Pychy." -> "pi CLI. Thanks". The fix ends at the
+        // first word closing with the pasted text's final punctuation; with
+        // no such word its end is unknown, so that block teaches nothing.
+        if let tail = blocks.last, tail.atEnd {
+            let closing = String(lastPasted.reversed().prefix { !$0.isLetter && !$0.isNumber }.reversed())
+            let cut = closing.isEmpty ? nil : tail.to.firstIndex { $0.hasSuffix(closing) }
+            blocks[blocks.count - 1].to = cut.map { Array(tail.to[...$0]) } ?? []
+        }
 
         // Owner-undo first: pasted `Y` corrected back to `X` where a rule maps X->Y.
         var decisions: [Decision] = []
