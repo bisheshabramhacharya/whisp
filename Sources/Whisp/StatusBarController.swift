@@ -120,6 +120,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(item("Edit Dictionary…", action: {
             NSWorkspace.shared.open(AppPaths.ensureDictionaryTemplate())
         }))
+
+        // Auto-learn feedback — what the watcher folded into the dictionary,
+        // plus a one-click reversal of the most recent batch.
+        if let summary = services.learnWatcher.lastSummary {
+            menu.addItem(disabled(summary))
+            menu.addItem(item("Undo learned correction", action: { [weak self] in
+                self?.services.learnWatcher.undoLast()
+            }))
+        }
         menu.addItem(.separator())
 
         // Toggles
@@ -134,6 +143,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggle("Keep recordings", isOn: services.settings.keepRecordings) { [weak self] in
             guard let self else { return }
             self.services.settings.keepRecordings.toggle()
+        })
+        menu.addItem(toggle("Learn from my corrections", isOn: services.settings.learnFromCorrections) { [weak self] in
+            guard let self else { return }
+            self.services.settings.learnFromCorrections.toggle()
         })
         menu.addItem(toggle("Launch at Login", isOn: services.settings.launchAtLogin) { [weak self] in
             guard let self else { return }

@@ -34,6 +34,12 @@ public enum AppPaths {
         root.appendingPathComponent("dictionary.json")
     }
 
+    /// root/corrections-pending.json — real-word fixes seen once, waiting for a
+    /// second sighting before they become dictionary entries.
+    public static var pendingCorrectionsFile: URL {
+        root.appendingPathComponent("corrections-pending.json")
+    }
+
     /// Creates root + recordings dir if missing.
     public static func ensureDirectories() throws {
         let fm = FileManager.default

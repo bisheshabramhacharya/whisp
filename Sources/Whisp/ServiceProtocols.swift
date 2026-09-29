@@ -32,4 +32,6 @@ struct AppServices {
     let history: HistoryStore
     let permissions: PermissionsProviding
     let pasteLast: PasteLastHotkey
+    /// "Learn from my corrections" watcher — drives the menu's learned summary + Undo.
+    let learnWatcher: EditWatcher
 }

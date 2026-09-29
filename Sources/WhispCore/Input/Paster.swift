@@ -40,13 +40,20 @@ public final class Paster: TextPasting {
 
     // MARK: - TextPasting
 
+    /// Called on the pasted path with the focused element context and the text
+    /// actually inserted (including any leading space added here) plus the pid
+    /// of the app it landed in. Used by the auto-learn watcher to remember the
+    /// pasted span. Never on the hot path: fires after Cmd+V is posted, before
+    /// the clipboard restore.
+    public var onInserted: (@MainActor (FocusedContext, String, pid_t?) -> Void)?
+
     public func target() -> PasteTarget {
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let lookup = Task.detached(priority: .userInitiated) { () -> Character? in
+        let lookup = Task.detached(priority: .userInitiated) { () -> FocusedContext? in
             guard AXIsProcessTrusted() else { return nil }
-            return Self.focusedCharacterBeforeCursor()
+            return Self.focusedContext()
         }
-        return PasteTarget(pid: pid, precedingCharacter: lookup)
+        return PasteTarget(pid: pid, focused: lookup)
     }
 
     public func paste(_ text: String, into target: PasteTarget) async -> PasteResult {
@@ -85,6 +92,12 @@ public final class Paster: TextPasting {
         let expectedChangeCount = pasteboard.changeCount
 
         Self.postCommandV()
+
+        // The focused lookup already resolved above (preceding awaited it), so
+        // this never adds an AX round-trip to the paste.
+        if let context = await target.focused.value, let onInserted {
+            onInserted(context, text, target.pid)
+        }
 
         // Restore the user's clipboard once the target app has consumed Cmd+V —
         // unless somebody else wrote to the pasteboard in the meantime.
@@ -148,11 +161,13 @@ public final class Paster: TextPasting {
 
     // MARK: - Smart spacing
 
-    /// The single character immediately before the focused element's insertion point.
-    /// Prefers the parameterized "string for range" attribute (cheap — the target only
-    /// serializes one character); falls back to reading the whole value.
+    /// The focused element plus cursor position, the character before it, and
+    /// up to 40 UTF-16 chars of text before it — one lookup serving both the
+    /// leading-space heuristic and the auto-learn pasted span. Prefers the
+    /// parameterized "string for range" attribute (cheap — the target only
+    /// serializes the requested slice); falls back to reading the whole value.
     /// Best-effort and time-boxed: any AX failure -> nil (paste as-is). Thread-safe.
-    private nonisolated static func focusedCharacterBeforeCursor() -> Character? {
+    private nonisolated static func focusedContext() -> FocusedContext? {
         let systemWide = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(systemWide, Self.axTimeout)
 
@@ -173,33 +188,40 @@ public final class Paster: TextPasting {
             return nil
         }
         var range = CFRange()
-        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range),
-              range.location > 0 else { return nil } // cursor at position 0 -> never a space
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
 
-        // Preferred: ask for just the preceding character.
-        var charRange = CFRange(location: range.location - 1, length: 1)
-        if let param = AXValueCreate(.cfRange, &charRange) {
-            var stringValue: AnyObject?
-            if AXUIElementCopyParameterizedAttributeValue(
-                element, kAXStringForRangeParameterizedAttribute as CFString,
-                param, &stringValue
-            ) == .success, let string = stringValue as? String, let ch = string.first {
-                return ch
+        var preceding: Character?
+        var beforeText = ""
+        if range.location > 0 {
+            // Preferred: ask for just the slice before the cursor.
+            var sliceRange = CFRange(location: max(0, range.location - 40), length: min(40, range.location))
+            if let param = AXValueCreate(.cfRange, &sliceRange) {
+                var stringValue: AnyObject?
+                if AXUIElementCopyParameterizedAttributeValue(
+                    element, kAXStringForRangeParameterizedAttribute as CFString,
+                    param, &stringValue
+                ) == .success, let string = stringValue as? String {
+                    beforeText = string
+                    preceding = string.last
+                }
             }
         }
-
-        // Fallback: read the whole value and index into it (still time-boxed). AX ranges
-        // count UTF-16 code units, so index the UTF-16 view, not Characters.
-        var wholeValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element, kAXValueAttribute as CFString, &wholeValue
-        ) == .success, let string = wholeValue as? String else { return nil }
-        let utf16 = string.utf16
-        guard range.location <= utf16.count,
-              let end = utf16.index(utf16.startIndex, offsetBy: range.location, limitedBy: utf16.endIndex),
-              let endIndex = end.samePosition(in: string.unicodeScalars),
-              endIndex > string.unicodeScalars.startIndex else { return nil }
-        let scalar = string.unicodeScalars[string.unicodeScalars.index(before: endIndex)]
-        return Character(scalar)
+        if preceding == nil {
+            // Fallback: read the whole value and index into it (still time-boxed).
+            // AX ranges count UTF-16 code units, so index the UTF-16 view.
+            var wholeValue: AnyObject?
+            if AXUIElementCopyAttributeValue(
+                element, kAXValueAttribute as CFString, &wholeValue
+            ) == .success, let string = wholeValue as? String {
+                let utf16 = string.utf16
+                if let cut = utf16.index(utf16.startIndex, offsetBy: range.location, limitedBy: utf16.endIndex) {
+                    let head = string.prefix(upTo: cut.samePosition(in: string) ?? string.startIndex)
+                    beforeText = String(head.suffix(40))
+                    preceding = head.last
+                }
+            }
+        }
+        return FocusedContext(element: element, cursorLocation: range.location,
+                              preceding: preceding, beforeText: beforeText)
     }
 }
