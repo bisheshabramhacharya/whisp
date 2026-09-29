@@ -119,6 +119,7 @@ public struct CompareRunner {
         case "par2": return ParakeetTranscriber(model: .unified, unifiedLanes: 2)
         case "fast": return FastRnnt(jointComputeUnits: .cpuOnly)
         case "fastall": return FastRnnt(jointComputeUnits: .all)
+        case "streaming": return StreamingEngine()
         default: throw CompareError.unknownEngine(name)
         }
     }
