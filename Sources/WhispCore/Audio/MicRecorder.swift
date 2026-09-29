@@ -192,9 +192,12 @@ public final class MicRecorder: AudioRecording {
         // `teardownQueue` so transcription doesn't wait for it.
         let stoppedAtNs = DispatchTime.now().uptimeNanoseconds
         lock.lock()
+        // Move the buffer out instead of copying it: `let` + fresh array makes
+        // `captured` the sole owner — removeAll(keepingCapacity:) would first
+        // copy the whole recording under copy-on-write.
         let captured = samples
-        samples.removeAll(keepingCapacity: true)
-        shrinkReserveLocked()
+        samples = []
+        samples.reserveCapacity(Self.idleReserve)
         recording = false
         lostInput = inputLost
         let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
