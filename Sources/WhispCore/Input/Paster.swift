@@ -106,6 +106,14 @@ public final class Paster: TextPasting {
         pasteboard.writeObjects([item])
         let expectedChangeCount = pasteboard.changeCount
 
+        // The check above ran before the snapshot await; a switch since then
+        // would fire Cmd+V into the wrong window. The text stays on the
+        // pasteboard either way, so bail to the same copied-for-⌘V path.
+        if let pid = target.pid, NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            pendingRestore = nil
+            return .copiedAppChanged
+        }
+
         Self.postCommandV()
 
         // The focused lookup already resolved above (preceding awaited it), so

@@ -18,6 +18,13 @@ public extension Transcribing {
     func rewarm() async {}
 }
 
+/// Engine that can report human-readable model status ("Downloading…", "Ready").
+/// Optional capability — engines opt in so the composition layer doesn't have to
+/// know the concrete type.
+public protocol StatusReporting: AnyObject {
+    var onStatus: ((String) -> Void)? { get set }
+}
+
 /// Microphone capture. Always delivers 16 kHz mono Float32 samples.
 public protocol AudioRecording: AnyObject {
     /// Normalized input level 0...1, called on the main thread ~30x/s while recording.

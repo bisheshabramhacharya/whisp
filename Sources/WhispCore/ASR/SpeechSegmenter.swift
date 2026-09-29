@@ -17,12 +17,18 @@ public enum SpeechSegmenter {
     /// model's fixed 15 s encoder window: longer audio costs a second window, and clips
     /// just over 15 s lose punctuation and casing.
     public static let forceChunk = 14 * 16_000
-    /// A pause must be at least this long to cut in it.
-    static let minPauseFrames = 35  // 350 ms
+    /// A pause must be at least this long to cut in it. Env-overridable for the
+    /// speed grid sweep (`WHISP_MIN_PAUSE_FRAMES`); default 350 ms.
+    static let minPauseFrames =
+        Int(ProcessInfo.processInfo.environment["WHISP_MIN_PAUSE_FRAMES"] ?? "") ?? 35
     /// A pause this long is enough to decode ahead of release: most releases come
     /// sooner than 350 ms after the last word, and a speculation is only used when
     /// nothing audible follows it, so starting early can't change the text.
-    static let speculatePauseFrames = 20  // 200 ms
+    /// Env-overridable for the speed grid sweep (`WHISP_SPEC_PAUSE_FRAMES`);
+    /// default 180 ms (grid: 150 drops a quiet-variant last word on edge; 180 keeps
+    /// every offset's last-word rate identical to 200 while cutting release wait).
+    static let speculatePauseFrames =
+        Int(ProcessInfo.processInfo.environment["WHISP_SPEC_PAUSE_FRAMES"] ?? "") ?? 18
     static let frame = 160  // 10 ms
 
     /// Where to cut `samples` (audio pending since the last cut), or nil to wait for more.

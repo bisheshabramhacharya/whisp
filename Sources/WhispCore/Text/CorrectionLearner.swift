@@ -74,6 +74,9 @@ public final class CorrectionLearner {
     /// deletions (`to` empty) — in order. `atEnd` marks a block holding the
     /// last word(s) of `a`: its `to` also swallows everything after them in `b`.
     static func diff(_ a: [String], _ b: [String]) -> [(from: [String], to: [String], atEnd: Bool)] {
+        // Unchanged text is the common case (the watcher reviews every paste);
+        // skip the O(n*m) table entirely — equal arrays can produce no blocks.
+        guard a != b else { return [] }
         // LCS table over exact word equality (a case change is a change).
         var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
@@ -293,12 +296,18 @@ public final class PendingCorrections {
 
     private let fileURL: URL
     private var entries: [Entry] = []
+    /// The file existed but wouldn't decode — don't write our in-memory state
+    /// over it (same never-clobber rule as the dictionary file).
+    private var fileUnreadable = false
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
-            entries = decoded
+        if let data = try? Data(contentsOf: fileURL) {
+            if let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
+                entries = decoded
+            } else {
+                fileUnreadable = true
+            }
         }
     }
 
@@ -333,7 +342,8 @@ public final class PendingCorrections {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
+        guard !fileUnreadable,
+              let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 }
