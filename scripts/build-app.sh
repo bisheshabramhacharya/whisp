@@ -20,13 +20,14 @@
 # does not exist, the script tries to create it non-interactively: openssl
 # self-signed cert (CA:FALSE, keyUsage digitalSignature, EKU codeSigning),
 # PKCS12 exported with legacy PBE-SHA1-3DES + SHA1 MAC (macOS `security import`
-# cannot read OpenSSL 3's default AES PKCS12), `security import -T
-# /usr/bin/codesign` (pre-authorizes codesign to use the key — no GUI ACL
-# prompt), and `security add-trusted-cert -r trustRoot -p codeSign` in the user
-# domain (also silent — required for `find-identity -p codesigning` to list a
-# self-signed identity as valid). If the keychain is locked or any step fails,
-# the script falls back to ad-hoc signing instead of hanging — see README.md
-# for the equivalent manual commands.
+# cannot read OpenSSL 3's default AES PKCS12), and `security import -T
+# /usr/bin/codesign` (pre-authorizes codesign on the key's partition list).
+# The cert is deliberately NOT trusted for code signing: `codesign --sign`
+# works fine with an untrusted self-signed identity (verified), while a
+# codeSign-trusted local key would make anything signed with it pass signature
+# validation on this Mac. If the keychain is locked or any step fails, the
+# script falls back to ad-hoc signing instead of hanging — see README.md for
+# the equivalent manual commands.
 #
 # Resource-bundle notes (verified empirically, see README "Packaging")
 # -------------------------------------------------------------------
@@ -122,15 +123,16 @@ fi
 KEYCHAIN=~/Library/Keychains/login.keychain-db
 
 identity_valid() {
-    # find-identity appends "(Invalid Key Usage for policy)" etc. for unusable
-    # identities — a valid identity's line ENDS with the quoted name.
-    security find-identity -p codesigning -v | grep -q "\"$IDENTITY\"[[:space:]]*$"
+    # Presence check only: `find-identity` (no -v) lists every cert+key pair,
+    # trusted or not — `find-identity -p codesigning -v` would hide the
+    # identity unless it were codeSign-trusted, which we deliberately avoid.
+    security find-identity | grep -q "\"$IDENTITY\""
 }
 
 try_create_identity() {
-    # Returns 0 if "$IDENTITY" is usable afterwards. Fully non-interactive:
-    # user-domain trust settings and `security import -T` never pop a GUI
-    # prompt; a locked keychain fails fast instead of hanging.
+    # Returns 0 if "$IDENTITY" is usable afterwards. Non-interactive:
+    # `security import -T` never pops a GUI prompt; a locked keychain fails
+    # fast instead of hanging.
     security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1 || return 1
     local tmp; tmp="$(mktemp -d)"
     (
@@ -152,10 +154,6 @@ try_create_identity() {
         # list, avoiding a per-sign GUI ACL prompt.
         security import "$tmp/id.p12" -k "$KEYCHAIN" \
             -P whisp-tmp -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1
-        # User-domain trust for the codeSign policy — silent, and required for
-        # `find-identity -p codesigning` to list a self-signed identity.
-        security add-trusted-cert -r trustRoot -p codeSign \
-            -k "$KEYCHAIN" "$tmp/cert.pem" >/dev/null 2>&1
     )
     local rc=$?
     rm -rf "$tmp"
