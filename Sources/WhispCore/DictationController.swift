@@ -409,7 +409,7 @@ public final class DictationController: ObservableObject {
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
         await chunks.inFlight?.value
-        if chunks.failed || chunks.committed > samples.count {
+        if chunks.failed {
             return try await transcriber.transcribe(samples)
         }
         let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? ($0.end, $0.text) : nil }
