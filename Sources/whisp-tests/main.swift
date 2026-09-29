@@ -630,7 +630,12 @@ func pasterTests() async {
     try? await Task.sleep(nanoseconds: 450_000_000)
     expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
 }
-await pasterTests()
+// Opt-in: it overwrites the real clipboard and posts a real ⌘V into the frontmost app.
+if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
+    await pasterTests()
+} else {
+    print("skipped Paster tests (real clipboard + ⌘V); set WHISP_TEST_PASTEBOARD=1 to run")
+}
 
 // MARK: - Auto-learn
 
