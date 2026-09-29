@@ -71,6 +71,9 @@ public final class EditWatcher: CorrectionWatching {
     @MainActor
     public func record(_ context: FocusedContext, text: String, pid: pid_t?) {
         guard isEnabled(), !text.isEmpty else { return }
+        // No anchor text despite a cursor past 0 means the lookup failed; the
+        // review couldn't tell where the paste starts.
+        guard context.cursorLocation == 0 || !context.beforeText.isEmpty else { return }
         var subrole: AnyObject?
         let secure = AXUIElementCopyAttributeValue(
             context.element, "AXSubrole" as CFString, &subrole) == .success
@@ -111,10 +114,10 @@ public final class EditWatcher: CorrectionWatching {
             guard let range = Self.singleOccurrence(of: span.beforeText, in: window) else { return }
             let current = String(window[range.upperBound...])
             let rules = PersonalDictionary.loadPairs(fileURL: dictionaryFile)
-            let decisions = learner.decide(pasted: span.text, current: current, existingRules: rules)
             if Task.isCancelled { return }
+            // decide() calls the NSSpellChecker oracle, which belongs on main.
             await MainActor.run { [weak self] in
-                self?.apply(decisions)
+                self?.apply(learner.decide(pasted: span.text, current: current, existingRules: rules))
             }
         }
     }
@@ -198,9 +201,18 @@ public final class EditWatcher: CorrectionWatching {
     /// string-for-range attribute. nil on any failure (dead element, hung app).
     nonisolated static func readWindow(around span: Span) -> String? {
         AXUIElementSetMessagingTimeout(span.element, axTimeout)
-        var range = CFRange(
-            location: max(0, span.start - windowBefore),
-            length: windowBefore + span.text.utf16.count + windowAfter)
+        let location = max(0, span.start - windowBefore)
+        var length = windowBefore + span.text.utf16.count + windowAfter
+        // Many text views reject a range that runs past the end of the text,
+        // and a paste usually lands at the end, so stop at the text's length.
+        var count: AnyObject?
+        if AXUIElementCopyAttributeValue(
+            span.element, kAXNumberOfCharactersAttribute as CFString, &count
+        ) == .success, let total = count as? Int {
+            length = min(length, total - location)
+        }
+        guard length > 0 else { return nil }
+        var range = CFRange(location: location, length: length)
         guard let param = AXValueCreate(.cfRange, &range) else { return nil }
         var value: AnyObject?
         guard AXUIElementCopyParameterizedAttributeValue(
