@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? AppPaths.ensureDirectories()
         AppPaths.ensureDictionaryTemplate()
+        // Repair system audio if a previous run died while muted.
+        SystemAudioMuter.repairAfterCrash()
 
         let services = Composition.makeServices()
         self.services = services
