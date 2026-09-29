@@ -74,9 +74,12 @@ Lead audit items (from the independent review at 098dac7):
   replay `--mic-drop` quantifies it (in-flight IO quantum up to ~100 ms at risk).
 - Permission loss leaves capture running (DictationController:173-179) — correctness, tracked.
 - Cancelled work keeps decoding (DictationController:312-328) — wastes CPU, tracked.
-- Pending-corrections clobber (CorrectionLearner:297-337) — correctness, tracked.
-- Learner LCS O(n²) on main (CorrectionLearner:76-101) — off the release path; 59 ms at
-  3 000 words — second-round if time.
+- Learner LCS O(n·m) on main (CorrectionLearner:76-101) — **shipped**: `diff` early-outs on
+  unchanged text (the common case; output-identical). Prefix/suffix stripping rejected: it
+  changes the LCS alignment and thus the learned blocks — kept the full table for edits.
+  [#30](https://github.com/bisheshabramhacharya/whisp/pull/30)
+- Pending-corrections clobber (CorrectionLearner:297-337) — **shipped**: undecodable file no
+  longer overwritten. [#28](https://github.com/bisheshabramhacharya/whisp/pull/28)
 
 ## M1 check (one command)
 
