@@ -77,6 +77,13 @@ public final class CorrectionLearner {
         // Unchanged text is the common case (the watcher reviews every paste);
         // skip the O(n*m) table entirely — equal arrays can produce no blocks.
         guard a != b else { return [] }
+        // Only the middle can hold blocks: size the table to the edit, not the take.
+        var lo = 0
+        while lo < a.count, lo < b.count, a[lo] == b[lo] { lo += 1 }
+        var hi = 0
+        while hi < a.count - lo, hi < b.count - lo, a[a.count - 1 - hi] == b[b.count - 1 - hi] { hi += 1 }
+        let tailMatched = hi > 0
+        let a = Array(a[lo..<(a.count - hi)]), b = Array(b[lo..<(b.count - hi)])
         // LCS table over exact word equality (a case change is a change).
         var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
@@ -100,7 +107,7 @@ public final class CorrectionLearner {
             }
         }
         fa += a[i...]; fb += b[j...]
-        flush(atEnd: !fa.isEmpty)
+        flush(atEnd: !fa.isEmpty && !tailMatched)
         return blocks
     }
 
