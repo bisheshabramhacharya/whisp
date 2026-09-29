@@ -371,6 +371,20 @@ public final class DictationController: ObservableObject {
 
     private func transcribeFinishedChunk(_ chunks: LiveChunks) {
         guard chunks.inFlight == nil, !chunks.failed else { return }
+        // LiveDecoding engines (asrEngine=streaming): forward each ~100 ms of
+        // new audio to the streaming decoder instead of cutting at pauses —
+        // the transcript is already decoding while the user talks.
+        if let live = transcriber as? LiveDecoding {
+            let pending = recorder.samples(from: chunks.committed)
+            guard !pending.isEmpty else { return }
+            chunks.committed += pending.count
+            chunks.inFlight = Task {
+                do { try await live.feed(pending, take: chunks) }
+                catch { chunks.failed = true }
+                chunks.inFlight = nil
+            }
+            return
+        }
         let pending = recorder.samples(from: chunks.committed)
         guard let cut = SpeechSegmenter.nextCut(in: pending) else {
             speculate(on: pending, chunks)
@@ -409,6 +423,21 @@ public final class DictationController: ObservableObject {
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
         await chunks.inFlight?.value
+        // LiveDecoding engines (asrEngine=streaming): the take is already
+        // decoded — feed the tail buffer captured since the last tick, then
+        // finish() flushes the held-back right context. A failed feed falls
+        // back to the whole-clip decode.
+        if let live = transcriber as? LiveDecoding {
+            if chunks.failed { return try await transcriber.transcribe(samples) }
+            if chunks.committed < samples.count {
+                do {
+                    try await live.feed(Array(samples[chunks.committed...]), take: chunks)
+                } catch {
+                    return try await transcriber.transcribe(samples)
+                }
+            }
+            return try await live.finish(take: chunks)
+        }
         if chunks.failed {
             return try await transcriber.transcribe(samples)
         }
