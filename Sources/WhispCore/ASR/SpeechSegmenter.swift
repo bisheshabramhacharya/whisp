@@ -87,6 +87,32 @@ public enum SpeechSegmenter {
         return (frameEnergies(rest).max() ?? 0) < speechThreshold(peak: peak)
     }
 
+    /// Trim leading/trailing near-silence with a 150 ms safety margin.
+    /// A frame counts as speech when its RMS exceeds `speechThreshold` of the clip's
+    /// 90th-percentile frame — a percentile, not the max, so one cough or bump can't
+    /// raise the bar past quiet edge words.
+    public static func trimSpeech(_ samples: [Float]) -> [Float] {
+        let margin = 2400  // 150 ms
+        let frameCount = samples.count / frame
+        guard frameCount > 2 else { return samples }
+
+        let energies = frameEnergies(samples)
+        guard let peak = energies.max(), peak > 0 else { return [] }
+        let loud = percentile(energies, 0.9) ?? peak
+        let threshold = speechThreshold(peak: loud)
+
+        var first = 0
+        while first < frameCount, energies[first] < threshold { first += 1 }
+        var last = frameCount - 1
+        while last > first, energies[last] < threshold { last -= 1 }
+        guard first <= last else { return [] }
+
+        let start = max(0, first * frame - margin)
+        let end = min(samples.count, (last + 1) * frame + margin)
+        guard end > start else { return [] }
+        return Array(samples[start..<end])
+    }
+
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
     public static func isNearSilent(_ samples: [Float], rmsThreshold: Float = 0.004) -> Bool {
         guard !samples.isEmpty else { return true }
