@@ -40,7 +40,7 @@ BENCH="$TMP/build/release/whisp-bench"
 # --- candidate models from draft release -------------------------------------
 DL=0
 if command -v gh >/dev/null 2>&1; then
-  TAG="$(gh release list -R bisheshabramhacharya/whisp --limit 50 2>/dev/null | awk '$1 ~ /^speed-models-/ {print $1; exit}')"
+  TAG="$(gh release list -R bisheshabramhacharya/whisp --limit 50 2>/dev/null | awk '$1 ~ /^speed-models-/ {print $1; exit}' || true)"
   if [ -n "$TAG" ]; then
     echo "==> downloading candidate models from draft release $TAG" | tee -a "$LOG"
     mkdir -p "$TMP/models"
@@ -60,7 +60,8 @@ if command -v gh >/dev/null 2>&1; then
 fi
 
 # --- input set: up to 40 files from the folder --------------------------------
-find "$WAVDIR" -type f \( -name "*.wav" -o -name "*.flac" -o -name "*.aiff" -o -name "*.m4a" \) | sort | head -40 > "$TMP/files.txt"
+find "$WAVDIR" -type f \( -name "*.wav" -o -name "*.flac" -o -name "*.aiff" -o -name "*.m4a" \) | sort > "$TMP/files.txt"
+head -40 "$TMP/files.txt" > "$TMP/files40.txt" && mv "$TMP/files40.txt" "$TMP/files.txt"
 N=$(wc -l < "$TMP/files.txt" | tr -d ' ')
 echo "==> $N recordings under test" | tee -a "$LOG"
 if [ "$N" -eq 0 ]; then echo "no audio files found in $WAVDIR"; exit 1; fi
@@ -82,7 +83,9 @@ echo "==> compare $ENGINES (20 runs/file, 30 s idle + rewarm)" | tee -a "$LOG"
 # --- 4. LibriSpeech subset for real WER -----------------------------------------
 echo "==> LibriSpeech WER subset (50 files, downloaded to scratch)" | tee -a "$LOG"
 mkdir -p "$TMP/libri"
-curl -sfL "https://www.openslr.org/resources/12/test-clean.tar.gz" -o "$TMP/libri/tc.tgz" 2>&1 | tail -1 | tee -a "$LOG" || echo "LibriSpeech fetch failed — skipping" | tee -a "$LOG"
+if ! curl -sfL "https://www.openslr.org/resources/12/test-clean.tar.gz" -o "$TMP/libri/tc.tgz"; then
+  echo "LibriSpeech fetch failed — skipping WER subset" | tee -a "$LOG"
+fi
 if [ -s "$TMP/libri/tc.tgz" ]; then
   tar -tzf "$TMP/libri/tc.tgz" 2>/dev/null | grep '\.flac$' | head -50 | \
     tar -xzf "$TMP/libri/tc.tgz" -C "$TMP/libri" -T - 2>/dev/null || true
