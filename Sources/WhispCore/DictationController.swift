@@ -224,6 +224,8 @@ public final class DictationController: ObservableObject {
 
         // A new dictation ends the previous paste's review window.
         correctionWatcher?.dictationStarting()
+        // A fresh take means the user is past whatever the last warning said.
+        statusMessage = nil
 
         // 1. Feedback first so the user hears the ack even if the mic fails.
         if settings.sounds { sounds.playStart() }
@@ -475,6 +477,11 @@ public final class DictationController: ObservableObject {
         let cleanMs = Self.ms(since: transcribedAt)
         if raw.isEmpty, duration >= 1 {
             statusMessage = "Didn't hear any speech — check the microphone input"
+            if settings.sounds { sounds.playError() }
+        } else if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Spoke only fillers ("um uh"): it lands in history but nothing pastes — say so.
+            statusMessage = "Only filler words heard — nothing to paste"
+            if settings.sounds { sounds.playError() }
         }
 
         let pasteStart = DispatchTime.now()

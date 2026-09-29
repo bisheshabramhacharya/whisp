@@ -273,11 +273,13 @@ final class FakeHotkey: HotkeyMonitoring {
 /// Returns "clip <seconds>" after a delay that is longer for longer clips' ids given.
 final class SlowTranscriber: Transcribing {
     var delays: [Int: UInt64] = [:]
+    /// When set, returned verbatim regardless of the clip length.
+    var text: String?
     func prepare() async throws {}
     func transcribe(_ samples: [Float]) async throws -> String {
         let seconds = samples.count / 16_000
         try await Task.sleep(nanoseconds: delays[seconds] ?? 50_000_000)
-        return "Clip \(seconds)."
+        return text ?? "Clip \(seconds)."
     }
 }
 @MainActor final class FakePaster: TextPasting {
@@ -369,6 +371,32 @@ func pipelineTests() async {
            "history persisted in order (cancelled clip skipped)")
     let wavs = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("recordings").path)) ?? []
     expect(wavs.count.description, "5", "one WAV per pasted dictation")
+
+    // A3: a take that transcribes to nothing is surfaced, not silent.
+    paster.pasted = []
+    sounds.log = []
+    transcriber.delays = [:]
+    transcriber.text = ""
+    dictate(seconds: 1)
+    await settle()
+    expect(paster.pasted.description, "[]", "empty transcript pastes nothing")
+    expect((controller.statusMessage?.contains("speech") ?? false).description, "true", "empty transcript reported")
+    expect(sounds.log.contains("error").description, "true", "empty transcript plays error")
+
+    // A3: an all-filler take says what happened instead of vanishing.
+    sounds.log = []
+    transcriber.text = "um uh"
+    dictate(seconds: 1)
+    await settle()
+    expect((controller.statusMessage?.contains("filler") ?? false).description, "true", "all-filler take reported")
+    expect(sounds.log.contains("error").description, "true", "all-filler take plays error")
+
+    // A3: the stale warning clears the moment the next take starts.
+    transcriber.text = nil
+    dictate(seconds: 1)
+    await settle()
+    expect((controller.statusMessage == nil).description, "true", "status message clears on next take")
+    expect(paster.pasted.description, "[\"Clip 1.\"]", "next take still pastes")
 }
 await pipelineTests()
 

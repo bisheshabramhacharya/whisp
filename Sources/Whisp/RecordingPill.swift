@@ -61,6 +61,14 @@ final class RecordingPillController {
             }
             .store(in: &cancellables)
 
+        // Until the model is ready the pill tooltip is the only place progress shows.
+        controller.$modelStatus
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                self?.pillView.toolTip = status == "Ready" ? "Drag to move" : status
+            }
+            .store(in: &cancellables)
+
         settings.$pillScale.dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] scale in self?.resize(to: scale) }
