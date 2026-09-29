@@ -424,11 +424,14 @@ public final class DictationController: ObservableObject {
     /// When a decode is still in flight at release and the tail's span is already final
     /// (non-silent tails can't rewind and have no usable speculation), the tail decode
     /// starts immediately so a parallel-capable transcriber overlaps it with the
-    /// in-flight one. On a serial transcriber it queues identically to today.
+    /// in-flight one. Serial transcribers skip it: the early decode could only queue
+    /// behind the in-flight one, and it is wasted when that in-flight speculation
+    /// ends up covering the tail.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
         var earlyTail: Task<String, Error>?
-        if chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
+        let parallel = ((transcriber as? ParakeetTranscriber)?.unifiedLanes ?? 1) > 1
+        if parallel, chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
             let spec = chunks.speculation.flatMap {
                 $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil
             }
