@@ -3,15 +3,16 @@ import Foundation
 /// Resolves the hidden `asrEngine` setting to a concrete `Transcribing` engine.
 ///
 /// New engines: add one `case` here (name = the `defaults write` value) and keep
-/// the default first. Engines are experimental A/B backends — "parakeet" is the
-/// shipping engine and must stay the fallback for unknown names so a typo can
+/// the default first. Unknown names fall back to the default so a typo can
 /// never silence dictation.
 public enum ASREngine {
-    /// Engine used when `asrEngine` is unset or unrecognized: today's engine.
-    public static let defaultName = "parakeet"
+    /// Engine used when `asrEngine` is unset or unrecognized. On 433 of the
+    /// owner's recordings it gave text identical to "parakeet" and halved the
+    /// decode of clips under 5 s (98.9 -> 48.6 ms p50 on an 8 GB M1).
+    public static let defaultName = "short"
 
     /// Every name `make(named:)` accepts. Kept in sync with the switch.
-    public static let knownNames: [String] = ["parakeet", "short", "streaming", "par2", "fast", "fastall"]
+    public static let knownNames: [String] = ["short", "parakeet", "streaming", "par2"]
 
     public static func isKnown(_ name: String) -> Bool {
         knownNames.contains(name)
@@ -22,24 +23,19 @@ public enum ASREngine {
     /// contract for direct callers (whisp-bench `--compare`).
     public static func make(named name: String) -> Transcribing {
         switch name {
+        // FluidAudio's own offline manager: always a 15 s encoder window.
         case "parakeet":
             return ParakeetTranscriber()
-        case "short":
-            return ShortWindowEngine()
+        // Streaming decode during capture. Opt-in: it drops or mishears the
+        // last word in ~5% of releases (vs ~1% offline).
         case "streaming":
             return StreamingEngine()
         // "par2": second decode lane for mid-chunk releases (waits max(rem,tail)
         // instead of rem+tail). Costs ~600 MB for the extra model set — opt-in.
         case "par2":
             return ParakeetTranscriber(model: .unified, unifiedLanes: 2)
-        // "fast"/"fastall": one wide-joint call per emitted token instead of the
-        // ~120-step joint loop; byte-identical output. Hypothesis is ANE wins.
-        case "fast":
-            return FastRnnt(jointComputeUnits: .cpuOnly)
-        case "fastall":
-            return FastRnnt(jointComputeUnits: .all)
         default:
-            return ParakeetTranscriber()
+            return ShortWindowEngine()
         }
     }
 }

@@ -1,6 +1,9 @@
 @preconcurrency import CoreML
 import FluidAudio
 import Foundation
+import os
+
+private let asrLogger = Logger(subsystem: "com.bishesha.whisp", category: "ASR")
 
 /// Offline Parakeet Unified engine driven at the encoder's shortest fitting
 /// window instead of the fixed 15 s export.
@@ -19,9 +22,16 @@ import Foundation
 /// computes the same values for the valid region as the 15 s model.
 ///
 /// Fallbacks keep the engine safe on any machine: no short bundles present →
-/// behaves exactly like the 15 s engine; input > 15 s →
+/// behaves exactly like the 15 s engine (and `fastBundle` is fetched in the
+/// background, then used without a relaunch); input > 15 s →
 /// `UnifiedAsrManager`'s sliding-window path.
 public final class ShortWindowEngine: Transcribing, StatusReporting {
+    /// The stock encoder weights re-traced at a 5 s window (`tools/convert/`).
+    public static let fastBundle = RemoteBundle(
+        name: "parakeet_unified_encoder_w5000_int8.mlmodelc",
+        url: URL(string: "https://github.com/bisheshabramhacharya/whisp/releases/download/models-v1/parakeet_unified_encoder_w5000_int8.mlmodelc.zip")!,
+        sha256: "2ebd982a4e5b896f41d6cc05554de76c04a837c7879e07d7b9475d80129f4584")
+
     /// Human-readable status updates ("Downloading model…", "Ready", …).
     /// Always invoked on the main thread.
     public var onStatus: ((String) -> Void)?
@@ -171,6 +181,48 @@ extension ShortWindowEngine {
             }
             prepared = true
             await status("Ready")
+            if !variants.contains(where: { $0.windowSamples < Self.maxWindowSamples }) {
+                fetchFastBundle(into: dir)
+            }
+        }
+
+        /// Once per launch, in the background. A failed fetch only means the
+        /// 15 s window stays in use; the next launch tries again.
+        private func fetchFastBundle(into dir: URL) {
+            let bundle = ShortWindowEngine.fastBundle
+            Task.detached(priority: .utility) { [weak self] in
+                do {
+                    let url = try await bundle.fetch(into: dir)
+                    await self?.adopt(url)
+                } catch {
+                    asrLogger.error("Fast model download failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+
+        /// Loads the encoder before listing the window in `variants`: a decode
+        /// that runs while `MLModel.load` is suspended must never pick a
+        /// window whose encoder isn't there yet.
+        private func adopt(_ url: URL) async {
+            guard let variant = Self.discoverVariants(in: url.deletingLastPathComponent())
+                .first(where: { $0.url.lastPathComponent == url.lastPathComponent }),
+                encoders[variant.windowSamples] == nil
+            else { return }
+            let encConfig = MLModelConfiguration()
+            encConfig.computeUnits = .cpuAndNeuralEngine
+            do {
+                encoders[variant.windowSamples] = try await MLModel.load(
+                    contentsOf: variant.url, configuration: encConfig)
+            } catch {
+                asrLogger.error("Fast model failed to load: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            mels[variant.windowSamples] = UnifiedMel(
+                windowSamples: variant.windowSamples, nMels: config.melFeatures)
+            _ = try? transcribeWindow([Float](repeating: 0, count: 16_000), variant: variant)
+            variants.append(variant)
+            variants.sort { $0.windowSamples < $1.windowSamples }
+            asrLogger.info("Fast model ready: \(variant.url.lastPathComponent, privacy: .public)")
         }
 
         /// Every usable encoder bundle in the cache: the stock 15 s offline
