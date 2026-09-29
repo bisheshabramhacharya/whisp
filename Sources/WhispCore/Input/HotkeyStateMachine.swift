@@ -13,19 +13,25 @@ import Foundation
 ///     releasing that second press quickly stays recording — hands-free lock
 ///     (no event). The next key press then ends hands-free: `.stop`, and its
 ///     release is swallowed.
-///   - Another key/modifier pressed within `chordGrace` (0.3 s) of a non-hands-free
-///     hold start -> `.cancel` (the user is doing Option+X, not dictating).
-///     After the grace window other keys are ignored.
+///   - Another *modifier* pressed within `chordGrace` (0.3 s) of a non-hands-free
+///     hold start -> `.cancel` (the user is doing Option+Cmd+X, not dictating).
+///     After the grace window modifier presses are ignored.
+///   - A *character* key pressed while our key is held -> `.cancel` at any hold
+///     length: it's always an Option+char chord (@, Option+Backspace, ...), never
+///     dictation, so chordGrace doesn't apply — users may dwell on Option for
+///     seconds before finding the letter.
 ///   - Esc while recording (hold, second hold, or hands-free)   -> `.cancel`.
 ///   - Esc while not recording -> `.cancel` too; the controller uses it to drop a
 ///     dictation that is still transcribing and ignores it otherwise.
 public struct HotkeyStateMachine {
 
     /// Inputs the plumbing layer extracts from CGEvents. "Key" always refers to the
-    /// monitored key (e.g. Right Option); `otherKey` is any *press* of anything else.
+    /// monitored key (e.g. Right Option). `characterKey` is any non-modifier key
+    /// press; `otherKey` is a *modifier* press.
     public enum Input: Sendable {
         case keyDown
         case keyUp
+        case characterKey
         case otherKey
         case escape
     }
@@ -110,6 +116,14 @@ public struct HotkeyStateMachine {
             return nil
 
         // MARK: Other keys (Option+X chord detection)
+        // A character key while our key is held is always a chord, at any hold
+        // length — nobody holds Right Option to dictate and types a letter too.
+        case (.holding, .characterKey), (.secondHold, .characterKey):
+            state = .idle
+            return .cancel
+
+        // A modifier press only cancels inside chordGrace; later it's ignored
+        // because the user is dictating.
         case (.holding(let since), .otherKey), (.secondHold(let since), .otherKey):
             guard now - since < chordGrace else { return nil }
             state = .idle
