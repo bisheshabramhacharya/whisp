@@ -455,6 +455,39 @@ do {
            "modifier within grace cancels")
     expect(run([(.keyDown, 0), (.otherKey, 1), (.keyUp, 2)]), "start - stop",
            "modifier after grace ignored")
+// MARK: - A2 Reliability
+
+// A crash or force-quit while muted must not leave system audio dead: mute()
+// leaves a JSON sentinel, restore() deletes it, and the next launch's
+// repairAfterCrash() replays it. Verified here for the file lifecycle and the
+// decode+apply path (against a bogus device ID — no audio device on this VM);
+// device-side restore is verified on hardware.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-mute-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let sentinel = dir.appendingPathComponent("muted-device.json")
+    let fm = FileManager.default
+
+    // No sentinel -> nothing to do.
+    SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
+    expect(fm.fileExists(atPath: sentinel.path).description, "false", "no sentinel is a no-op")
+
+    // Corrupt sentinel -> consumed, no crash, no write to any device.
+    try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    try! "not json".write(to: sentinel, atomically: true, encoding: .utf8)
+    SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
+    expect(fm.fileExists(atPath: sentinel.path).description, "false", "corrupt sentinel removed")
+
+    // Well-formed sentinels (both paths) -> decoded, applied (device dead here:
+    // apply is a no-op), file removed.
+    try! #"{"deviceID":999999,"method":{"mute":{"wasMuted":false}}}"#
+        .write(to: sentinel, atomically: true, encoding: .utf8)
+    SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
+    expect(fm.fileExists(atPath: sentinel.path).description, "false", "mute sentinel repaired + removed")
+    try! #"{"deviceID":999999,"method":{"volumes":{"_0":[{"element":0,"previous":0.5}]}}}"#
+        .write(to: sentinel, atomically: true, encoding: .utf8)
+    SystemAudioMuter.repairAfterCrash(sentinelURL: sentinel)
+    expect(fm.fileExists(atPath: sentinel.path).description, "false", "volumes sentinel repaired + removed")
 }
 
 // MARK: - Speed
