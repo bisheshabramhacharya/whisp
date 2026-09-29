@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import WhispCore
 
@@ -369,6 +370,55 @@ func pipelineTests() async {
     expect(wavs.count.description, "5", "one WAV per pasted dictation")
 }
 await pipelineTests()
+
+// MARK: - A2 Reliability
+
+// ⌘⇧V is only swallowed once a dictation exists — before that the chord keeps
+// its normal meaning (paste-and-match-style) in the frontmost app.
+@MainActor
+func a2ReliabilityTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-a2-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    try! controller.startHotkey()
+
+    let cmdShift: CGEventFlags = [.maskCommand, .maskShift]
+    let pasteLast = PasteLastHotkey(controller: controller, history: history, paster: Paster())
+    expect(pasteLast.hasLastDictation.description, "false", "empty history: nothing to offer")
+    expect(pasteLast.shouldConsume(keyCode: 9, flags: cmdShift).description, "false",
+           "chord passes through with empty history")
+
+    // A history entry on disk (from a previous run) counts too.
+    try! history.append(HistoryEntry(id: "x", date: Date(), durationSec: 1, raw: "r",
+                                     cleaned: "done", latencyMs: 1))
+    let withHistory = PasteLastHotkey(controller: controller, history: history, paster: Paster())
+    expect(withHistory.hasLastDictation.description, "true", "history entry offers the chord")
+    expect(withHistory.shouldConsume(keyCode: 9, flags: cmdShift).description, "true",
+           "chord swallowed once a dictation exists")
+    expect(withHistory.shouldConsume(keyCode: 9, flags: cmdShift.union(.maskAlternate)).description,
+           "false", "⌘⇧⌥V is not our chord")
+    expect(withHistory.shouldConsume(keyCode: 11, flags: cmdShift).description, "false",
+           "⌘⇧B is not our chord")
+
+    // A fresh dictation in this session flips the flag live via $lastResult.
+    recorder.next = [Float](repeating: 0.1, count: 16_000)
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.stop)
+    for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    expect(pasteLast.hasLastDictation.description, "true", "dictation in session offers the chord")
+    expect(pasteLast.shouldConsume(keyCode: 9, flags: cmdShift).description, "true",
+           "chord swallowed after first dictation")
+}
+await a2ReliabilityTests()
 
 // MARK: - Speed
 
