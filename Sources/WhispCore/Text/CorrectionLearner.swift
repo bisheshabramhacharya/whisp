@@ -74,6 +74,9 @@ public final class CorrectionLearner {
     /// deletions (`to` empty) — in order. `atEnd` marks a block holding the
     /// last word(s) of `a`: its `to` also swallows everything after them in `b`.
     static func diff(_ a: [String], _ b: [String]) -> [(from: [String], to: [String], atEnd: Bool)] {
+        // Unchanged text is the common case (the watcher reviews every paste);
+        // skip the O(n*m) table entirely — equal arrays can produce no blocks.
+        guard a != b else { return [] }
         // LCS table over exact word equality (a case change is a change).
         var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
