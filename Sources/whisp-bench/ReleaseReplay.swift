@@ -122,7 +122,9 @@ public struct ReleaseReplayer {
             }
             let pending = samples[committed..<tick]
             if let cut = SpeechSegmenter.nextCut(in: Array(pending)) {
-                let slice = pending[..<cut]
+                // `cut` indexes the 0-based copy; `pending` is a slice based at
+                // `committed` — use prefix to avoid the wrong index space.
+                let slice = pending.prefix(cut)
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 let text = (try? await transcribe(slice)) ?? ""
                 let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
