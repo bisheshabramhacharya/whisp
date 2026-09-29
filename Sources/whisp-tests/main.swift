@@ -258,10 +258,11 @@ final class FakeRecorder: AudioRecording {
     var onLevel: ((Float) -> Void)?
     var lostInput = false
     var next: [Float] = []
+    var cancels = 0
     func start() throws {}
     func samples(from start: Int) -> [Float] { [] }
     func stop() -> [Float] { next }
-    func cancel() {}
+    func cancel() { cancels += 1 }
 }
 final class FakeHotkey: HotkeyMonitoring {
     var onEvent: ((HotkeyEvent) -> Void)?
@@ -512,6 +513,57 @@ do {
     expect("\(t2.check(hotkeyPermissionsGranted: true, hotkeyRunning: false))",
            "none", "regain without a stop doesn't start")
 }
+// MARK: - A2 Reliability
+
+@MainActor
+func a2ReliabilityTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-a2-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    try! controller.startHotkey()
+
+    func dictate(seconds: Double) {
+        recorder.next = [Float](repeating: 0.1, count: Int(seconds * 16_000))
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.stop)
+    }
+    func settle() async {
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    // Esc while recording: capture is cancelled, nothing is transcribed or pasted.
+    paster.pasted = []
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.cancel)
+    await settle()
+    expect(recorder.cancels.description, "1", "Esc mid-recording cancels capture")
+    expect(paster.pasted.description, "[]", "Esc mid-recording: nothing pasted")
+
+    // Rapid press/release (empty capture): discarded under minimumDuration, clean state.
+    dictate(seconds: 0)
+    await settle()
+    expect(paster.pasted.description, "[]", "instant release discards, no paste")
+    expect(controller.state.rawValue, "idle", "state settles to idle")
+
+    // Quit (shutdown) while a clip is transcribing: the pending paste is dropped.
+    paster.pasted = []
+    transcriber.delays = [2: 300_000_000]
+    dictate(seconds: 2)
+    controller.shutdown()
+    await settle()
+    expect(paster.pasted.description, "[]", "shutdown drops the in-flight paste")
+    expect(controller.state.rawValue, "idle", "idle after shutdown")
+}
+await a2ReliabilityTests()
 
 // MARK: - Speed
 
