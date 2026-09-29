@@ -184,18 +184,18 @@ public final class PersonalDictionary: @unchecked Sendable {
         guard let fileURL else { return }
         let modified = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
         guard modified != loadedModificationDate else { return }
+        // Stamp only after a readable, decodable file: one failed read (a
+        // mid-save atomic swap, a half-written edit) must not consume this
+        // version and leave the dictionary empty until the file changes again.
+        guard let data = try? Data(contentsOf: fileURL), load(data) else { return }
         loadedModificationDate = modified
-        if let data = try? Data(contentsOf: fileURL) {
-            load(data)
-        } else {
-            rules = []
-        }
     }
 
-    private func load(_ data: Data) {
+    @discardableResult
+    private func load(_ data: Data) -> Bool {
         guard let file = try? JSONDecoder().decode(File.self, from: data) else {
             // Keep the last good version while the user is mid-edit.
-            return
+            return false
         }
         let cleanTerms = (file.terms ?? []).map(Self.trim).filter { !$0.isEmpty }
         let replacements = file.replacements ?? []
@@ -214,6 +214,7 @@ public final class PersonalDictionary: @unchecked Sendable {
             if let rule = Self.rule(matching: term, replaceWith: term) { newRules.append(rule) }
         }
         rules = newRules
+        return true
     }
 
     private static func trim(_ s: String) -> String {
