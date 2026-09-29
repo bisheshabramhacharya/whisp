@@ -72,6 +72,15 @@ From Track B's log (`docs/speed-log-b.md`):
   self-contained (w5000 = 563 MB; w2000+w5000 = 1.12 GB > 1 GB cap → w5000 ships alone,
   w2000 documented as a local drop-in).
 
+From Track C's log (`docs/speed-log-c.md`):
+
+- **Single-buffer feeds vs 100 ms ticks**: identical output — the resample-boundary theory
+  for tail-word drift is ruled out; drift is intrinsic to the streaming model's last emission.
+- **Fixed silence padding**: only relocates the empty-output dead zones (total-frame-count
+  alignments), doesn't remove them — the shipped rescue retries a padded batch decode.
+- **Tier 320 as a live engine**: ~33–41% feed-busy (a third of a CPU while talking) — unusable;
+  2080 is cheapest (1.8% busy) AND most accurate, so it's the default tier.
+
 Lead audit items (from the independent review at 098dac7):
 
 - Clipboard snapshot blocking (audit F4) — **dead end, reasoned**: `paster.target()` already
