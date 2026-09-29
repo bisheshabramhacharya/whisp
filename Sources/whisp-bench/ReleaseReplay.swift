@@ -220,6 +220,7 @@ public struct ReleaseReplayer {
         offsets: [Int], fullText: String
     ) async throws -> [ReleaseOutcome] {
         var outcomes: [ReleaseOutcome] = []
+        var feedMs = 0.0
         for offset in offsets {
             // Same rule as the offline path: a release beyond the clip end
             // never occurred, so it isn't simulated.
@@ -228,9 +229,12 @@ public struct ReleaseReplayer {
             let captured = max(0, releaseAt - micDropSamples)
             let take = StreamTakeToken()
             var fed = 0
+            let feedTick = ProcessInfo.processInfo.environment["WHISP_FEED_TICK"].flatMap(Int.init) ?? SpeechSegmenter.tick
             while fed < captured {
-                let end = min(fed + SpeechSegmenter.tick, captured)
+                let end = min(fed + feedTick, captured)
+                let tFeed = DispatchTime.now().uptimeNanoseconds
                 try await live.feed(Array(samples[fed..<end]), take: take)
+                feedMs += Double(DispatchTime.now().uptimeNanoseconds - tFeed) / 1e6
                 fed = end
             }
             let t0 = DispatchTime.now().uptimeNanoseconds
@@ -240,6 +244,14 @@ public struct ReleaseReplayer {
                 offsetMs: offset, waitMs: wait, text: text,
                 lastWordSurvived: Self.lastWordSurvives(releaseText: text, fullText: fullText),
                 speculationHit: false))
+        }
+        // Feed busy% = total time spent inside feed() across all simulated
+        // releases vs the audio they covered — the live-path CPU tax.
+        let fedAudio = Double(outcomes.count * max(0, lastWordEnd - micDropSamples)) / 16.0
+        if fedAudio > 0 {
+            print(String(
+                format: "  [streaming] feed-busy %.0f ms over %d releases = %.1f%% of captured audio",
+                feedMs, outcomes.count, 100 * feedMs / fedAudio))
         }
         return outcomes
     }
