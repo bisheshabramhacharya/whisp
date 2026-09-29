@@ -370,6 +370,102 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - A3 Text+UI
+
+// Adversarial cleanup table — real sentences the cleaner must not damage.
+// A deletion here is a trust bug: cleanup may only subtract fillers,
+// stutters, and restarted phrases.
+do {
+    let adversarial: [(String, String)] = [
+        // Words people say twice on purpose (names, expressions, onomatopoeia)
+        ("Hear, hear!", "Hear, hear!"),
+        ("Order the mahi mahi.", "Order the mahi mahi."),
+        ("We're going to Bora Bora in June.", "We're going to Bora Bora in June."),
+        ("Walla Walla onions are sweet.", "Walla Walla onions are sweet."),
+        ("A yo yo rolled by.", "A yo yo rolled by."),
+        ("The odds are fifty fifty.", "The odds are fifty fifty."),
+        ("Keep the details hush hush.", "Keep the details hush hush."),
+        ("I do do my best work at night.", "I do do my best work at night."),
+        ("Test test, is this thing on?", "Test test, is this thing on?"),
+        ("Stop, stop! That tickles.", "Stop, stop! That tickles."),
+        ("He served time in Sing Sing.", "He served time in Sing Sing."),
+        ("We flew to Pago Pago.", "We flew to Pago Pago."),
+        ("She adopted a chow chow.", "She adopted a chow chow."),
+        ("In twenty twenty we moved.", "In twenty twenty we moved."),
+        ("It was nineteen nineteen.", "It was nineteen nineteen."),
+        ("She sang na na na na.", "She sang na na na na."),
+        ("The cow goes moo moo.", "The cow goes moo moo."),
+        ("The duck said quack quack.", "The duck said quack quack."),
+        ("Honk honk went the horn.", "Honk honk went the horn."),
+        ("She wore a mu mu dress.", "She wore a mu mu dress."),
+        ("I love a good bon bon.", "I love a good bon bon."),
+        ("Ding ding, round two.", "Ding ding, round two."),
+        ("Goo goo ga ga, said the baby.", "Goo goo ga ga, said the baby."),
+        ("Woo woo, here we go.", "Woo woo, here we go."),
+        ("The crowd went rah rah rah.", "The crowd went rah rah rah."),
+        ("Yadda yadda yadda, whatever.", "Yadda yadda yadda, whatever."),
+        ("Hee hee, that's funny.", "Hee hee, that's funny."),
+        ("He laughed haw haw haw.", "He laughed haw haw haw."),
+        ("Nudge nudge, wink wink.", "Nudge nudge, wink wink."),
+        ("Tut tut, that's naughty.", "Tut tut, that's naughty."),
+        ("Tsk tsk, not again.", "Tsk tsk, not again."),
+        ("Ring ring, someone's calling.", "Ring ring, someone's calling."),
+        ("Woof woof, said the dog.", "Woof woof, said the dog."),
+        ("The cat goes meow meow.", "The cat goes meow meow."),
+        ("Dum dum, went the beat.", "Dum dum, went the beat."),
+        // Emphatic / sequential repeats that aren't restarts
+        ("Let's go let's go!", "Let's go let's go!"),
+        ("Wake up wake up!", "Wake up wake up!"),
+        ("On off on off.", "On off on off."),
+        ("Press 1 2 1 2.", "Press 1 2 1 2."),
+        ("He ran and ran and ran.", "He ran and ran and ran."),
+        ("Up down up down up.", "Up down up down up."),
+        ("Thank you thank you.", "Thank you thank you."),
+        // Capitalization repair after a sentence-initial removal
+        ("I think. um, he agrees.", "I think. He agrees."),
+        ("We won. uh, the crowd cheered.", "We won. The crowd cheered."),
+        ("It's fine. you know, we should go.", "It's fine. We should go."),
+        ("you know, we should go.", "We should go."),
+        ("I agree. i mean, it works.", "I agree. It works."),
+        // Clock times: quantities and versions aren't times
+        ("The rate is at 3.14 percent.", "The rate is at 3.14 percent."),
+        ("It grew by 2.45 percent.", "It grew by 2.45 percent."),
+        ("We measured at 4.30 inches.", "We measured at 4.30 inches."),
+        ("Down by 5.30 kilos.", "Down by 5.30 kilos."),
+        ("Rates vary from 2.30 to 4.10 percent.", "Rates vary from 2.30 to 4.10 percent."),
+        ("The score rose by 1.50 points.", "The score rose by 1.50 points."),
+        ("It's priced at 9.99 dollars.", "It's priced at 9.99 dollars."),
+        ("It costs at least 5.30 dollars.", "It costs at least 5.30 dollars."),
+        // Clock times that SHOULD convert
+        ("Meet me at 5.30.", "Meet me at 5:30."),
+        ("See you around 6.15.", "See you around 6:15."),
+        ("The meeting ends by 8.45.", "The meeting ends by 8:45."),
+        ("Call her 3.45 PM.", "Call her 3:45 PM."),
+        ("Meet from 9.00 to 5.30.", "Meet from 9:00 to 5:30."),
+        ("The shop is open between 8.30 and 6.00.", "The shop is open between 8:30 and 6:00."),
+        ("It runs at 5.30 or 6.00.", "It runs at 5:30 or 6:00."),
+        ("Open from 8.30-5.30.", "Open from 8:30-5:30."),
+        // Legit near-repeats and near-restarts that must not lose words
+        ("We can, we can't.", "We can, we can't."),
+        ("I did, I didn't.", "I did, I didn't."),
+        ("Like father, like son.", "Like father, like son."),
+        ("I like pizza and you know it.", "I like pizza and you know it."),
+        ("It is what it is.", "It is what it is."),
+        ("You know what, I agree.", "You know what, I agree."),
+        ("I mean business.", "I mean business."),
+        ("So, the plan is simple.", "So, the plan is simple."),
+        ("What he is, is a mystery.", "What he is, is a mystery."),
+        ("The reason is is that he left.", "The reason is is that he left."),
+        ("Do it don't do it.", "Do it don't do it."),
+        ("I had had enough by then.", "I had had enough by then."),
+        ("Send it to the ER.", "Send it to the ER."),
+        ("It's 5 mm wide.", "It's 5 mm wide."),
+    ]
+    for (input, output) in adversarial {
+        expect(cleaner.clean(input), output, "adversarial(\"\(input)\")")
+    }
+}
+
 // MARK: - Speed
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
