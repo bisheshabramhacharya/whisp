@@ -9,8 +9,8 @@ import Foundation
 /// Input is 16 kHz mono Float32, same as `Transcribing`.
 public enum SpeechSegmenter {
 
-    /// How often the live loop looks for a cut.
-    public static let tick = 16_000 / 4  // 250 ms
+    /// How often the live loop looks for a cut or a pause to speculate in.
+    public static let tick = 16_000 / 10  // 100 ms
     /// Don't cut before this much new audio — short chunks give the model too little context.
     public static let minChunk = 6 * 16_000
     /// With no pause found, cut anyway once this much audio is pending. Kept under the
@@ -19,6 +19,10 @@ public enum SpeechSegmenter {
     public static let forceChunk = 14 * 16_000
     /// A pause must be at least this long to cut in it.
     static let minPauseFrames = 35  // 350 ms
+    /// A pause this long is enough to decode ahead of release: most releases come
+    /// sooner than 350 ms after the last word, and a speculation is only used when
+    /// nothing audible follows it, so starting early can't change the text.
+    static let speculatePauseFrames = 20  // 200 ms
     static let frame = 160  // 10 ms
 
     /// Where to cut `samples` (audio pending since the last cut), or nil to wait for more.
@@ -74,7 +78,7 @@ public enum SpeechSegmenter {
         let energies = frameEnergies(samples)
         guard let loud = percentile(energies, 0.9), loud > 0 else { return false }
         let threshold = pauseThreshold(loud: loud)
-        return energies.suffix(minPauseFrames).allSatisfy { $0 < threshold }
+        return energies.suffix(speculatePauseFrames).allSatisfy { $0 < threshold }
     }
 
     /// Whether nothing from `end` on would be kept as speech next to `samples[start..<end]`,
