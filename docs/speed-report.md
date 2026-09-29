@@ -44,14 +44,16 @@ Baseline `parakeet` vs `short`, 300 dictation clips, `--replay --offsets 0..1000
 
 | offset | parakeet p50 | short p50 | streaming p50 |
 |---|---|---|---|
-| +0 ms | 131 | 40 | pending C |
-| +100 ms | 122 | pending | pending C |
-| +150 ms | 73 | pending | pending C |
-| +200 ms | 24 | pending | pending C |
-| +350 ms | 0 | ~0 | pending C |
+| +0 ms | 132 | **61** | pending C |
+| +100 ms | 123 | **54** | pending C |
+| +150 ms | 74 | **4** | pending C |
+| +200 ms | 25 | **0** | pending C |
+| +350 ms | 0 | **0** | pending C |
+| +600 ms | 0 | **0** | pending C |
 
-last-word ok ≥ 99.0% gate held at every offset for `short` (floor: blip-059, word-043,
-word-051 drop on every engine including baseline — see log).
+last-word ok 99.0% at every offset for `short` — the 3-file floor (blip-059, word-043,
+word-051) is unchanged vs baseline, so zero NEW dropped final words. Speed/all @ f17a82f,
+`--replay --engine short` over the full 300-clip dictation set.
 
 ## Dead ends (measured, kept for the record)
 
