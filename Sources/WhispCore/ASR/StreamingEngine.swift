@@ -278,7 +278,18 @@ public final class StreamingEngine: Transcribing, StatusReporting, LiveDecoding 
             takeAudio = []
             feedFailed = false
             do {
-                if !failed { return try await manager.finish() }
+                if !failed {
+                    let text = try await manager.finish()
+                    // Empty finish on audible audio is a known streaming-model
+                    // dead zone (occurs at some total frame counts); one padded
+                    // retry shifts the decode boundary and usually rescues it.
+                    if text.isEmpty, !audio.isEmpty, !SpeechSegmenter.isNearSilent(audio) {
+                        try await manager.reset()
+                        return try await decodeAll(
+                            manager, audio + [Float](repeating: 0, count: tier.config.rightSamples))
+                    }
+                    return text
+                }
             } catch {}
             guard !audio.isEmpty else { return "" }
             try await manager.reset()
