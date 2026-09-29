@@ -116,6 +116,7 @@ public struct CompareRunner {
         case "parakeet", "baseline": return ParakeetTranscriber()
         case "profiled": return ProfiledTranscriber()
         case "short": return ShortWindowEngine()
+        case "par2": return ParakeetTranscriber(model: .unified, unifiedLanes: 2)
         default: throw CompareError.unknownEngine(name)
         }
     }
