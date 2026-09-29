@@ -1,0 +1,6 @@
+.venv/
+build/
+__pycache__/
+*.nemo
+*.mlpackage
+*.mlmodelc
