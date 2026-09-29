@@ -22,7 +22,7 @@ WAVDIR="${1:-}"
 ENGINES="${2:-parakeet,short}"
 if [ -z "$WAVDIR" ] || [ ! -d "$WAVDIR" ]; then
   echo "usage: $0 /path/to/wav-folder [engine,list]" >&2
-  echo "  engines default to parakeet,short — e.g. parakeet,short,streaming,profiled" >&2
+  echo "  engines default to parakeet,short — e.g. parakeet,short,fast,streaming,par2,profiled" >&2
   exit 1
 fi
 
