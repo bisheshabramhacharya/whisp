@@ -4,68 +4,95 @@
 
 # Whisp
 
-**Hold a key, talk, let go — your words are typed wherever your cursor is.**<br>
-Free, open-source voice dictation for Mac that runs 100% on your device.
+**Hold a key. Talk. Let go. Your words appear wherever you're typing.**
 
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000?logo=apple)](#install)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-000)](#install)
+Free, open-source voice dictation for Mac. It runs entirely on your Mac,
+so your voice never leaves it.
+
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000?logo=apple)](#get-whisp)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-000)](#get-whisp)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+[Get Whisp](#get-whisp) · [How to use it](#how-to-use-it) · [FAQ](#faq)
 
 </div>
 
 ---
 
-Whisp is a local alternative to Wispr Flow and Willow Voice. It uses NVIDIA's
-Parakeet speech model running on your Mac's Neural Engine, so there's no
-account, no subscription, and **no audio ever leaves your computer**.
+Whisp is a free, local alternative to Wispr Flow and Willow Voice. No account,
+no subscription, no cloud. It uses NVIDIA's Parakeet speech model on your
+Mac's Neural Engine, and a short sentence is typed about 50 ms after you let
+go.
 
-## Why Whisp
+## Why people use it
 
-- ⚡ **Fast.** A short phrase is transcribed in ~50 ms on a base 8 GB M1
-  (median of 213 real dictations under 5 s; 99 ms with the stock model).
-  Whisp runs the encoder at the shortest window that fits what you said,
-  instead of always paying for 15 s. Long dictations are transcribed *while
-  you talk*, so a 2-minute ramble pastes as fast as a one-liner.
-- 🔒 **Private.** Speech recognition happens on-device. After the one-time
-  model downloads, Whisp works fully offline.
-- 🧹 **Clean, never rewritten.** Removes "um", "uh", stutters ("the the") and
-  restarts ("go to the go to desktop" → "go to desktop"). It only ever
-  *subtracts* — it never paraphrases what you said.
-- 📖 **Learns your words.** Fix a word by hand after Whisp pastes it and
-  Whisp learns that fix (only the word you changed, with an Undo in the
-  menu). Or teach it directly with **Fix a Misheard Word…**.
-- 🎯 **Works everywhere.** Any app with a text cursor: Slack, Notes, VS Code,
-  Terminal, your browser, AI chat boxes.
-- 🪶 **Tiny.** A menu-bar app with no Dock icon. The mic is only on while you
-  hold the key.
+- ⚡ **Fast.** About 50 ms from letting go to text on a base M1, for short
+  phrases. Long dictations are transcribed *while you talk*, so a 2-minute
+  ramble pastes about as quickly as a one-liner.
+- 🔒 **Private.** After a one-time model download, Whisp works with Wi-Fi off.
+  No telemetry.
+- 🧹 **Clean, never rewritten.** Drops "um", "uh", stutters ("the the") and
+  false starts ("go to the go to desktop" → "go to desktop"). It only removes
+  filler. It never rewords what you said.
+- 📖 **Learns your words.** Correct a word after Whisp types it and it
+  remembers the fix next time.
+- 🎯 **Works everywhere.** Any app with a text cursor: Slack, Notes, Mail,
+  VS Code, Terminal, your browser, ChatGPT or Claude.
+- 🪶 **Stays out of the way.** Lives in the menu bar. The mic is only on while
+  you hold the key.
 
-## Install
+## Get Whisp
 
-You'll need an **Apple Silicon Mac** on **macOS 14+** and the Xcode Command
-Line Tools (`xcode-select --install`).
+**You need:** a Mac with Apple Silicon (M1 or newer) on macOS 14 Sonoma or
+later.
 
-The quick way, which clones, builds and installs in one go:
+### 1. Install
+
+Open **Terminal** (press ⌘Space, type *Terminal*, press Return), paste this
+line, and press Return:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/install.sh | bash
 ```
 
-Or build it yourself:
+This downloads the latest release, builds it on your Mac and puts
+**Whisp.app** in your Applications folder. The first build takes a few
+minutes.
 
-```sh
-git clone https://github.com/bisheshabramhacharya/whisp.git
-cd whisp
-scripts/build-app.sh --install
-```
+If Terminal says `git` or the developer tools are missing, run
+`xcode-select --install`, click **Install** in the window that opens, then
+paste the line above again.
 
-That builds Whisp, copies it to `/Applications` and launches it. On first
-launch it walks you through three permissions and downloads the speech model
-(~1 GB, once). A faster 5-second version of the encoder (~525 MB) follows in
-the background and is used as soon as it arrives; Whisp works fine without it.
+### 2. Allow three permissions
 
-> **Using Wispr Flow or Willow?** Quit it first — both apps listen for the
-> same key.
+Whisp opens a **Welcome to Whisp** window. Click **Grant…** next to each item
+and switch Whisp on in the System Settings page that opens. The window ticks
+each one off as you go.
+
+| Permission | Why Whisp needs it |
+|---|---|
+| **Microphone** | To hear you while you hold the key |
+| **Accessibility** | To type the text into the app you're using |
+| **Input Monitoring** | To notice the Right Option key in every app |
+
+While you do this, Whisp downloads its speech model (about 1 GB, once). The
+bottom of the window says **Ready** when it's done.
+
+### 3. Talk
+
+Click into any text box, **hold the Right Option key** (the ⌥ key right of
+the space bar), say something, and let go. A small pill at the bottom of the
+screen shows the waveform while you talk, and your words are typed at the
+cursor.
+
+That's it. Whisp's icon sits in the menu bar at the top of the screen; there's
+no Dock icon.
+
+> **Using Wispr Flow or Willow?** Quit it first. Both listen for the same key.
+
+**Updating:** paste the same install line again. It fetches the newest release
+and keeps your settings, history and permissions.
 
 ## How to use it
 
@@ -73,27 +100,19 @@ the background and is used as soon as it arrives; Whisp works fine without it.
 |---|---|
 | **Hold Right Option**, talk, let go | Your words are typed at the cursor |
 | **Double-tap Right Option** | Hands-free: keeps listening until you press it again |
-| **Esc** | Cancels — even right after you let go |
-| **Cmd+Shift+V** | Re-paste your last dictation at the cursor |
+| **Esc** | Cancels, even right after you let go |
+| **⌘⇧V** | Types your last dictation again |
 | Menu bar → **Fix a Misheard Word…** | Teach Whisp a word it got wrong |
 | Menu bar → **History** | Click any past dictation to copy it |
 
-## Permissions
-
-macOS asks for three things (System Settings → Privacy & Security):
-
-| Permission | Why Whisp needs it |
-|---|---|
-| **Microphone** | To hear you |
-| **Accessibility** | To type the text into the app you're using |
-| **Input Monitoring** | To notice when you press Right Option |
-
 ## Teach it your words
 
-Whisp keeps a personal dictionary at
-`~/Library/Application Support/Whisp/dictionary.json`. The easy way to add to
-it is **Fix a Misheard Word…** in the menu. You can also edit the file directly;
-changes apply to your next dictation:
+The easy way is **Fix a Misheard Word…** in the menu, or just correct the word
+by hand after Whisp types it. Whisp learns only the word you changed, and the
+menu has an Undo.
+
+Power users can edit `~/Library/Application Support/Whisp/dictionary.json`
+directly. Changes apply to your next dictation:
 
 ```json
 {
@@ -107,7 +126,7 @@ changes apply to your next dictation:
 
 - `terms` fixes capitalization (*kubernetes* → *Kubernetes*).
 - `replacements` swaps a misheard phrase for the right one. Matching is
-  whole-word and case-insensitive.
+  whole-word and ignores case.
 
 ## How it works
 
@@ -122,40 +141,56 @@ flowchart LR
     F --> G[Paste at cursor]
 ```
 
-While you're still talking, Whisp cuts the audio at natural pauses and
-transcribes those parts in the background. When you let go, only the last
-few seconds are left to process. The text is pasted with a simulated ⌘V, and
-your clipboard is put back afterwards.
+While you talk, Whisp cuts the audio at natural pauses and transcribes those
+parts in the background. When you let go, only the last few seconds are left.
+It also runs the model on the shortest audio window that fits what you said,
+instead of always paying for 15 seconds. The text is pasted with a simulated
+⌘V, and your clipboard is put back afterwards.
 
 ## FAQ
 
 **Is it really free?** Yes. MIT-licensed, no account, no telemetry.
 
+**Why Parakeet and not Whisper?** For English, NVIDIA's Parakeet models score
+better than Whisper Large on the
+[Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
+while running many times faster, and on a Mac it runs on the Neural Engine,
+leaving your CPU and GPU free. Whisp then tunes how it runs the model for
+short dictations; the measurements are in [docs/speed](docs/speed/README.md).
+
+**What languages?** English only for now. Whisp uses Parakeet Unified 0.6B,
+an English model.
+
+**Intel Macs?** No. The model needs the Apple Silicon Neural Engine.
+
+**Why isn't there a .dmg to download?** Apps downloaded from the internet
+need Apple notarization (a paid developer account) to open without scary
+warnings. Building on your Mac avoids that, and you can read every line of
+what you run.
+
 **What does Whisp download?** Only models, once: the speech model from
-[Hugging Face](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml)
-and the 5-second encoder from this repo's
-[`models-v1` release](https://github.com/bisheshabramhacharya/whisp/releases/tag/models-v1)
-(checked against a SHA-256 before use). Your audio and text never leave the Mac.
+[Hugging Face](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml),
+and a faster 5-second encoder (about 525 MB) from this repo's
+[`models-v1` release](https://github.com/bisheshabramhacharya/whisp/releases/tag/models-v1),
+checked against a SHA-256 before use. Whisp works fine before the second one
+arrives. Your audio and text never leave the Mac.
 
-**What languages?** English. Whisp uses Parakeet Unified 0.6B, an English
-model.
+**Where is my data?** In `~/Library/Application Support/Whisp/`, readable only
+by your user account: history (`history.jsonl`), dictionary, and recordings.
+Recordings are kept by default (about 1 MB per 30 s of speech) so you can
+build a fine-tuning set. Turn this off with **Keep recordings** in the menu.
 
-**Intel Macs?** No. The model runs on the Apple Silicon Neural Engine.
+**Did paste-without-formatting stop working?** Whisp uses ⌘⇧V to re-type your
+last dictation, so apps that use that shortcut for paste-without-formatting
+(Slack, Google Docs) don't see it while Whisp runs.
 
-**Where is my data?** In `~/Library/Application Support/Whisp/` (readable
-only by your user account): your history (`history.jsonl`), dictionary, and
-recordings. Recordings are kept by default so you can build a fine-tuning
-set (about 1 MB per 30 s of speech). Turn this off in the menu with **Keep
-recordings**.
+**How do I uninstall?** Quit Whisp from the menu bar, then delete
+`/Applications/Whisp.app`. To remove everything, also delete `~/.whisp`,
+`~/Library/Application Support/Whisp` and
+`~/Library/Application Support/FluidAudio`.
 
-**Why build from source instead of a download?** Apps from the internet need
-Apple notarization to open without warnings. Building locally avoids that, and
-you can read every line of what you're running.
-
-**Did paste-without-formatting stop working?** Whisp re-pastes your last
-dictation with Cmd+Shift+V and swallows that chord system-wide, so apps that
-use it for paste-without-formatting (Slack, Google Docs) never see it. Quit
-Whisp when you need the original chord.
+**Something went wrong?** [Open an issue](https://github.com/bisheshabramhacharya/whisp/issues)
+and include your Mac model and macOS version.
 
 ## Development
 

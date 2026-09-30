@@ -2,9 +2,8 @@
 //
 // Usage: swift scripts/make-icon.swift <output.iconset>
 //
-// Design: matches the shared Bishesha icon family (~/projects/app-icons) —
-// an ivory rounded square with the charcoal "waveform" SF Symbol, the same
-// symbol the menu bar shows via MenuBarIcon.swift.
+// Design: a night-indigo rounded square with a glowing violet-to-cyan
+// waveform, the same colours as the recording pill (RecordingPill.swift).
 
 import AppKit
 import Foundation
@@ -23,24 +22,16 @@ let iconEntries: [(String, Int)] = [
     ("icon_512x512@2x.png", 1024),
 ]
 
-// Anthropic-style palette, same as the shared family.
-let ivory = NSColor(srgbRed: 0.941, green: 0.933, blue: 0.902, alpha: 1)      // #F0EEE6
-let ivoryDeep = NSColor(srgbRed: 0.894, green: 0.878, blue: 0.827, alpha: 1)
-let charcoal = NSColor(srgbRed: 0.078, green: 0.078, blue: 0.075, alpha: 1)   // #141413
+let nightTop = NSColor(srgbRed: 0.10, green: 0.07, blue: 0.24, alpha: 1)     // #1A123D
+let nightBottom = NSColor(srgbRed: 0.03, green: 0.03, blue: 0.08, alpha: 1)  // #080814
+let violet = NSColor(srgbRed: 0.66, green: 0.55, blue: 0.98, alpha: 1)       // #A78BFA
+let cyan = NSColor(srgbRed: 0.40, green: 0.91, blue: 0.98, alpha: 1)         // #67E8F9
 
-/// Draws an SF Symbol in one colour, aspect-fit and centred in `box`.
-func drawSymbol(_ name: String, in box: NSRect, color: NSColor, weight: NSFont.Weight) {
-    let config = NSImage.SymbolConfiguration(pointSize: box.height, weight: weight)
-        .applying(.init(paletteColors: [color]))
-    guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-        .withSymbolConfiguration(config) else { return }
-    let scale = min(box.width / image.size.width, box.height / image.size.height)
-    let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-    image.draw(in: NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2,
-                          width: size.width, height: size.height))
-}
+/// Relative bar heights, symmetric like a breath.
+let barHeights: [CGFloat] = [0.22, 0.46, 0.78, 1.0, 0.78, 0.46, 0.22]
 
-/// macOS 1024 grid: 824-pt body at 100, soft shadow, ivory fill, charcoal symbol.
+/// macOS 1024 grid: 824-pt body at 100, soft shadow, dark gradient fill,
+/// glowing gradient bars.
 func drawIcon(size: CGFloat) {
     let k = size / 1024
     let body = NSRect(x: 100 * k, y: 100 * k, width: 824 * k, height: 824 * k)
@@ -48,21 +39,46 @@ func drawIcon(size: CGFloat) {
 
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
     shadow.shadowBlurRadius = 22 * k
     shadow.shadowOffset = NSSize(width: 0, height: -10 * k)
     shadow.set()
-    ivory.setFill()
+    nightBottom.setFill()
     shape.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    NSGradient(starting: ivory, ending: ivoryDeep)?.draw(in: shape, angle: -90)
-    NSColor.black.withAlphaComponent(0.08).setStroke()
+    NSGradient(starting: nightTop, ending: nightBottom)?.draw(in: shape, angle: -90)
+    // Faint violet haze behind the bars.
+    NSGradient(colors: [violet.withAlphaComponent(0.28), violet.withAlphaComponent(0)])?
+        .draw(in: shape, relativeCenterPosition: NSPoint(x: 0, y: 0))
+    NSColor.white.withAlphaComponent(0.08).setStroke()
     shape.lineWidth = 2 * k
     shape.stroke()
 
-    let mark = body.insetBy(dx: 190 * k, dy: 190 * k)
-    drawSymbol("waveform", in: mark, color: charcoal, weight: .medium)
+    let barWidth = 62 * k
+    let gap = 34 * k
+    let total = CGFloat(barHeights.count) * barWidth + CGFloat(barHeights.count - 1) * gap
+    let maxHeight = 480 * k
+    var x = body.midX - total / 2
+    let bars = NSBezierPath()
+    for h in barHeights {
+        let height = max(barWidth, maxHeight * h)
+        bars.append(NSBezierPath(
+            roundedRect: NSRect(x: x, y: body.midY - height / 2, width: barWidth, height: height),
+            xRadius: barWidth / 2, yRadius: barWidth / 2))
+        x += barWidth + gap
+    }
+
+    NSGraphicsContext.saveGraphicsState()
+    let glow = NSShadow()
+    glow.shadowColor = violet.withAlphaComponent(0.75)
+    glow.shadowBlurRadius = 60 * k
+    glow.shadowOffset = .zero
+    glow.set()
+    violet.setFill()
+    bars.fill()
+    NSGraphicsContext.restoreGraphicsState()
+    NSGradient(starting: violet, ending: cyan)?.draw(in: bars, angle: 0)
 }
 
 func png(_ size: NSSize, _ draw: () -> Void) -> Data {

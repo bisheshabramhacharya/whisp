@@ -8,6 +8,8 @@
 ### Changed
 - While the speech model is still loading after launch, the recording pill says so ("Loading model…") and the menu explains that your words will be typed once it's ready, instead of looking frozen.
 - The recording pill has a new look: a violet-to-cyan waveform that moves outward from the center while you talk, and a soft rolling wave while it transcribes.
+- New app icon to match: glowing violet-to-cyan voice bars on a night-blue tile. The welcome window uses it too.
+- The README now walks through install, permissions and first dictation step by step, with an uninstall section.
 
 ## 0.3.0 — 2026-09-29
 

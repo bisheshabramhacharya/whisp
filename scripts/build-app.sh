@@ -188,7 +188,7 @@ if [ "$IDENTITY" != "-" ]; then
             echo "    created self-signed identity '$IDENTITY'"
         else
             echo "    could not create identity non-interactively; falling back to ad-hoc."
-            echo "    (see README.md -> 'Stable signing identity' for the one-time fix)"
+            echo "    (see README.md -> 'Code signing' for the one-time fix)"
         fi
     fi
 else

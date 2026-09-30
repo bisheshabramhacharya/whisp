@@ -127,9 +127,9 @@ private struct OnboardingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundColor(.accentColor)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Whisp").font(.title2).bold()
                     Text("Local, offline dictation").font(.caption).foregroundColor(.secondary)
