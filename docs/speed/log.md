@@ -1,6 +1,6 @@
 # Speed log — release→paste
 
-All numbers measured on the Devin VM (VirtualMac2,1, Apple M4 virtual, **no Neural Engine** — GPU+CPU only). Labeled "VM": relative A/B comparisons only, never M1 claims. Owner baseline (M1, reported): release→paste p50 178 ms / p90 242 ms / max 320 ms, 16% under 100 ms; decode ≈ all of it.
+All numbers measured on an M4 VM (VirtualMac2,1, Apple M4 virtual, **no Neural Engine** — GPU+CPU only). Labeled "VM": relative A/B comparisons only, never M1 claims. Owner baseline (M1, reported): release→paste p50 178 ms / p90 242 ms / max 320 ms, 16% under 100 ms; decode ≈ all of it.
 
 Environment: `swift build -c release` on `speed/all` (FluidAudio 0.17.4). Models: `parakeet-unified-en-0.6b` int8 encoder + fp decoder/joint, stock FluidAudio cache.
 

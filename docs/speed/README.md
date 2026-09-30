@@ -2,7 +2,7 @@
 
 Where the time goes between letting go of the key and the text appearing,
 what made it faster, and what didn't. Numbers are from a base 8 GB M1 on the
-owner's own recordings unless marked VM (Devin's M4 virtual machine, no Neural
+owner's own recordings unless marked VM (an M4 virtual machine, no Neural
 Engine: relative comparisons only).
 
 ## Where the time goes
@@ -56,4 +56,4 @@ scripts/speed/m1-check.sh <folder of wavs> parakeet,short
 
 Detailed logs: [log.md](log.md), [short window](log-b-short-window.md),
 [streaming](log-c-streaming.md), [decoder and pipeline](log-d-decoder.md),
-and Devin's [full report](devin-report.md).
+and the [full report](vm-report.md).
