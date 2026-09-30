@@ -44,10 +44,14 @@ final class RecordingPillController {
         panel.contentView = pill
         self.pillView = pill
 
-        pill.onDragEnd = { [weak self, weak panel] in
-            guard let self, let panel else { return }
-            self.settings.pillOrigin = panel.frame.origin
-        }
+        // Native dragging finishes after performDrag returns; save actual moves.
+        NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak panel] _ in
+                guard let self, let panel else { return }
+                self.settings.pillOrigin = panel.frame.origin
+            }
+            .store(in: &cancellables)
 
         // Recorder levels → waveform bars (cheap CALayer updates, ~30 Hz).
         controller.onLevel = { [weak self] level in
@@ -178,9 +182,6 @@ private final class PillView: NSView {
         didSet { if caption != oldValue { applyMode() } }
     }
 
-    /// Called after the user finishes dragging the pill.
-    var onDragEnd: (() -> Void)?
-
     private let background = NSVisualEffectView()
     private let barsView = WaveformBarsView()
     private let spinner = NSProgressIndicator()
@@ -242,9 +243,7 @@ private final class PillView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
-        let before = window.frame.origin
-        window.performDrag(with: event) // returns when the drag ends
-        if window.frame.origin != before { onDragEnd?() }
+        window.performDrag(with: event)
     }
 
     func push(level: Float) {
@@ -274,7 +273,7 @@ private final class PillView: NSView {
 
 // MARK: - Waveform bars (pure CALayer — no drawRect churn at 30 Hz)
 
-/// Symmetric bars that fade violet → cyan across the pill. While recording they
+/// Plain white symmetric bars. While recording they
 /// follow the mic (loudest in the middle, like a breath); while transcribing a
 /// soft wave rolls through them.
 private final class WaveformBarsView: NSView {
@@ -285,20 +284,12 @@ private final class WaveformBarsView: NSView {
     private var waveTimer: Timer?
     private var wavePhase: Double = 0
 
-    private static let left = NSColor(srgbRed: 0.66, green: 0.55, blue: 0.98, alpha: 1)
-    private static let right = NSColor(srgbRed: 0.40, green: 0.91, blue: 0.98, alpha: 1)
-
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        for i in 0..<barCount {
+        for _ in 0..<barCount {
             let bar = CALayer()
-            let t = CGFloat(i) / CGFloat(barCount - 1)
-            bar.backgroundColor = (Self.left.blended(withFraction: t, of: Self.right) ?? Self.left).cgColor
-            bar.shadowColor = bar.backgroundColor
-            bar.shadowOpacity = 0.6
-            bar.shadowRadius = 3
-            bar.shadowOffset = .zero
+            bar.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
             layer?.addSublayer(bar)
             barLayers.append(bar)
         }

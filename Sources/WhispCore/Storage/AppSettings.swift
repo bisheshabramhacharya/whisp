@@ -116,7 +116,7 @@ public final class AppSettings: ObservableObject {
             Key.launchAtLoginDesired: false,
             Key.hotkeyKeyCode: 61, // Right Option
             Key.pillScale: 0.75,
-            Key.alwaysShowPill: false,
+            Key.alwaysShowPill: true,
         ])
         self.sounds = defaults.bool(forKey: Key.sounds)
         self.autoMute = defaults.bool(forKey: Key.autoMute)
