@@ -88,12 +88,17 @@ public struct ReleaseReplayer {
         let trimmed = SpeechSegmenter.trimSpeech(samples)
         guard !trimmed.isEmpty else { return samples.count }
         // trimSpeech returns the kept span but not its offset; recompute the end
-        // directly: last frame above the speech threshold + margin.
+        // directly: last frame above the speech threshold + margin. With
+        // WHISP_LAST_WORD=hum the frames are judged above 200 Hz and against the
+        // background level, so clips with fan/room hum get a real last-word end
+        // instead of "the clip end".
         let frame = 160  // SpeechSegmenter.frame (10 ms) — internal constant
+        let humAware = ProcessInfo.processInfo.environment["WHISP_LAST_WORD"] == "hum"
+        let source = humAware ? highPassed(samples) : samples
         let frameCount = samples.count / frame
         guard frameCount > 2 else { return samples.count }
         var energies = [Float](repeating: 0, count: frameCount)
-        samples.withUnsafeBufferPointer { buf in
+        source.withUnsafeBufferPointer { buf in
             for f in 0..<frameCount {
                 var rms: Float = 0
                 vDSP_rmsqv(buf.baseAddress! + f * frame, 1, &rms, vDSP_Length(frame))
@@ -103,10 +108,33 @@ public struct ReleaseReplayer {
         guard let peak = energies.max(), peak > 0 else { return samples.count }
         let sorted = energies.sorted()
         let loud = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
-        let threshold = max(1.5e-3, loud * 0.06)
+        var threshold = max(1.5e-3, loud * 0.06)
+        if humAware, frameCount >= 10 {
+            var means: [Float] = []
+            for i in 0...(frameCount - 10) { means.append(energies[i..<(i + 10)].reduce(0, +) / 10) }
+            let floor = means.sorted()[means.count / 10]
+            threshold = max(threshold, min(floor * 2, loud * 0.3))
+        }
         var last = frameCount - 1
         while last > 0, energies[last] < threshold { last -= 1 }
         return min(samples.count, (last + 1) * frame + 2400)
+    }
+
+    /// 2nd-order Butterworth high-pass at 200 Hz: removes the hum below speech.
+    private static func highPassed(_ samples: [Float]) -> [Float] {
+        let k = tan(Double.pi * 200 / 16_000), q = 1 / 2.0.squareRoot()
+        let norm = 1 / (1 + k / q + k * k)
+        let c: [Double] = [norm, -2 * norm, norm, 2 * (k * k - 1) * norm, (1 - k / q + k * k) * norm]
+        guard let setup = vDSP_biquad_CreateSetup(c, 1) else { return samples }
+        defer { vDSP_biquad_DestroySetup(setup) }
+        var delay = [Float](repeating: 0, count: 4)
+        var out = [Float](repeating: 0, count: samples.count)
+        samples.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst in
+                vDSP_biquad(setup, &delay, src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(samples.count))
+            }
+        }
+        return out
     }
 
     /// Run the live loop over the whole clip once, collecting every decode the
@@ -349,9 +377,17 @@ public struct ReleaseReplayer {
 /// Aggregate over many files' reports.
 public struct ReplayAggregate {
     public var perOffset: [Int: [ReleaseOutcome]] = [:]
+    /// Word edits vs the whole-clip transcript, and its word count, per offset.
+    public var wordDiffs: [Int: (diffs: Int, words: Int)] = [:]
 
     public mutating func add(_ report: ReplayReport) {
-        for o in report.outcomes { perOffset[o.offsetMs, default: []].append(o) }
+        let full = normalizedWords(report.fullText)
+        for o in report.outcomes {
+            perOffset[o.offsetMs, default: []].append(o)
+            let d = wordEditDistance(full, normalizedWords(o.text))
+            let prev = wordDiffs[o.offsetMs] ?? (0, 0)
+            wordDiffs[o.offsetMs] = (prev.diffs + d, prev.words + full.count)
+        }
     }
 
     static func pct(_ sorted: [Double], _ p: Double) -> Double {
@@ -369,9 +405,11 @@ public struct ReplayAggregate {
             let noWait = Double(o.filter { $0.waitMs < 1 }.count) / Double(o.count) * 100
             let survived = Double(o.filter(\.lastWordSurvived).count) / Double(o.count) * 100
             let spec = Double(o.filter(\.speculationHit).count) / Double(o.count) * 100
+            let wd = wordDiffs[offset] ?? (0, 0)
             out.append(String(
-                format: "  +%4d ms: wait p50 %5.0f  p95 %5.0f  mean %5.0f | no-wait %4.0f%% | spec-hit %4.0f%% | last-word ok %5.1f%% (%d releases)",
-                offset, Self.pct(waits, 0.5), Self.pct(waits, 0.95), mean, noWait, spec, survived, o.count))
+                format: "  +%4d ms: wait p50 %5.0f  p95 %5.0f  mean %5.0f | no-wait %4.0f%% | spec-hit %4.0f%% | last-word ok %5.1f%% | words vs whole clip %d/%d differ (%d releases)",
+                offset, Self.pct(waits, 0.5), Self.pct(waits, 0.95), mean, noWait, spec, survived,
+                wd.diffs, wd.words, o.count))
         }
         return out
     }

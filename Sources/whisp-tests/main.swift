@@ -578,6 +578,54 @@ func a2RaceTests() async {
 }
 await a2RaceTests()
 
+// While recording, each live tick tells the engine how much audio a release
+// decode would get, so an engine with several encoder sizes can wake that one.
+final class GrowingRecorder: AudioRecording {
+    var onLevel: ((Float) -> Void)?
+    let lostInput = false
+    private var startedNs: UInt64 = 0
+    func start() throws { startedNs = DispatchTime.now().uptimeNanoseconds }
+    func samples(from start: Int) -> [Float] {
+        let heard = Int((DispatchTime.now().uptimeNanoseconds - startedNs) / 62_500)
+        return start < heard ? [Float](repeating: 0.1, count: heard - start) : []
+    }
+    func stop() -> [Float] { samples(from: 0) }
+    func cancel() {}
+}
+final class PrewarmLog: Transcribing {
+    private let lock = NSLock()
+    private var logged: [Int] = []
+    var sizes: [Int] { lock.withLock { logged } }
+    func prepare() async throws {}
+    func transcribe(_ samples: [Float]) async throws -> String { "Done." }
+    func prewarm(forSamples samples: Int) async { lock.withLock { logged.append(samples) } }
+}
+@MainActor
+func prewarmTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-prewarm-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let hotkey = FakeHotkey(), engine = PrewarmLog()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    settings.sounds = false
+    settings.keepRecordings = false
+    let controller = DictationController(
+        transcriber: engine, recorder: GrowingRecorder(), hotkey: hotkey, paster: FakePaster(),
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: CountingSounds(), settings: settings,
+        history: HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl")),
+        recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    controller.startHotkey()
+    hotkey.onEvent?(.start)
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    hotkey.onEvent?(.stop)
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    let sizes = engine.sizes
+    expect(sizes.count >= 2 ? "every tick" : "\(sizes)", "every tick", "prewarm runs on live ticks")
+    expect(sizes == sizes.sorted() && (sizes.last ?? 0) >= 3 * SpeechSegmenter.tick ? "growing" : "\(sizes)",
+           "growing", "prewarm gets the audio heard so far")
+}
+await prewarmTests()
+
 // MARK: - A1 Speed
 
 // trimSpeech: a loud mid-clip noise must not set the bar for quiet edge words.

@@ -17,6 +17,7 @@
 - Data folder locked to your user account (0700/0600). Recordings are kept until you turn them off.
 
 ### Fixed
+- **No more 300–500 ms stalls after a long dictation.** Whichever encoder size sat unused (the 5 s one during a long take, the 15 s one during short ones) went cold and was slow on its next run. Whisp now wakes the size the next release will need while you're still talking. Replaying the last 40 real dictations in real time: release→paste p50 147 → 92 ms, p90 350 → 176 ms, worst 504 → 221 ms.
 - Esc no longer spends a decode on a cancelled clip; losing permissions stops the mic.
 - The frontmost app is checked again right before ⌘V.
 - System audio left muted by a crash is restored on the next launch.

@@ -387,6 +387,7 @@ public final class DictationController: ObservableObject {
             return
         }
         let pending = recorder.samples(from: chunks.committed)
+        Task { [transcriber, count = pending.count] in await transcriber.prewarm(forSamples: count) }
         guard let cut = SpeechSegmenter.nextCut(in: pending) else {
             speculate(on: pending, chunks)
             return

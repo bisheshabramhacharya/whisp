@@ -12,10 +12,15 @@ public protocol Transcribing: AnyObject {
     func transcribe(_ samples: [Float]) async throws -> String
     /// Wakes the model ahead of a decode, e.g. at key press after idle. Optional.
     func rewarm() async
+    /// Called while recording with the length of audio a release decode would
+    /// get now, so engines with several encoder sizes can wake the one that
+    /// decode needs before the key comes up. Optional.
+    func prewarm(forSamples samples: Int) async
 }
 
 public extension Transcribing {
     func rewarm() async {}
+    func prewarm(forSamples samples: Int) async {}
 }
 
 /// Engine that can report human-readable model status ("Downloading…", "Ready").

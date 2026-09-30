@@ -30,6 +30,11 @@ struct Options {
     var micDrop: Double = 0
     var idle: Double = 30
     var show = false
+    var live = false
+    var history: String?
+    var idleCurve = false
+    var pauses = false
+    var switchTest = false
 }
 
 func parseArgs() -> Options {
@@ -91,6 +96,17 @@ func parseArgs() -> Options {
             if i < args.count, let s = Double(args[i]) { opts.idle = s }
         case "--show":
             opts.show = true
+        case "--live":
+            opts.live = true
+        case "--idle-curve":
+            opts.idleCurve = true
+        case "--pauses":
+            opts.pauses = true
+        case "--switch-test":
+            opts.switchTest = true
+        case "--history":
+            i += 1
+            if i < args.count { opts.history = args[i] }
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -125,6 +141,8 @@ func printUsage() {
           --replay     release replay: run the real chunk/speculate/finish loop over each
                        file and simulate key release at --offsets ms after the last word;
                        prints wait p50/p95/mean, no-wait share, last-word survival
+                       env WHISP_LAST_WORD=hum: find the last word above 200 Hz (noisy
+                       rooms); WHISP_REPLAY_FLAGS=1: per-file cuts + last-word ok/LOST
           --offsets LIST  release offsets in ms (default 0,50,100,150,200,350,600,1000)
           --mic-drop MS   model MicRecorder dropping this much in-flight audio at stop
           --engine NAME   engine for --replay/--profile (parakeet|profiled|<asrEngine>)
@@ -132,6 +150,19 @@ func printUsage() {
                        agreement vs first engine, warm and --idle+rewarm timing
           --idle S     idle seconds before the rewarm pass in --compare (default 30)
           --show       print per-file transcripts/details (default: aggregates only)
+          --live       real-time replay through DictationController: each file plays as
+                       the mic at real speed, the key is released at its end, and the
+                       app's own release→paste time is reported (--engine, default the
+                       app's; --gap S between dictations, default 3)
+          --history PATH  with --live, show the latency the app recorded for each file
+                       (files named <history id>.wav, e.g. Whisp's recordings folder)
+          --idle-curve  decode the first file after 0-8 s of engine idle, --runs rounds;
+                       shows how much slower a cold decode is (--engine as for --live)
+          --pauses     per file, how many 100 ms ticks would start a decode-ahead, and
+                       the noise floor vs speech level that decides it
+          --switch-test SHORT MID  alternate a clip that fits the smallest encoder window
+                       with a 5-15 s one; compares encoder time right after a window
+                       switch vs repeating the same window (--runs rounds)
           If <file>.txt exists next to an audio file it is scored as the WER reference.
         """)
 }
@@ -383,6 +414,8 @@ func runStreaming(tier: String, files: [String]) async {
 
 // MARK: - Main
 
+// Long runs are usually redirected to a log; flush per line so progress shows.
+setvbuf(stdout, nil, _IOLBF, 0)
 let opts = parseArgs()
 guard !opts.files.isEmpty else {
     printUsage()
@@ -390,6 +423,43 @@ guard !opts.files.isEmpty else {
 }
 if let tier = opts.streaming {
     await runStreaming(tier: tier, files: opts.files)
+    exit(0)
+}
+
+if opts.idleCurve {
+    do {
+        try await runIdleCurve(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
+                               file: opts.files[0], rounds: opts.runs)
+    } catch {
+        print("idle curve failed: \(error.localizedDescription)")
+        exit(2)
+    }
+    exit(0)
+}
+if opts.pauses {
+    runPauses(files: opts.files)
+    exit(0)
+}
+if opts.switchTest {
+    do {
+        try await runSwitchTest(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
+                                files: opts.files, rounds: opts.runs,
+                                gapSeconds: opts.gap > 0 ? opts.gap : 0.3)
+    } catch {
+        print("switch test failed: \(error.localizedDescription)")
+        exit(2)
+    }
+    exit(0)
+}
+if opts.live {
+    do {
+        try await runLive(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
+                          paths: opts.files, gapSeconds: opts.gap > 0 ? opts.gap : 3,
+                          historyPath: opts.history)
+    } catch {
+        print("live replay failed: \(error.localizedDescription)")
+        exit(2)
+    }
     exit(0)
 }
 

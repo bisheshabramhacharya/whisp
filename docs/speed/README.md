@@ -22,6 +22,7 @@ paid for 15 s of encoder work.
 | Decode ahead after a 180 ms pause (was 200) | no-wait releases at +200 ms: 43% → 50% | same |
 | Cleaner + dictionary warmed at launch | first dictation no longer pays 46–67 ms | same code, earlier |
 | FluidAudio 0.15.7 → 0.17.4 | same speed | identical on 40 recordings |
+| Wake the encoder size the release will need, while you talk | real-time replay of the last 40 dictations: p50 147 → 92 ms, p90 350 → 176, worst 504 → 221 | same decode, earlier wake-up |
 
 ## Measured dead ends
 
@@ -31,7 +32,8 @@ paid for 15 s of encoder work.
 | Batched wide joint (FastRnnt) | M1: 160 / 177 ms vs 155 ms stock | removed |
 | Second decode lane (`par2`) | helps p95 only when a release races a decode; +600 MB | opt-in only |
 | Speculating after 150 ms pauses | dropped a quiet last word on the edge set | not used |
-| Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms) | not needed |
+| Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
+| Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
 
 ## What's next
 
@@ -46,6 +48,9 @@ windows can share one weight file (Core ML multi-function models, macOS 15+).
 swift build -c release
 .build/release/whisp-bench --compare parakeet,short --runs 2 --idle 0 <wavs…>
 .build/release/whisp-bench --replay --engine short <wavs…>
+# real time, through the app's own dictation code, next to what the app measured:
+.build/release/whisp-bench --live --history ~/Library/Application\ Support/Whisp/history.jsonl \
+  ~/Library/Application\ Support/Whisp/recordings/<id>.wav …
 scripts/speed/m1-check.sh <folder of wavs> parakeet,short
 ```
 

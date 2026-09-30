@@ -112,6 +112,13 @@ func runReplay(
             let report = try await replayer.replay(
                 f.samples, offsets: offsets, file: f.name)
             aggregate.add(report)
+            if ProcessInfo.processInfo.environment["WHISP_REPLAY_FLAGS"] == "1" {
+                // Per-file outcome without transcript text.
+                let flags = report.outcomes.map { "\($0.offsetMs):\($0.lastWordSurvived ? "ok" : "LOST")" }
+                print(String(format: "  file %@ %5.1f s cuts %d | %@", String(f.name.prefix(8)),
+                             Double(f.samples.count) / 16000, SpeechSegmenter.plan(f.samples).count,
+                             flags.joined(separator: " ")))
+            }
             if show {
                 print(String(format: "%@ (%.2f s, last word ends %.0f ms): %@",
                              f.name, Double(f.samples.count) / 16000,

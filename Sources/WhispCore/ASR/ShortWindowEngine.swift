@@ -54,6 +54,25 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
         await engine.rewarm()
     }
 
+    public func prewarm(forSamples samples: Int) async {
+        await engine.prewarm(forSamples: samples)
+    }
+
+    /// Per-stage wall time of one windowed decode, for speed tooling.
+    public struct DecodeTimings: Sendable {
+        public let windowSamples: Int
+        public let inputSamples: Int
+        public let melMs: Double
+        public let encoderMs: Double
+        public let rnntMs: Double
+    }
+
+    /// Called after every windowed decode (not the >15 s fallback), on the
+    /// engine's executor.
+    public func observeDecodes(_ observer: @escaping @Sendable (DecodeTimings) -> Void) async {
+        await engine.setObserver(observer)
+    }
+
     public func transcribe(_ samples: [Float]) async throws -> String {
         guard !samples.isEmpty else { throw TranscriberError.audioTooShort }
         guard !SpeechSegmenter.isNearSilent(samples, rmsThreshold: silenceThreshold) else { return "" }
@@ -90,7 +109,13 @@ extension ShortWindowEngine {
 
         private var prepared = false
         private var preparing: Task<Void, Error>?
-        private var lastRun: UInt64 = 0
+        /// When each window's encoder last ran (uptime ns), keyed by windowSamples.
+        private var lastRun: [Int: UInt64] = [:]
+        /// An encoder that hasn't run for this long is slow on its next run,
+        /// even if the other window kept the Neural Engine busy meanwhile. On
+        /// the 8 GB M1: 5 s window after ~60 s of 15 s-only use 329 ms vs
+        /// 27-54 ms warm; after 3-6 s of disuse only ~30 ms extra.
+        private static let staleNs: UInt64 = 8_000_000_000
 
         /// Sorted by windowSamples ascending. Always ends with the stock 15 s
         /// bundle when present, so the engine works with zero extra downloads.
@@ -105,6 +130,11 @@ extension ShortWindowEngine {
         private var fallbackManager: UnifiedAsrManager?
 
         private let config = UnifiedConfig()
+        private var observer: (@Sendable (DecodeTimings) -> Void)?
+
+        func setObserver(_ observer: @escaping @Sendable (DecodeTimings) -> Void) {
+            self.observer = observer
+        }
 
         private var modelDir: URL {
             FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -173,7 +203,6 @@ extension ShortWindowEngine {
             }
 
             await status("Warming up…")
-            lastRun = DispatchTime.now().uptimeNanoseconds
             let silence = [Float](repeating: 0, count: 16_000)
             for variant in variants {
                 // One decode per window pays model-compile outside timed runs.
@@ -269,18 +298,26 @@ extension ShortWindowEngine {
             variants.first { $0.windowSamples >= samples }
         }
 
-        /// Skipped when the model ran recently enough to still be warm.
+        /// Key press: every take starts short, so wake the smallest window.
         func rewarm() async {
-            guard prepared, DispatchTime.now().uptimeNanoseconds - lastRun > 20_000_000_000,
-                let smallest = variants.first
+            warmIfStale(variants.first)
+        }
+
+        /// While recording: wake the window a release decode of `samples`
+        /// would use, so crossing into the 15 s window doesn't pay its wake-up
+        /// at release.
+        func prewarm(forSamples samples: Int) {
+            warmIfStale(variant(for: samples))
+        }
+
+        private func warmIfStale(_ variant: WindowVariant?) {
+            guard prepared, let variant,
+                DispatchTime.now().uptimeNanoseconds - (lastRun[variant.windowSamples] ?? 0) > Self.staleNs
             else { return }
-            let silence = [Float](repeating: 0, count: 16_000)
-            _ = try? transcribeWindow(silence, variant: smallest)
-            lastRun = DispatchTime.now().uptimeNanoseconds
+            _ = try? transcribeWindow([Float](repeating: 0, count: 16_000), variant: variant)
         }
 
         func transcribe(_ samples: [Float]) async throws -> String {
-            defer { lastRun = DispatchTime.now().uptimeNanoseconds }
             guard let variant = variant(for: samples.count) else {
                 if fallbackManager == nil {
                     fallbackManager = UnifiedAsrManager()
@@ -300,6 +337,7 @@ extension ShortWindowEngine {
                 let rnnt, let tokenizer
             else { throw TranscriberError.notPrepared }
 
+            let t0 = DispatchTime.now().uptimeNanoseconds
             var buffer = [Float](repeating: 0, count: variant.windowSamples)
             samples.withUnsafeBufferPointer { src in
                 buffer.withUnsafeMutableBufferPointer { dst in
@@ -308,16 +346,26 @@ extension ShortWindowEngine {
             }
             let (melArray, melLength) = try mel.features(
                 window: buffer, validCount: samples.count)
+            let t1 = DispatchTime.now().uptimeNanoseconds
 
             let encoderOutput = try encoder.prediction(
                 from: EncoderFeatureProvider(mel: melArray, melLength: melLength))
             guard let encoded = encoderOutput.featureValue(for: "encoder")?.multiArrayValue,
                 let encodedLength = encoderOutput.featureValue(for: "encoder_length")?.multiArrayValue
             else { throw TranscriberError.notPrepared }
+            let t2 = DispatchTime.now().uptimeNanoseconds
+            lastRun[variant.windowSamples] = t2
 
             try rnnt.reset()
             let encoderLength = min(encodedLength[0].intValue, encoded.shape[2].intValue)
             let tokens = try rnnt.decode(encoded: encoded, frameRange: 0..<encoderLength)
+            if let observer {
+                let t3 = DispatchTime.now().uptimeNanoseconds
+                observer(DecodeTimings(
+                    windowSamples: variant.windowSamples, inputSamples: samples.count,
+                    melMs: Double(t1 - t0) / 1e6, encoderMs: Double(t2 - t1) / 1e6,
+                    rnntMs: Double(t3 - t2) / 1e6))
+            }
             return tokenizer.decode(ids: tokens)
         }
     }

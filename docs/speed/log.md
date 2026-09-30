@@ -163,3 +163,62 @@ C's 60-file × 8-offset replay @t2080: finish() ≈ **88 ms flat** at every offs
 mis-transcriptions persisting at +1000 ms, ~6 empty-output dead zones (upstream
 quirk; rescued via padded batch retry, ~170 ms rescue path). Agreement 0.9891.
 Verdict: **dead end for this run** on the zero-loss criterion; ships opt-in only.
+
+## Real dictations, real time (M1 8 GB, 2026-09-29)
+
+886 dictations in history (417 min of audio). Recent ones: release→paste p50
+~170–220 ms, p90 300–700 ms. The app's own log shows stop + clean + paste under
+10 ms, so the decode is the whole wait.
+
+`whisp-bench --live` plays each saved WAV as the mic at real speed through
+`DictationController` (null paster, 3 s between takes) and reads back the
+controller's release→paste. It reproduces the app: 26 recent takes, p50 191 ms
+vs 164 ms recorded. Stage split per decode comes from
+`ShortWindowEngine.observeDecodes`.
+
+What it showed:
+- The spikes are the encoder, not queueing: 234–465 ms instead of 26–60 ms.
+- `--idle-curve`: plain idle costs little (0 s → 35 ms, 8 s → 69 ms).
+- `--switch-test`: switching windows after 3–6 s costs ~30 ms.
+- A 5 s decode right after a 62.8 s take (15 s window only): encoder 329 ms.
+  65 s of pure idle, then a rewarm: no penalty. The window that sits unused
+  while the other one runs goes cold.
+
+Fix: per-window last-run time; the key-press rewarm wakes the 5 s window when
+it hasn't run for 8 s, and every live tick calls
+`prewarm(forSamples: pending)` to wake the window a release would use.
+
+`--live` on the last 40 dictations, same order, 3 s gaps:
+
+| | p50 | p90 | worst |
+|---|---|---|---|
+| before | 147 | 350 | 504 |
+| after | 92 | 176 | 221 |
+| ≤5 s before → after | 97 → 66 | 354 → 116 | 504 → 143 |
+
+Every take that spiked before (encoder 238–465 ms) now runs its encoder in
+24–27 ms. What's left over 150 ms is 5–22 s takes on the 15 s window
+(encoder 64–99 ms + RNNT 48–100 ms).
+
+### Rejected: pause detection against room hum
+
+`--pauses`: on recent recordings the background between words is 20–45% of the
+speech level (vs the 8% pause threshold), so 0 of 26 recent takes had a single
+decode-ahead tick; 23 of 39 older, quieter ones did. 80–90% of that background
+is below 200 Hz. Tried: pause energy above 200 Hz (biquad high-pass), threshold
+`max(8% of speech, min(2 × quietest 200 ms, 35% of speech))`.
+
+`--replay --engine short` with `WHISP_LAST_WORD=hum`, 20 takes of 15–60 s (10 noisy, 10 quiet):
+
+| | wait p50 / p95 at +0 | last word ok at +0 | words differing vs whole clip |
+|---|---|---|---|
+| current | 62 / 178 ms | 95% | 112 / 1736 |
+| above 200 Hz vs hum | 59 / 114 ms | 80% | 128 / 1736 |
+| same, tighter (1.5×, 20% cap) | 57 / 113 ms | 75% | 125 / 1736 |
+
+Loosening the "nothing audible after the speculation" check had no effect on
+these numbers; the losses come from the extra cuts. In a noisy room the tail
+after the last cut is never near-silent, so `finish()` decodes the last word
+alone instead of re-decoding it with the chunk before it. Recent takes are
+also released within ~15 ms of the last word (p50), so decoding ahead rarely
+had time to help. Not shipped.
