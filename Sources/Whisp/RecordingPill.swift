@@ -6,7 +6,8 @@ import WhispCore
 /// Drag it anywhere (the spot is remembered); otherwise it sits bottom-center
 /// of the screen with the mouse. Size comes from `AppSettings.pillScale`.
 ///   recording    → live waveform driven by recorder levels
-///   transcribing → subtle spinner
+///   transcribing → a soft wave rolling through the bars, or "Loading model…"
+///                  while the model isn't ready yet
 ///   idle         → hidden, or dimmed when `alwaysShowPill` is on
 @MainActor
 final class RecordingPillController {
@@ -66,6 +67,7 @@ final class RecordingPillController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
                 self?.pillView.toolTip = status == "Ready" ? "Drag to move" : status
+                self?.pillView.caption = status == "Ready" ? nil : status
             }
             .store(in: &cancellables)
 
@@ -170,12 +172,19 @@ private final class PillView: NSView {
         didSet { if mode != oldValue { applyMode() } }
     }
 
+    /// Shown instead of the transcribing wave while the model is still loading,
+    /// so a stalled first dictation says why instead of looking frozen.
+    var caption: String? {
+        didSet { if caption != oldValue { applyMode() } }
+    }
+
     /// Called after the user finishes dragging the pill.
     var onDragEnd: (() -> Void)?
 
     private let background = NSVisualEffectView()
     private let barsView = WaveformBarsView()
     private let spinner = NSProgressIndicator()
+    private let label = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -198,9 +207,18 @@ private final class PillView: NSView {
         spinner.controlSize = .small
         spinner.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(spinner)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = NSColor.white.withAlphaComponent(0.85)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(label)
         NSLayoutConstraint.activate([
-            spinner.centerXAnchor.constraint(equalTo: background.centerXAnchor),
+            spinner.leadingAnchor.constraint(greaterThanOrEqualTo: background.leadingAnchor, constant: 14),
             spinner.centerYAnchor.constraint(equalTo: background.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 8),
+            label.centerYAnchor.constraint(equalTo: background.centerYAnchor),
+            label.centerXAnchor.constraint(equalTo: background.centerXAnchor, constant: 12),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -14),
         ])
 
         toolTip = "Drag to move"
@@ -235,12 +253,20 @@ private final class PillView: NSView {
     }
 
     private func applyMode() {
-        barsView.isHidden = mode == .transcribing
-        spinner.isHidden = mode != .transcribing
-        if mode == .transcribing {
+        let loading = mode == .transcribing && caption != nil
+        label.stringValue = caption ?? ""
+        barsView.isHidden = loading
+        spinner.isHidden = !loading
+        label.isHidden = !loading
+        if loading {
             spinner.startAnimation(nil)
         } else {
             spinner.stopAnimation(nil)
+        }
+        if mode == .transcribing {
+            barsView.startWave()
+        } else {
+            barsView.stopWave()
             barsView.reset()
         }
     }
@@ -248,18 +274,31 @@ private final class PillView: NSView {
 
 // MARK: - Waveform bars (pure CALayer — no drawRect churn at 30 Hz)
 
+/// Symmetric bars that fade violet → cyan across the pill. While recording they
+/// follow the mic (loudest in the middle, like a breath); while transcribing a
+/// soft wave rolls through them.
 private final class WaveformBarsView: NSView {
 
-    private let barCount = 14
+    private let barCount = 17
     private var barLayers: [CALayer] = []
     private var levels: [Float] = []
+    private var waveTimer: Timer?
+    private var wavePhase: Double = 0
+
+    private static let left = NSColor(srgbRed: 0.66, green: 0.55, blue: 0.98, alpha: 1)
+    private static let right = NSColor(srgbRed: 0.40, green: 0.91, blue: 0.98, alpha: 1)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        for _ in 0..<barCount {
+        for i in 0..<barCount {
             let bar = CALayer()
-            bar.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
+            let t = CGFloat(i) / CGFloat(barCount - 1)
+            bar.backgroundColor = (Self.left.blended(withFraction: t, of: Self.right) ?? Self.left).cgColor
+            bar.shadowColor = bar.backgroundColor
+            bar.shadowOpacity = 0.6
+            bar.shadowRadius = 3
+            bar.shadowOffset = .zero
             layer?.addSublayer(bar)
             barLayers.append(bar)
         }
@@ -277,13 +316,42 @@ private final class WaveformBarsView: NSView {
         updateBars()
     }
 
-    /// Push a new level (0...1). Newest sample renders at the right edge.
+    /// Push a new level (0...1). Recent levels spread outward from the center.
     func push(level: Float) {
-        levels.append(level)
-        if levels.count > barCount {
-            levels.removeFirst(levels.count - barCount)
+        let smoothed = (levels.last ?? 0) * 0.35 + level * 0.65
+        levels.append(smoothed)
+        let keep = barCount / 2 + 1
+        if levels.count > keep {
+            levels.removeFirst(levels.count - keep)
         }
         updateBars()
+    }
+
+    func startWave() {
+        guard waveTimer == nil else { return }
+        waveTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.wavePhase += 0.22
+                self.updateBars()
+            }
+        }
+    }
+
+    func stopWave() {
+        waveTimer?.invalidate()
+        waveTimer = nil
+    }
+
+    private func level(at i: Int) -> Float {
+        if waveTimer != nil {
+            let x = Double(i) / Double(barCount - 1)
+            return Float(0.18 + 0.22 * (1 + sin(wavePhase - x * 2 * .pi)) / 2)
+        }
+        // Distance from center picks how old a level is: newest in the middle.
+        let distance = abs(i - barCount / 2)
+        let index = levels.count - 1 - distance
+        return index >= 0 ? levels[index] : 0
     }
 
     private func updateBars() {
@@ -298,10 +366,7 @@ private final class WaveformBarsView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
-            // levels is a right-aligned history; missing slots sit at min height.
-            let levelIndex = levels.count - barCount + i
-            let level = levelIndex >= 0 ? levels[levelIndex] : 0
-            let height = minHeight + CGFloat(level) * (maxHeight - minHeight)
+            let height = minHeight + CGFloat(level(at: i)) * (maxHeight - minHeight)
             bar.cornerRadius = barWidth / 2
             bar.frame = CGRect(x: startX + CGFloat(i) * barWidth * 2, y: midY - height / 2,
                                width: barWidth, height: height)

@@ -226,7 +226,9 @@ public final class DictationController: ObservableObject {
         // A new dictation ends the previous paste's review window.
         correctionWatcher?.dictationStarting()
         // A fresh take means the user is past whatever the last warning said.
-        statusMessage = nil
+        statusMessage = prepareStarted && modelStatus != "Ready"
+            ? "Still loading the speech model — keep talking, your words are typed once it's ready"
+            : nil
 
         // 1. Feedback first so the user hears the ack even if the mic fails.
         if settings.sounds { sounds.playStart() }

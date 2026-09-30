@@ -139,6 +139,20 @@ expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + to
 expect(SpeechSegmenter.nextCut(in: tone(8)).map(String.init) ?? "nil", "nil", "no pause, below forceChunk")
 expect(SpeechSegmenter.nextCut(in: tone(15)) != nil ? "cut" : "nil", "cut", "forced cut")
 expect(SpeechSegmenter.plan(tone(5) + silence(0.6) + tone(5) + silence(0.6) + tone(5)).count.description, "2", "plan")
+
+// Long release tails are split to fit the largest encoder window instead of
+// loading a second model set (a 30-75 s stall when Core ML recompiled it).
+let window15 = 15 * 16_000
+expect(SpeechSegmenter.split(tone(10), maxSamples: window15).count.description, "1", "short audio stays whole")
+let longTake = tone(12) + silence(0.4) + tone(20)
+let pieces = SpeechSegmenter.split(longTake, maxSamples: window15)
+expect(pieces.allSatisfy { $0.count <= window15 } ? "fits" : "\(pieces.map(\.count))", "fits", "every piece fits the window")
+expect(pieces.reduce(0) { $0 + $1.count }.description, longTake.count.description, "no audio lost")
+expect(abs(pieces[0].count - 12 * 16_000 - 3_200) <= 3_200 ? "in pause" : "at \(pieces[0].count)", "in pause",
+       "cuts in the quiet gap")
+let pauseless = SpeechSegmenter.split(tone(40), maxSamples: window15)
+expect(pauseless.count >= 3 && pauseless.allSatisfy { $0.count <= window15 } ? "fits" : "\(pauseless.map(\.count))",
+       "fits", "pause-free speech still splits")
 expect(SpeechSegmenter.join(["I went to", "The store and then.", "The end."]), "I went to the store and then. The end.")
 expect(SpeechSegmenter.join(["Hello", "", "Bishesha said hi."]), "Hello Bishesha said hi.")
 expect(SpeechSegmenter.join(["It stops.", "changing words."]), "It stops changing words.", "seam period dropped")

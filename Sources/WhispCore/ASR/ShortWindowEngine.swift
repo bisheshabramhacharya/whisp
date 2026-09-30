@@ -318,14 +318,24 @@ extension ShortWindowEngine {
         }
 
         func transcribe(_ samples: [Float]) async throws -> String {
-            guard let variant = variant(for: samples.count) else {
-                if fallbackManager == nil {
-                    fallbackManager = UnifiedAsrManager()
-                    try await fallbackManager!.loadModels(progressHandler: nil)
-                }
-                return try await fallbackManager!.transcribe(samples)
+            if let variant = variant(for: samples.count) {
+                return try transcribeWindow(samples, variant: variant)
             }
-            return try transcribeWindow(samples, variant: variant)
+            // Longer than the largest window: decode it in window-sized pieces on
+            // the encoders already loaded. Loading a second model set here instead
+            // cost 30-75 s at release when Core ML had to recompile it.
+            if let largest = variants.last {
+                var parts: [String] = []
+                for piece in SpeechSegmenter.split(samples, maxSamples: largest.windowSamples) {
+                    parts.append(try transcribeWindow(piece, variant: variant(for: piece.count) ?? largest))
+                }
+                return SpeechSegmenter.join(parts)
+            }
+            if fallbackManager == nil {
+                fallbackManager = UnifiedAsrManager()
+                try await fallbackManager!.loadModels(progressHandler: nil)
+            }
+            return try await fallbackManager!.transcribe(samples)
         }
 
         /// mel → encoder → greedy RNNT over the valid encoder frames → text.

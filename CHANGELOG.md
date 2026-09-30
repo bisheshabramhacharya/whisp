@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — 2026-09-30
+
+### Fixed
+- **No more 30–75 second freezes on long dictations.** When the audio left after the last pause was longer than 15 s (quiet speech, or the last chunk re-decoded with a quiet ending), Whisp loaded a second copy of the speech model at release, and Core ML sometimes rebuilt it from scratch. That audio is now split at its quietest points and decoded on the models already loaded: a real 58 s take that froze for 45 s decodes in 0.6 s.
+
+### Changed
+- While the speech model is still loading after launch, the recording pill says so ("Loading model…") and the menu explains that your words will be typed once it's ready, instead of looking frozen.
+- The recording pill has a new look: a violet-to-cyan waveform that moves outward from the center while you talk, and a soft rolling wave while it transcribes.
+
 ## 0.3.0 — 2026-09-29
 
 ### Added

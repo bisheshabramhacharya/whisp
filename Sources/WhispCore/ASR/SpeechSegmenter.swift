@@ -183,6 +183,36 @@ public enum SpeechSegmenter {
         return join(texts)
     }
 
+    /// Splits audio longer than `maxSamples` into pieces that each fit one encoder
+    /// window, cutting at the quietest 100 ms of the last 5 s before each limit.
+    /// Release tails can exceed the largest window (quiet speech the live loop
+    /// won't cut in, or the last chunk re-decoded with a near-silent tail).
+    public static func split(_ samples: [Float], maxSamples: Int) -> [[Float]] {
+        var pieces: [[Float]] = []
+        var start = 0
+        while samples.count - start > maxSamples {
+            let limit = start + maxSamples
+            let searchStart = max(start + maxSamples / 2, limit - 5 * 16_000)
+            let energies = frameEnergies(Array(samples[searchStart..<limit]))
+            let window = 10
+            var cut = limit
+            var quietestSum = Float.greatestFiniteMagnitude
+            var i = 0
+            while i + window <= energies.count {
+                let sum = energies[i..<(i + window)].reduce(0, +)
+                if sum < quietestSum {
+                    quietestSum = sum
+                    cut = searchStart + (i + window / 2) * frame
+                }
+                i += 1
+            }
+            pieces.append(Array(samples[start..<cut]))
+            start = cut
+        }
+        pieces.append(Array(samples[start...]))
+        return pieces
+    }
+
     /// Joins chunk transcripts. A chunk boundary sits in a pause, which the model often
     /// reads as a sentence start; when the previous chunk didn't end a sentence and the
     /// next starts with a capitalized common word ("And", "The"), lowercase it back.
