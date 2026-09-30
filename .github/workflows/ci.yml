@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      - name: Build
+        run: swift build -c release --arch arm64
+      - name: Test
+        # The real-clipboard Paster tests stay off (WHISP_TEST_PASTEBOARD unset).
+        run: swift run -c release --arch arm64 whisp-tests

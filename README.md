@@ -22,16 +22,19 @@ account, no subscription, and **no audio ever leaves your computer**.
 
 ## Why Whisp
 
-- ⚡ **Fast.** Text appears ~0.15 s after you let go (median of 56 real
-  dictations on a base 8 GB M1). Long dictations are transcribed *while you
-  talk*, so a 2-minute ramble pastes as fast as a one-liner.
+- ⚡ **Fast.** A short phrase is transcribed in ~50 ms on a base 8 GB M1
+  (median of 213 real dictations under 5 s; 99 ms with the stock model).
+  Whisp runs the encoder at the shortest window that fits what you said,
+  instead of always paying for 15 s. Long dictations are transcribed *while
+  you talk*, so a 2-minute ramble pastes as fast as a one-liner.
 - 🔒 **Private.** Speech recognition happens on-device. After the one-time
-  model download, Whisp works fully offline.
+  model downloads, Whisp works fully offline.
 - 🧹 **Clean, never rewritten.** Removes "um", "uh", stutters ("the the") and
   restarts ("go to the go to desktop" → "go to desktop"). It only ever
   *subtracts* — it never paraphrases what you said.
-- 📖 **Learns your words.** Menu → **Fix a Misheard Word…** teaches it names
-  and jargon it gets wrong, instantly.
+- 📖 **Learns your words.** Fix a word by hand after Whisp pastes it and
+  Whisp learns that fix (only the word you changed, with an Undo in the
+  menu). Or teach it directly with **Fix a Misheard Word…**.
 - 🎯 **Works everywhere.** Any app with a text cursor: Slack, Notes, VS Code,
   Terminal, your browser, AI chat boxes.
 - 🪶 **Tiny.** A menu-bar app with no Dock icon. The mic is only on while you
@@ -58,7 +61,8 @@ scripts/build-app.sh --install
 
 That builds Whisp, copies it to `/Applications` and launches it. On first
 launch it walks you through three permissions and downloads the speech model
-(~1 GB, once).
+(~1 GB, once). A faster 5-second version of the encoder (~525 MB) follows in
+the background and is used as soon as it arrives; Whisp works fine without it.
 
 > **Using Wispr Flow or Willow?** Quit it first — both apps listen for the
 > same key.
@@ -127,14 +131,21 @@ your clipboard is put back afterwards.
 
 **Is it really free?** Yes. MIT-licensed, no account, no telemetry.
 
+**What does Whisp download?** Only models, once: the speech model from
+[Hugging Face](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml)
+and the 5-second encoder from this repo's
+[`models-v1` release](https://github.com/bisheshabramhacharya/whisp/releases/tag/models-v1)
+(checked against a SHA-256 before use). Your audio and text never leave the Mac.
+
 **What languages?** English. Whisp uses Parakeet Unified 0.6B, an English
 model.
 
 **Intel Macs?** No. The model runs on the Apple Silicon Neural Engine.
 
-**Where is my data?** In `~/Library/Application Support/Whisp/`: your history
-(`history.jsonl`), dictionary, and recordings. Recordings are kept by default
-so you can build a fine-tuning set; turn this off in the menu with **Keep
+**Where is my data?** In `~/Library/Application Support/Whisp/` (readable
+only by your user account): your history (`history.jsonl`), dictionary, and
+recordings. Recordings are kept by default so you can build a fine-tuning
+set (about 1 MB per 30 s of speech). Turn this off in the menu with **Keep
 recordings**.
 
 **Why build from source instead of a download?** Apps from the internet need
@@ -150,7 +161,7 @@ Whisp when you need the original chord.
 
 ```sh
 swift build                                   # debug build
-swift run -c release whisp-tests              # tests
+swift run -c release whisp-tests              # tests (WHISP_TEST_PASTEBOARD=1 adds the real-clipboard ones)
 swift run -c release whisp-bench clip.wav     # speed + accuracy benchmark
 ```
 
@@ -160,16 +171,20 @@ swift run -c release whisp-bench clip.wav     # speed + accuracy benchmark
 `whisp-bench` prints model load time, transcript, latency and memory per file.
 A sibling `clip.txt` is scored as the reference transcript (WER).
 
-- `--chunked` replays the transcribe-while-recording path and reports the
-  release-time latency plus word differences vs whole-clip decoding. Run it over
-  `~/Library/Application Support/Whisp/recordings/*.wav` after changing
-  `SpeechSegmenter`.
-- `--gap SECONDS` idles between runs, like real use. On M1, decodes run
-  ~60–120 ms slower after even 0.1 s idle.
-- `--streaming 320|640|1120` replays files through FluidAudio's streaming
-  model. The 320 ms tier finished in ~33 ms but dropped more words than the
-  offline model on real dictations, so Whisp stays offline.
-- `--model`, `--itn`, `--vocab`: see `whisp-bench --help`.
+- `--compare short,parakeet` runs engines interleaved over the same files and
+  reports latency, WER against sibling `.txt` files, and word agreement with
+  the first engine. Use it before changing any engine.
+- `--replay` runs the real transcribe-while-talking loop over each file and
+  simulates letting go at several offsets after the last word: wait p50/p95
+  and whether the last word survived. Use it after changing `SpeechSegmenter`.
+- `--profile` splits one decode into mel / encoder / joint / decoder time.
+- `--chunked`, `--gap`, `--streaming`, `--model`, `--itn`, `--vocab`: see
+  `whisp-bench --help`.
+
+Engines are picked with a hidden setting, e.g.
+`defaults write com.bishesha.whisp asrEngine parakeet` (then relaunch).
+`short` is the default; `parakeet`, `streaming` and `par2` are kept for A/B
+tests. What was measured and why is in [docs/speed](docs/speed/README.md).
 
 The app logs per-stage timings. Watch them live with:
 
@@ -200,10 +215,15 @@ openssl pkcs12 -export -password pass:whisp-tmp \
   -inkey key.pem -in cert.pem -out id.p12
 security import id.p12 -k ~/Library/Keychains/login.keychain-db \
   -P whisp-tmp -T /usr/bin/codesign -T /usr/bin/security
-security add-trusted-cert -r trustRoot -p codeSign \
-  -k ~/Library/Keychains/login.keychain-db cert.pem
-security find-identity -p codesigning -v   # should list "Whisp Local Signing"
+security find-identity | grep "Whisp Local Signing"   # should list it
 ```
+
+The certificate is deliberately *not* trusted for code signing (no
+`add-trusted-cert`): `codesign` signs fine with an untrusted self-signed
+identity, and codeSign trust would let anything signed with that local key
+pass signature checks on your Mac. The first time `codesign` uses the key,
+macOS may ask once for your login keychain password — choose **Always
+Allow** and it never asks again.
 
 The legacy `PBE-SHA1-3DES`/`sha1` flags are required: macOS `security import`
 can't read OpenSSL 3's default AES-encrypted PKCS12.
@@ -233,7 +253,9 @@ Sources/Whisp        menu-bar app (status bar, recording pill, onboarding)
 Sources/whisp-bench  benchmark CLI
 Sources/whisp-tests  test runner
 Resources/           Info.plist, app icon
-scripts/             build-app.sh, icon generation
+scripts/             build-app.sh, icon generation; speed/ has test-set tools
+tools/convert/       rebuilds the Core ML models (incl. the 5 s encoder) from NVIDIA's checkpoint
+docs/speed/          speed measurements, including the dead ends
 ```
 </details>
 
@@ -241,8 +263,17 @@ scripts/             build-app.sh, icon generation
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0):
   runs Parakeet on Core ML and the Neural Engine
-- [NVIDIA Parakeet](https://huggingface.co/nvidia): the speech recognition
-  model
+- [NVIDIA Parakeet Unified English 0.6B](https://huggingface.co/nvidia/parakeet-unified-en-0.6b):
+  the speech recognition model, used via the
+  [Core ML build](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml)
+  packaged by FluidInference. Licensed by NVIDIA Corporation under the
+  [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/);
+  the Core ML repo is also marked
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Whisp downloads
+  those weights on first run. The 5-second encoder in the `models-v1` release
+  is the same weights re-traced at a shorter input window and int8-quantized
+  with [`tools/convert`](tools/convert/README.md); it is redistributed under
+  the same NVIDIA Open Model License.
 
 ## License
 

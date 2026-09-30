@@ -30,6 +30,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.updateIcon(for: state) }
             .store(in: &cancellables)
+
+        // Hovering the menu icon is the only progress UI while the 1 GB model downloads.
+        services.controller.$modelStatus
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in self?.statusItem.button?.toolTip = status }
+            .store(in: &cancellables)
     }
 
     // MARK: - Icon
@@ -81,13 +87,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        // Last transcript — click copies
-        if let last = controller.lastResult {
-            menu.addItem(item("Last: \(truncate(last.cleaned, 46))", action: { [weak self] in
-                self?.copyToPasteboard(last.cleaned)
+        // Last transcript — click copies. Cleanup can empty it (all fillers); show raw then.
+        let lastText = controller.lastResult.flatMap { $0.cleaned.isEmpty ? $0.raw : $0.cleaned }
+        if let text = lastText, !text.isEmpty {
+            menu.addItem(item("Last: \(truncate(text, 46))", action: { [weak self] in
+                self?.copyToPasteboard(text)
             }))
             menu.addItem(item("Fix a Misheard Word…", action: { [weak self] in
-                self?.fixMisheardWord(in: last.cleaned)
+                self?.fixMisheardWord(in: text)
             }))
         } else {
             menu.addItem(disabled("No transcripts yet"))
@@ -120,6 +127,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(item("Edit Dictionary…", action: {
             NSWorkspace.shared.open(AppPaths.ensureDictionaryTemplate())
         }))
+
+        // Auto-learn feedback — what the watcher folded into the dictionary,
+        // plus a one-click reversal of the most recent batch.
+        if let summary = services.learnWatcher.lastSummary {
+            menu.addItem(disabled(summary))
+            menu.addItem(item("Undo learned correction", action: { [weak self] in
+                self?.services.learnWatcher.undoLast()
+            }))
+        }
         menu.addItem(.separator())
 
         // Toggles
@@ -134,6 +150,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggle("Keep recordings", isOn: services.settings.keepRecordings) { [weak self] in
             guard let self else { return }
             self.services.settings.keepRecordings.toggle()
+        })
+        menu.addItem(toggle("Learn from my corrections", isOn: services.settings.learnFromCorrections) { [weak self] in
+            guard let self else { return }
+            self.services.settings.learnFromCorrections.toggle()
         })
         menu.addItem(toggle("Launch at Login", isOn: services.settings.launchAtLogin) { [weak self] in
             guard let self else { return }
@@ -227,6 +247,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard !heard.stringValue.trimmingCharacters(in: .whitespaces).isEmpty,
+              !correct.stringValue.trimmingCharacters(in: .whitespaces).isEmpty else {
+            // addReplacement ignores empty fields silently; the user would think it saved.
+            let missing = NSAlert()
+            missing.messageText = "Fill in both fields — what was heard and what it should be."
+            missing.runModal()
+            return
+        }
         do {
             try PersonalDictionary.addReplacement(
                 from: heard.stringValue, to: correct.stringValue, fileURL: AppPaths.ensureDictionaryTemplate())

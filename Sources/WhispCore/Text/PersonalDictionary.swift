@@ -107,24 +107,95 @@ public final class PersonalDictionary: @unchecked Sendable {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Adds `term` to `terms` (created if missing), deduplicated
+    /// case-insensitively. Same never-clobber guarantee as `addReplacement`.
+    public static func addTerm(_ term: String, fileURL: URL) throws {
+        let term = trim(term)
+        guard !term.isEmpty else { return }
+        var root = try readRoot(fileURL)
+        var terms = root["terms"] as? [String] ?? []
+        guard !terms.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return }
+        terms.append(term)
+        root["terms"] = terms
+        try write(root, to: fileURL)
+    }
+
+    /// Removes `term` from `terms` (case-insensitive). Missing file or term is
+    /// a no-op; an unparseable file is left alone.
+    public static func removeTerm(_ term: String, fileURL: URL) throws {
+        let term = trim(term)
+        guard !term.isEmpty, FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        var root = try readRoot(fileURL)
+        var terms = root["terms"] as? [String] ?? []
+        terms.removeAll { $0.caseInsensitiveCompare(term) == .orderedSame }
+        root["terms"] = terms
+        try write(root, to: fileURL)
+    }
+
+    /// Removes `from` from the from-list of the rule mapping to `to`; when the
+    /// list empties the whole rule is dropped. Same never-clobber guarantee.
+    public static func removeReplacement(from: String, to: String, fileURL: URL) throws {
+        let from = trim(from), to = trim(to)
+        guard !from.isEmpty, !to.isEmpty,
+              FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        var root = try readRoot(fileURL)
+        var replacements = root["replacements"] as? [[String: Any]] ?? []
+        guard let i = replacements.firstIndex(where: { ($0["to"] as? String) == to }) else { return }
+        var sources = replacements[i]["from"] as? [String]
+            ?? (replacements[i]["from"] as? String).map { [$0] } ?? []
+        sources.removeAll { $0.caseInsensitiveCompare(from) == .orderedSame }
+        if sources.isEmpty {
+            replacements.remove(at: i)
+        } else {
+            replacements[i]["from"] = sources
+        }
+        root["replacements"] = replacements
+        try write(root, to: fileURL)
+    }
+
+    /// The dictionary's replacements flattened to (from-phrase, to) pairs —
+    /// empty when the file is missing or unparseable. Read-only.
+    public static func loadPairs(fileURL: URL) -> [(from: [String], to: String)] {
+        guard let data = try? Data(contentsOf: fileURL),
+              let file = try? JSONDecoder().decode(File.self, from: data) else { return [] }
+        return (file.replacements ?? []).map { ($0.from, $0.to) }
+    }
+
+    /// Reads the JSON object at `fileURL`; missing file -> empty root,
+    /// unparseable -> throws so callers never clobber a half-edited file.
+    private static func readRoot(_ fileURL: URL) throws -> [String: Any] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [:] }
+        let data = try Data(contentsOf: fileURL)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return object
+    }
+
+    private static func write(_ root: [String: Any], to fileURL: URL) throws {
+        let data = try JSONSerialization.data(
+            withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try data.write(to: fileURL, options: .atomic)
+    }
+
     // MARK: - Loading (call with lock held)
 
     private func reloadIfNeeded() {
         guard let fileURL else { return }
         let modified = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
         guard modified != loadedModificationDate else { return }
+        // Stamp only after a readable, decodable file: one failed read (a
+        // mid-save atomic swap, a half-written edit) must not consume this
+        // version and leave the dictionary empty until the file changes again.
+        guard let data = try? Data(contentsOf: fileURL), load(data) else { return }
         loadedModificationDate = modified
-        if let data = try? Data(contentsOf: fileURL) {
-            load(data)
-        } else {
-            rules = []
-        }
     }
 
-    private func load(_ data: Data) {
+    @discardableResult
+    private func load(_ data: Data) -> Bool {
         guard let file = try? JSONDecoder().decode(File.self, from: data) else {
             // Keep the last good version while the user is mid-edit.
-            return
+            return false
         }
         let cleanTerms = (file.terms ?? []).map(Self.trim).filter { !$0.isEmpty }
         let replacements = file.replacements ?? []
@@ -143,6 +214,7 @@ public final class PersonalDictionary: @unchecked Sendable {
             if let rule = Self.rule(matching: term, replaceWith: term) { newRules.append(rule) }
         }
         rules = newRules
+        return true
     }
 
     private static func trim(_ s: String) -> String {

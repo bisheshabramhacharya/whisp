@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0 — 2026-09-29
+
+### Added
+- **Twice as fast on short phrases.** The encoder now runs at the shortest window that fits what you said instead of always 15 s: clips under 5 s decode in 49 ms instead of 99 ms (p50, 213 real dictations on a base 8 GB M1), with identical text on 433 recordings. The 5-second encoder (~525 MB) downloads in the background after the first launch and is checked against a SHA-256 before use.
+- **Learns your corrections.** Fix a word by hand after Whisp pastes it and Whisp adds that fix to your dictionary: only the words you changed, never the text you type afterwards. Real words need to be fixed twice before they're learned. The menu shows what was learned, with Undo, and **Learn from my corrections** turns it off.
+- Model status on hover, and a message when a dictation fails instead of silence.
+- `whisp-bench --compare`, `--replay` and `--profile` for engine A/B tests, and `tools/convert` to rebuild the models from NVIDIA's checkpoint.
+
+### Changed
+- Decoding ahead starts after a 180 ms pause (was 350 ms), checked every 100 ms, so more releases find their text already done.
+- The text cleaner and dictionary are warmed at launch, so the first dictation no longer pays 46–67 ms.
+- Silence trimming uses a loudness reference that one cough can't skew, so quiet last words are no longer cut.
+- Option+letter chords cancel the dictation only in the first second of a hold.
+- FluidAudio 0.15.7 → 0.17.4.
+- Data folder locked to your user account (0700/0600). Recordings are kept until you turn them off.
+
+### Fixed
+- Esc no longer spends a decode on a cancelled clip; losing permissions stops the mic.
+- The frontmost app is checked again right before ⌘V.
+- System audio left muted by a crash is restored on the next launch.
+- A damaged dictionary or corrections file is never overwritten.
+- "the the" style doubles you meant ("I had had enough") are kept; clock times read "5:30".
+
 ## 0.2.0 — 2026-09-25
 
 ### Added

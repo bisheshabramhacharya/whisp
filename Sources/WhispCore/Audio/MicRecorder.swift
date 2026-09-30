@@ -20,8 +20,8 @@ public enum MicRecorderError: Error {
 ///  - `init` reserves sample-buffer capacity and calls `engine.prepare()` so hardware
 ///    resources are pre-allocated. `start()` only has to install a tap (if needed) and
 ///    spin up the engine.
-///  - The engine is fully stopped on `stop()`/`cancel()`, so the orange mic indicator
-///    never stays on while idle.
+///  - The engine is fully stopped on `stop()`, and 0.5 s after `cancel()`, so the
+///    orange mic indicator never stays on while idle.
 ///  - Device changes (AirPods connect/disconnect) are handled by observing
 ///    `AVAudioEngineConfigurationChange`: the converter is rebuilt for the new input
 ///    format and, if we were recording, capture resumes transparently.
@@ -80,10 +80,23 @@ public final class MicRecorder: AudioRecording {
 
     private var configChangeObserver: NSObjectProtocol?
 
+    /// Reserved capacity for `samples` (16 kHz audio). `idle` keeps launch light;
+    /// `take` covers the app's 10-minute cap (`DictationController.maximumDuration`)
+    /// so the realtime tap thread never grows the array mid-recording — a realloc
+    /// + copy there can drop buffers and click into the take. `stop()`/`cancel()`
+    /// shrink back to `idle` so a long take's peak isn't held resident forever.
+    private static let idleReserve = 16_000 * 120 // ~7.7 MB
+    private static let takeReserve = 16_000 * 600 // ~38.4 MB
+
+    /// Reserved capacity of `samples` — introspection for tests.
+    public var reservedSampleCapacity: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples.capacity
+    }
+
     public init() {
-        // Pre-reserve ~2 minutes of 16 kHz audio (~7.7 MB) so the realtime thread
-        // never has to grow the array mid-recording.
-        samples.reserveCapacity(16_000 * 120)
+        samples.reserveCapacity(Self.idleReserve)
         warmUpEngine()
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -126,6 +139,9 @@ public final class MicRecorder: AudioRecording {
         guard AVAudioApplication.shared.recordPermission != .denied else {
             throw MicRecorderError.inputUnavailable
         }
+        // Grow to full-take size on the caller's thread — the realtime tap
+        // thread then never has to reallocate mid-recording.
+        reserveTakeCapacity()
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         recording = true
@@ -146,8 +162,11 @@ public final class MicRecorder: AudioRecording {
             throw error
         }
         do {
-            engine.prepare()
-            try engine.start()
+            // Still running after a tap (first half of a double-tap): keep it.
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
         } catch {
             teardownLocked()
             engineLock.unlock()
@@ -173,8 +192,12 @@ public final class MicRecorder: AudioRecording {
         // `teardownQueue` so transcription doesn't wait for it.
         let stoppedAtNs = DispatchTime.now().uptimeNanoseconds
         lock.lock()
+        // Move the buffer out instead of copying it: `let` + fresh array makes
+        // `captured` the sole owner — removeAll(keepingCapacity:) would first
+        // copy the whole recording under copy-on-write.
         let captured = samples
-        samples.removeAll(keepingCapacity: true)
+        samples = []
+        samples.reserveCapacity(Self.idleReserve)
         recording = false
         lostInput = inputLost
         let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
@@ -196,14 +219,33 @@ public final class MicRecorder: AudioRecording {
     }
 
     public func cancel() {
-        engineLock.lock()
-        teardownLocked()
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        shrinkReserveLocked()
         recording = false
         lock.unlock()
-        engineLock.unlock()
+        // A tap is usually the first half of a double-tap: leave the mic running long
+        // enough for the second press to record without restarting it.
+        teardownWhenIdle(after: 0.5)
         endLevelReporting()
+    }
+
+    /// Grows `samples` to full-take size on the caller's thread — `start()` calls
+    /// it before touching the engine so the realtime tap thread never reallocates
+    /// mid-recording (a realloc + copy there can drop buffers).
+    public func reserveTakeCapacity() {
+        lock.lock()
+        samples.reserveCapacity(Self.takeReserve)
+        lock.unlock()
+    }
+
+    /// MUST be called with `lock` held. Releases capacity above the idle reserve
+    /// so one long take doesn't keep ~30 MB attached to the buffer forever.
+    private func shrinkReserveLocked() {
+        if samples.capacity > Self.idleReserve {
+            samples = []
+            samples.reserveCapacity(Self.idleReserve)
+        }
     }
 
     // MARK: - Engine plumbing
@@ -211,8 +253,8 @@ public final class MicRecorder: AudioRecording {
     /// Stops the engine in the background unless a new recording started first.
     /// Holding `engineLock` serializes it with start() and device changes, so the
     /// mic is never left running while idle.
-    private func teardownWhenIdle() {
-        teardownQueue.async { [weak self] in
+    private func teardownWhenIdle(after delay: TimeInterval = 0) {
+        teardownQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.engineLock.lock()
             self.lock.lock()

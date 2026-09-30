@@ -18,6 +18,7 @@ public final class RecordingArchive: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(id).wav")
         try wavData(samples).write(to: url, options: .atomic)
+        AppPaths.makeUserOnly(url)
         return url
     }
 

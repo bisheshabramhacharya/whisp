@@ -10,6 +10,12 @@ public protocol AudioMuting: AnyObject {
     func restore()
 }
 
+/// Reviews the previous paste when a new dictation begins (auto-learn watcher).
+@MainActor
+public protocol CorrectionWatching: AnyObject {
+    func dictationStarting()
+}
+
 /// UI feedback sounds. Implementations may keep their own `enabled` flag;
 /// DictationController additionally guards every call with `AppSettings.sounds`.
 public protocol SoundPlaying: AnyObject {
@@ -76,6 +82,8 @@ public final class DictationController: ObservableObject {
     private var isRecording = false
     private var systemMuted = false
     private var pendingTranscriptions = 0
+    /// Optional auto-learn watcher (nil in tests/fakes).
+    public var correctionWatcher: CorrectionWatching?
     private var recordingStartedAt: Date?
     private var capTask: Task<Void, Never>?
     private var muteTask: Task<Void, Never>?
@@ -167,6 +175,7 @@ public final class DictationController: ObservableObject {
     public func hotkeyPermissionLost() {
         guard isHotkeyRunning else { return }
         stopHotkey()
+        if isRecording { cancelCapture() }
         statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
     }
 
@@ -214,6 +223,11 @@ public final class DictationController: ObservableObject {
     private func startCapture() {
         guard !isRecording else { return } // already recording (e.g. double .start)
 
+        // A new dictation ends the previous paste's review window.
+        correctionWatcher?.dictationStarting()
+        // A fresh take means the user is past whatever the last warning said.
+        statusMessage = nil
+
         // 1. Feedback first so the user hears the ack even if the mic fails.
         if settings.sounds { sounds.playStart() }
 
@@ -233,6 +247,9 @@ public final class DictationController: ObservableObject {
         recordingStartedAt = Date()
         recomputeState()
         startChunkLoop()
+        // The Neural Engine slows down after a short idle; one throwaway decode now keeps
+        // the first real decode of this take fast.
+        Task { [transcriber] in await transcriber.rewarm() }
 
         // 3. Mute system output so the model hears the user, not the speakers —
         //    after the start sound has played, since muting the device cuts it off.
@@ -331,14 +348,15 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Transcribe while recording
 
-    /// Every second, cut the audio pending since the last cut at a pause and transcribe
+    /// Every tick, cut the audio pending since the last cut at a pause and transcribe
     /// it in the background, so on release only the tail is left to decode.
     private func startChunkLoop() {
         let chunks = LiveChunks()
         live = chunks
+        let tickNs = UInt64(SpeechSegmenter.tick) * 1_000_000_000 / UInt64(sampleRate)
         chunkLoop = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: tickNs)
                 guard !Task.isCancelled, let self, self.live === chunks else { return }
                 self.transcribeFinishedChunk(chunks)
             }
@@ -354,8 +372,25 @@ public final class DictationController: ObservableObject {
 
     private func transcribeFinishedChunk(_ chunks: LiveChunks) {
         guard chunks.inFlight == nil, !chunks.failed else { return }
+        // LiveDecoding engines (asrEngine=streaming): forward each ~100 ms of
+        // new audio to the streaming decoder instead of cutting at pauses —
+        // the transcript is already decoding while the user talks.
+        if let live = transcriber as? LiveDecoding {
+            let pending = recorder.samples(from: chunks.committed)
+            guard !pending.isEmpty else { return }
+            chunks.committed += pending.count
+            chunks.inFlight = Task {
+                do { try await live.feed(pending, take: chunks) }
+                catch { chunks.failed = true }
+                chunks.inFlight = nil
+            }
+            return
+        }
         let pending = recorder.samples(from: chunks.committed)
-        guard let cut = SpeechSegmenter.nextCut(in: pending) else { return }
+        guard let cut = SpeechSegmenter.nextCut(in: pending) else {
+            speculate(on: pending, chunks)
+            return
+        }
         let chunk = Array(pending[..<cut])
         chunks.starts.append(chunks.committed)
         chunks.committed += cut
@@ -369,18 +404,79 @@ public final class DictationController: ObservableObject {
         }
     }
 
+    /// When the user pauses, transcribe everything pending since the last cut without
+    /// cutting, so a release that follows the pause finds the tail already decoded.
+    /// Skipped when the last speculation already covers the audio up to now.
+    private func speculate(on pending: [Float], _ chunks: LiveChunks) {
+        guard SpeechSegmenter.endsInPause(pending) else { return }
+        let start = chunks.committed
+        if let previous = chunks.speculation, previous.start == start,
+           SpeechSegmenter.quietAfter(pending, start: 0, end: previous.end - start) { return }
+        chunks.inFlight = Task { [transcriber] in
+            if let text = try? await transcriber.transcribe(pending) {
+                chunks.speculation = (start, start + pending.count, text)
+            }
+            chunks.inFlight = nil
+        }
+    }
+
     /// Chunk transcripts first, then the tail. Falls back to the whole clip if any chunk failed.
+    /// When a decode is still in flight at release and the tail's span is already final
+    /// (non-silent tails can't rewind and have no usable speculation), the tail decode
+    /// starts immediately so a parallel-capable transcriber overlaps it with the
+    /// in-flight one. Serial transcribers skip it: the early decode could only queue
+    /// behind the in-flight one, and it is wasted when that in-flight speculation
+    /// ends up covering the tail.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
-        guard let chunks, chunks.committed > 0 else {
-            return try await transcriber.transcribe(samples)
+        guard let chunks else { return try await transcriber.transcribe(samples) }
+        var earlyTail: Task<String, Error>?
+        let parallel = ((transcriber as? ParakeetTranscriber)?.unifiedLanes ?? 1) > 1
+        if parallel, chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
+            let spec = chunks.speculation.flatMap {
+                $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil
+            }
+            let specCovers = spec.map {
+                SpeechSegmenter.quietAfter(samples, start: chunks.committed, end: $0.end)
+            } ?? false
+            if !specCovers, !SpeechSegmenter.isNearSilent(Array(samples[chunks.committed...])) {
+                let tail = Array(samples[chunks.committed...])
+                earlyTail = Task { [transcriber] in try await transcriber.transcribe(tail) }
+            }
         }
         await chunks.inFlight?.value
-        if chunks.failed || chunks.committed > samples.count {
+        // LiveDecoding engines (asrEngine=streaming): the take is already
+        // decoded — feed the tail buffer captured since the last tick, then
+        // finish() flushes the held-back right context. A failed feed falls
+        // back to the whole-clip decode.
+        if let live = transcriber as? LiveDecoding {
+            if chunks.failed { return try await transcriber.transcribe(samples) }
+            if chunks.committed < samples.count {
+                do {
+                    try await live.feed(Array(samples[chunks.committed...]), take: chunks)
+                } catch {
+                    return try await transcriber.transcribe(samples)
+                }
+            }
+            return try await live.finish(take: chunks)
+        }
+        if chunks.failed {
+            earlyTail?.cancel()
             return try await transcriber.transcribe(samples)
+        }
+        let speculation = chunks.speculation.flatMap { $0.start == chunks.committed ? (end: $0.end, text: $0.text) : nil }
+        if let earlyTail {
+            // A speculation that completed during the wait still wins, as finish() would use it.
+            let covers = speculation.map {
+                SpeechSegmenter.quietAfter(samples, start: chunks.committed, end: $0.end)
+            } ?? false
+            if !covers {
+                return SpeechSegmenter.join(chunks.texts + [try await earlyTail.value])
+            }
+            earlyTail.cancel()
         }
         return try await SpeechSegmenter.finish(
             samples, chunkStarts: chunks.starts, texts: chunks.texts, committed: chunks.committed,
-            transcriber: transcriber)
+            speculation: speculation, transcriber: transcriber)
     }
 
     // MARK: - Serial transcription pipeline
@@ -397,6 +493,8 @@ public final class DictationController: ObservableObject {
 
         let transcription = Task { [weak self] () -> Result<(String, Int), Error> in
             guard let self else { return .failure(CancellationError()) }
+            // Esc between enqueue and task start: don't spend a decode on a dead clip.
+            guard id > self.cancelledThrough else { return .failure(CancellationError()) }
             let start = DispatchTime.now()
             do {
                 let raw = try await self.transcribe(samples, chunks: chunks)
@@ -440,10 +538,21 @@ public final class DictationController: ObservableObject {
 
         let cleaned = cleaner.clean(raw)
         let cleanMs = Self.ms(since: transcribedAt)
+        if raw.isEmpty, duration >= 1 {
+            statusMessage = "Didn't hear any speech — check the microphone input"
+            if settings.sounds { sounds.playError() }
+        } else if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Spoke only fillers ("um uh"): it lands in history but nothing pastes — say so.
+            statusMessage = "Only filler words heard — nothing to paste"
+            if settings.sounds { sounds.playError() }
+        }
 
         let pasteStart = DispatchTime.now()
         var outcome = PasteResult.pasted
         if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // paste() waits for this lookup; Esc during that wait must still stop the paste.
+            _ = await target.precedingCharacter.value
+            guard id > cancelledThrough else { return }
             outcome = await paster.paste(cleaned, into: target)
         }
         let pasteMs = Self.ms(since: pasteStart)
@@ -509,4 +618,6 @@ private final class LiveChunks {
     var texts: [String] = []
     var inFlight: Task<Void, Never>?
     var failed = false
+    /// Transcript of the audio from `start` to `end`, made during a pause.
+    var speculation: (start: Int, end: Int, text: String)?
 }

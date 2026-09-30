@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import WhispCore
@@ -15,12 +16,35 @@ enum Composition {
         let history = HistoryStore()
         let recordings = RecordingArchive()
 
-        let transcriber = ParakeetTranscriber()
+        let transcriber = ASREngine.make(named: settings.asrEngine)
         let recorder = MicRecorder()
         let hotkey = RightOptionHotkey(keyCode: UInt16(clamping: settings.hotkeyKeyCode))
         let paster = Paster()
         let dictionary = PersonalDictionary(fileURL: AppPaths.dictionaryFile)
         let cleaner = FillerCleaner(dictionary: dictionary)
+        // First clean() pays the lazy costs — clock-time regexes compile and
+        // dictionary.json loads+compiles its rules (~40–70 ms on M1, measured
+        // in real-app logs as first-take cleanup). Pay them off the main actor
+        // at startup instead of inside the first release→paste.
+        Task.detached(priority: .utility) { _ = cleaner.clean("warm at 5.30") }
+        // Auto-learn: after each paste, the watcher reviews the pasted span once
+        // (next dictation / app switch / 90 s) and folds small owner fixes into
+        // dictionary.json. NSSpellChecker decides "real word" for the
+        // pending-twice gate — cheap and matches what the system underlines.
+        let learner = CorrectionLearner { word in
+            NSSpellChecker.shared.checkSpelling(
+                of: word, startingAt: 0, language: "en", wrap: false,
+                inSpellDocumentWithTag: 0, wordCount: nil
+            ).location == NSNotFound
+        }
+        let learnWatcher = EditWatcher(
+            learner: learner,
+            dictionaryFile: AppPaths.dictionaryFile,
+            pendingFile: AppPaths.pendingCorrectionsFile
+        ) { settings.learnFromCorrections }
+        paster.onInserted = { [weak learnWatcher] context, text, pid in
+            learnWatcher?.record(context, text: text, pid: pid)
+        }
         let muter = RealAudioMuter()
         let sounds = RealSounds(settings: settings)
         // Dictionary terms are applied as text fixes by the cleaner (reloaded on
@@ -39,11 +63,12 @@ enum Composition {
             history: history,
             recordings: recordings
         )
+        controller.correctionWatcher = learnWatcher
 
         // Status lines arrive on the main thread; the hop keeps the
         // @MainActor controller access explicit. Weak: the transcriber (which
         // stores this closure) is owned by the controller.
-        transcriber.onStatus = { [weak controller] status in
+        (transcriber as? StatusReporting)?.onStatus = { [weak controller] status in
             Task { @MainActor [weak controller] in
                 controller?.modelStatus = status
             }
@@ -54,7 +79,8 @@ enum Composition {
             settings: settings,
             history: history,
             permissions: RealPermissions(),
-            pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster)
+            pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster),
+            learnWatcher: learnWatcher
         )
     }
 }

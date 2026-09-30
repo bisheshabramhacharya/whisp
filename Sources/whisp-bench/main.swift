@@ -18,7 +18,18 @@ struct Options {
     var chunked = false
     var streaming: String?
     var gap: Double = 0
+    var ping: Double = 0
     var files: [String] = []
+    // Track A speed tooling
+    var profile = false
+    var replay = false
+    var compare: String?
+    var engine = "parakeet"
+    var engineSet = false
+    var offsets = [0, 50, 100, 150, 200, 350, 600, 1000]
+    var micDrop: Double = 0
+    var idle: Double = 30
+    var show = false
 }
 
 func parseArgs() -> Options {
@@ -48,9 +59,38 @@ func parseArgs() -> Options {
         case "--gap":
             i += 1
             if i < args.count, let g = Double(args[i]) { opts.gap = g }
+        case "--ping":
+            i += 1
+            if i < args.count, let p = Double(args[i]) { opts.ping = p }
         case "--streaming":
             i += 1
             if i < args.count { opts.streaming = args[i] }
+        case "--profile":
+            opts.profile = true
+        case "--replay":
+            opts.replay = true
+        case "--compare":
+            i += 1
+            if i < args.count { opts.compare = args[i] }
+        case "--engine":
+            i += 1
+            if i < args.count {
+                opts.engine = args[i]
+                opts.engineSet = true
+            }
+        case "--offsets":
+            i += 1
+            if i < args.count {
+                opts.offsets = args[i].split(separator: ",").compactMap { Int($0) }
+            }
+        case "--mic-drop":
+            i += 1
+            if i < args.count, let d = Double(args[i]) { opts.micDrop = d }
+        case "--idle":
+            i += 1
+            if i < args.count, let s = Double(args[i]) { opts.idle = s }
+        case "--show":
+            opts.show = true
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -76,8 +116,22 @@ func printUsage() {
                        Reports word differences vs whole-clip decoding.
           --gap SECONDS  idle this long before each run, like the pause between real
                        dictations (decodes run ~60-120 ms slower after >0.1 s idle on M1)
+          --ping SECONDS  with --gap, rewarm the model this long before each run, like the
+                       app does at key press
           --streaming 320|640|1120  instead, replay each file through the streaming Unified
                        model in 100 ms buffers (the mic cadence) and time the release step.
+          --profile    per-file stage profile (mel / encoder / joint / decoder ms, call
+                       counts) of one <=15 s window via the profiled engine
+          --replay     release replay: run the real chunk/speculate/finish loop over each
+                       file and simulate key release at --offsets ms after the last word;
+                       prints wait p50/p95/mean, no-wait share, last-word survival
+          --offsets LIST  release offsets in ms (default 0,50,100,150,200,350,600,1000)
+          --mic-drop MS   model MicRecorder dropping this much in-flight audio at stop
+          --engine NAME   engine for --replay/--profile (parakeet|profiled|<asrEngine>)
+          --compare A,B,…  interleaved A/B over files: --runs per file, WER, word
+                       agreement vs first engine, warm and --idle+rewarm timing
+          --idle S     idle seconds before the rewarm pass in --compare (default 30)
+          --show       print per-file transcripts/details (default: aggregates only)
           If <file>.txt exists next to an audio file it is scored as the WER reference.
         """)
 }
@@ -210,10 +264,22 @@ func benchChunked(_ samples: [Float], full: String, fullMs: Double) async {
             texts.append(try await transcriber.transcribe(Array(samples[start..<cut])))
             start = cut
         }
+        // The live loop speculates at the last tick where the audio since the last cut
+        // ended in a pause; decoded off the clock, as it happens before release.
+        var speculation: (end: Int, text: String)?
+        var specEnd: Int?
+        var tick = start + (samples.count - start) / SpeechSegmenter.tick * SpeechSegmenter.tick
+        while tick > start, specEnd == nil {
+            if SpeechSegmenter.endsInPause(Array(samples[start..<tick])) { specEnd = tick }
+            tick -= SpeechSegmenter.tick
+        }
+        if let specEnd {
+            speculation = (specEnd, try await transcriber.transcribe(Array(samples[start..<specEnd])))
+        }
         let t0 = Date()
         let joined = try await SpeechSegmenter.finish(
             samples, chunkStarts: [0] + cuts.dropLast(), texts: texts, committed: start,
-            transcriber: transcriber)
+            speculation: speculation, transcriber: transcriber)
         let tailMs = Date().timeIntervalSince(t0) * 1000
         let ref = normalizedWords(full)
         let diff = wordEditDistance(ref, normalizedWords(joined))
@@ -327,6 +393,36 @@ if let tier = opts.streaming {
     exit(0)
 }
 
+// Track A speed modes dispatch before the standard bench loop.
+if opts.profile || opts.replay || opts.compare != nil {
+    let files = loadFiles(opts.files)
+    guard !files.isEmpty else { exit(1) }
+    do {
+        if opts.profile {
+            // --profile defaults to the profiled engine; --engine overrides.
+            let name = opts.engineSet ? opts.engine : "profiled"
+            try await runProfile(engineName: name, runs: opts.runs, files: files, show: opts.show)
+        }
+        if opts.replay {
+            try await runReplay(engineName: opts.engine, files: files,
+                                offsets: opts.offsets, micDropMs: opts.micDrop, show: opts.show)
+        }
+        if let compare = opts.compare {
+            let names = compare.split(separator: ",").map { String($0) }
+            guard names.count >= 2 else {
+                print("--compare needs >= 2 engine names (e.g. parakeet,profiled)")
+                exit(1)
+            }
+            try await runCompare(names: names, runs: opts.runs, idleSeconds: opts.idle,
+                                 files: files, show: opts.show)
+        }
+    } catch {
+        print("bench failed: \(error.localizedDescription)")
+        exit(2)
+    }
+    exit(0)
+}
+
 let modelAliases: [String: ParakeetTranscriber.Model] = [
     "v2": .tdtV2, "v3": .tdtV3, "110m": .tdtCtc110m, "unified": .unified,
 ]
@@ -374,7 +470,14 @@ for path in opts.files {
     var latencies: [Double] = []
     var lastText = ""
     for run in 0..<opts.runs {
-        if opts.gap > 0 { try? await Task.sleep(nanoseconds: UInt64(opts.gap * 1e9)) }
+        if opts.gap > 0 {
+            let lead = min(opts.ping, opts.gap)
+            try? await Task.sleep(nanoseconds: UInt64((opts.gap - lead) * 1e9))
+            if lead > 0 {
+                await transcriber.rewarm()
+                try? await Task.sleep(nanoseconds: UInt64(lead * 1e9))
+            }
+        }
         let t0 = Date()
         do {
             lastText = try await transcriber.transcribe(samples)
