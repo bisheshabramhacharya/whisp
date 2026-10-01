@@ -6,8 +6,7 @@ import WhispCore
 /// Drag it anywhere (the spot is remembered); otherwise it sits bottom-center
 /// of the screen with the mouse. Size comes from `AppSettings.pillScale`.
 ///   recording    → live waveform driven by recorder levels
-///   transcribing → a soft wave rolling through the bars, or "Loading model…"
-///                  while the model isn't ready yet
+///   transcribing → a thin gray spinner; model progress is in the tooltip
 ///   idle         → hidden, or dimmed when `alwaysShowPill` is on
 @MainActor
 final class RecordingPillController {
@@ -18,9 +17,9 @@ final class RecordingPillController {
     private var state: DictationController.State = .idle
     private var cancellables = Set<AnyCancellable>()
 
-    private static let baseSize = NSSize(width: 200, height: 52)
+    private static let baseSize = NSSize(width: 160, height: 42)
     private static let bottomMargin: CGFloat = 84
-    private static let idleAlpha: CGFloat = 0.45
+    private static let idleAlpha: CGFloat = 0.95
 
     init(controller: DictationController, settings: AppSettings) {
         self.settings = settings
@@ -53,6 +52,15 @@ final class RecordingPillController {
             }
             .store(in: &cancellables)
 
+        updateApplicationIcon()
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.state != .transcribing else { return }
+                self.updateApplicationIcon()
+            }
+            .store(in: &cancellables)
+
         // Recorder levels → waveform bars (cheap CALayer updates, ~30 Hz).
         controller.onLevel = { [weak self] level in
             self?.pillView.push(level: level)
@@ -61,6 +69,7 @@ final class RecordingPillController {
         controller.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
+                self?.updateApplicationIcon()
                 self?.state = state
                 self?.refresh()
             }
@@ -71,8 +80,11 @@ final class RecordingPillController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
                 self?.pillView.toolTip = status == "Ready" ? "Drag to move" : status
-                self?.pillView.caption = status == "Ready" ? nil : status
             }
+            .store(in: &cancellables)
+
+        controller.$isHandsFree.receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.pillView.isHandsFree = $0 }
             .store(in: &cancellables)
 
         settings.$pillScale.dropFirst()
@@ -90,6 +102,11 @@ final class RecordingPillController {
             self?.refresh()
         }
         .store(in: &cancellables)
+    }
+
+    private func updateApplicationIcon() {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        pillView.setApplicationIcon(app.icon, name: app.localizedName ?? "Current app")
     }
 
     private static func size(for scale: Double) -> NSSize {
@@ -166,62 +183,39 @@ final class RecordingPillController {
 
 // MARK: - Pill view
 
-private final class PillView: NSView {
+final class PillView: NSView {
+    enum Mode { case idle, recording, transcribing }
+    var mode: Mode = .idle { didSet { if mode != oldValue { applyMode() } } }
+    var isHandsFree = false { didSet { applyMode() } }
+    var showsLock: Bool { mode == .recording && isHandsFree }
+    var showsSpinner: Bool { mode == .transcribing }
 
-    enum Mode {
-        case idle, recording, transcribing
-    }
-
-    var mode: Mode = .idle {
-        didSet { if mode != oldValue { applyMode() } }
-    }
-
-    /// Shown instead of the transcribing wave while the model is still loading,
-    /// so a stalled first dictation says why instead of looking frozen.
-    var caption: String? {
-        didSet { if caption != oldValue { applyMode() } }
-    }
-
-    private let background = NSVisualEffectView()
     private let barsView = WaveformBarsView()
-    private let spinner = NSProgressIndicator()
-    private let label = NSTextField(labelWithString: "")
+    private let applicationIcon = NSImageView()
+    private let lockIcon = NSImageView()
+    private let spinner = CAShapeLayer()
+    private let spinnerTrack = CAShapeLayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-
-        // Dark HUD-material capsule background.
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.masksToBounds = true
-        background.frame = bounds
-        background.autoresizingMask = [.width, .height]
-        addSubview(background)
-
-        barsView.autoresizingMask = [.width, .height]
-        background.addSubview(barsView)
-
-        spinner.style = .spinning
-        spinner.controlSize = .small
-        spinner.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(spinner)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = NSColor.white.withAlphaComponent(0.85)
-        label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(label)
-        NSLayoutConstraint.activate([
-            spinner.leadingAnchor.constraint(greaterThanOrEqualTo: background.leadingAnchor, constant: 14),
-            spinner.centerYAnchor.constraint(equalTo: background.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 8),
-            label.centerYAnchor.constraint(equalTo: background.centerYAnchor),
-            label.centerXAnchor.constraint(equalTo: background.centerXAnchor, constant: 12),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -14),
-        ])
-
+        layer?.backgroundColor = NSColor(white: 0.025, alpha: 1).cgColor
+        layer?.masksToBounds = true
+        addSubview(barsView)
+        applicationIcon.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(applicationIcon)
+        lockIcon.image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Hands-free recording")
+        lockIcon.contentTintColor = NSColor(white: 0.8, alpha: 1)
+        addSubview(lockIcon)
+        for ring in [spinnerTrack, spinner] {
+            ring.fillColor = nil
+            ring.lineWidth = 1.8
+            ring.lineCap = .round
+            layer?.addSublayer(ring)
+        }
+        spinnerTrack.strokeColor = NSColor(white: 0.24, alpha: 1).cgColor
+        spinner.strokeColor = NSColor(white: 0.75, alpha: 1).cgColor
+        spinner.strokeEnd = 0.28
         toolTip = "Drag to move"
         applyMode()
     }
@@ -230,20 +224,28 @@ private final class PillView: NSView {
 
     override func layout() {
         super.layout()
-        background.layer?.cornerRadius = bounds.height / 2
-        barsView.frame = bounds.insetBy(dx: bounds.height * 0.4, dy: 0)
+        layer?.cornerRadius = bounds.height / 2
+        let h = bounds.height
+        let iconSize = h * 0.49
+        applicationIcon.frame = NSRect(x: h * 0.34, y: (h - iconSize) / 2, width: iconSize, height: iconSize)
+        let centerX = bounds.width * 0.59
+        barsView.frame = NSRect(x: centerX - h * 0.57, y: 0, width: h * 1.14, height: h)
+        lockIcon.frame = NSRect(x: bounds.width - h * 0.7, y: h * 0.32, width: h * 0.28, height: h * 0.36)
+        let diameter = h * 0.4
+        for ring in [spinnerTrack, spinner] {
+            ring.frame = CGRect(x: centerX - diameter / 2, y: (h - diameter) / 2, width: diameter, height: diameter)
+            ring.path = CGPath(ellipseIn: ring.bounds.insetBy(dx: 1, dy: 1), transform: nil)
+        }
     }
 
-    // The whole capsule is a drag handle; subviews never take the click.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        frame.contains(point) ? self : nil
-    }
-
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 
-    override func mouseDown(with event: NSEvent) {
-        guard let window else { return }
-        window.performDrag(with: event)
+    func setApplicationIcon(_ image: NSImage?, name: String) {
+        applicationIcon.image = image ?? NSImage(systemSymbolName: "app", accessibilityDescription: name)
+        applicationIcon.setAccessibilityLabel(name)
+        toolTip = "\(name) · Drag to move"
     }
 
     func push(level: Float) {
@@ -252,37 +254,31 @@ private final class PillView: NSView {
     }
 
     private func applyMode() {
-        let loading = mode == .transcribing && caption != nil
-        label.stringValue = caption ?? ""
-        barsView.isHidden = loading
-        spinner.isHidden = !loading
-        label.isHidden = !loading
-        if loading {
-            spinner.startAnimation(nil)
-        } else {
-            spinner.stopAnimation(nil)
+        barsView.isHidden = showsSpinner
+        lockIcon.isHidden = !showsLock
+        spinner.isHidden = !showsSpinner
+        spinnerTrack.isHidden = !showsSpinner
+        if showsSpinner && spinner.animation(forKey: "spin") == nil {
+            let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+            animation.fromValue = 0
+            animation.toValue = 2 * Double.pi
+            animation.duration = 0.9
+            animation.repeatCount = .infinity
+            spinner.add(animation, forKey: "spin")
+        } else if !showsSpinner {
+            spinner.removeAnimation(forKey: "spin")
         }
-        if mode == .transcribing {
-            barsView.startWave()
-        } else {
-            barsView.stopWave()
-            barsView.reset()
-        }
+        if mode != .recording { barsView.reset() }
+        setAccessibilityLabel(mode == .transcribing ? "Processing dictation" : showsLock ? "Hands-free recording" : mode == .recording ? "Recording" : "Whisp ready")
     }
 }
 
-// MARK: - Waveform bars (pure CALayer — no drawRect churn at 30 Hz)
+// MARK: - Plain white waveform
 
-/// Plain white symmetric bars. While recording they
-/// follow the mic (loudest in the middle, like a breath); while transcribing a
-/// soft wave rolls through them.
 private final class WaveformBarsView: NSView {
-
-    private let barCount = 17
+    private let barCount = 9
     private var barLayers: [CALayer] = []
     private var levels: [Float] = []
-    private var waveTimer: Timer?
-    private var wavePhase: Double = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -296,71 +292,25 @@ private final class WaveformBarsView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+    override func layout() { super.layout(); updateBars() }
+    func reset() { levels.removeAll(keepingCapacity: true); updateBars() }
 
-    override func layout() {
-        super.layout()
-        updateBars()
-    }
-
-    func reset() {
-        levels.removeAll(keepingCapacity: true)
-        updateBars()
-    }
-
-    /// Push a new level (0...1). Recent levels spread outward from the center.
     func push(level: Float) {
-        let smoothed = (levels.last ?? 0) * 0.35 + level * 0.65
-        levels.append(smoothed)
-        let keep = barCount / 2 + 1
-        if levels.count > keep {
-            levels.removeFirst(levels.count - keep)
-        }
+        levels.append((levels.last ?? 0) * 0.35 + level * 0.65)
+        if levels.count > barCount / 2 + 1 { levels.removeFirst() }
         updateBars()
-    }
-
-    func startWave() {
-        guard waveTimer == nil else { return }
-        waveTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.wavePhase += 0.22
-                self.updateBars()
-            }
-        }
-    }
-
-    func stopWave() {
-        waveTimer?.invalidate()
-        waveTimer = nil
-    }
-
-    private func level(at i: Int) -> Float {
-        if waveTimer != nil {
-            let x = Double(i) / Double(barCount - 1)
-            return Float(0.18 + 0.22 * (1 + sin(wavePhase - x * 2 * .pi)) / 2)
-        }
-        // Distance from center picks how old a level is: newest in the middle.
-        let distance = abs(i - barCount / 2)
-        let index = levels.count - 1 - distance
-        return index >= 0 ? levels[index] : 0
     }
 
     private func updateBars() {
-        // Bars and gaps share the width equally, so the waveform scales with the pill.
-        let barWidth = max(1.5, (bounds.width / CGFloat(barCount * 2 - 1)).rounded(.down))
-        let total = CGFloat(barCount) * barWidth * 2 - barWidth
-        let startX = (bounds.width - total) / 2
-        let minHeight = max(2, barWidth * 0.75)
-        let maxHeight = bounds.height * 0.7
-        let midY = bounds.midY
-
+        let barWidth = max(1, bounds.width / CGFloat(barCount * 2 - 1))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
-            let height = minHeight + CGFloat(level(at: i)) * (maxHeight - minHeight)
+            let index = levels.count - 1 - abs(i - barCount / 2)
+            let level = index >= 0 ? levels[index] : 0
+            let height = max(1.5, barWidth) + CGFloat(level) * bounds.height * 0.42
             bar.cornerRadius = barWidth / 2
-            bar.frame = CGRect(x: startX + CGFloat(i) * barWidth * 2, y: midY - height / 2,
-                               width: barWidth, height: height)
+            bar.frame = CGRect(x: CGFloat(i) * barWidth * 2, y: bounds.midY - height / 2, width: barWidth, height: height)
         }
         CATransaction.commit()
     }

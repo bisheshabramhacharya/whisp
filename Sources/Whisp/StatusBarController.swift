@@ -8,14 +8,16 @@ import WhispCore
 final class StatusBarController: NSObject, NSMenuDelegate {
 
     private let services: AppServices
+    private let onOpenSetup: () -> Void
     private let statusItem: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
 
     /// Retains @objc action targets for the current menu incarnation.
     private var menuActions: [MenuAction] = []
 
-    init(services: AppServices) {
+    init(services: AppServices, onOpenSetup: @escaping () -> Void) {
         self.services = services
+        self.onOpenSetup = onOpenSetup
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -179,6 +181,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let pillItem = NSMenuItem(title: "Recording Pill", action: nil, keyEquivalent: "")
         pillItem.submenu = pillMenu
         menu.addItem(pillItem)
+        menu.addItem(.separator())
+
+        menu.addItem(item("Open Setup…", action: onOpenSetup))
         menu.addItem(.separator())
 
         // Permissions

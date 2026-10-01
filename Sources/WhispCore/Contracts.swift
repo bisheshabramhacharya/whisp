@@ -53,6 +53,8 @@ public enum HotkeyEvent: Sendable {
     case stop
     /// Abort without transcribing (Esc, or Right Option used as part of another shortcut).
     case cancel
+    /// A second short tap released into hands-free recording.
+    case handsFree
 }
 
 /// Global hotkey listener. Events are delivered on the main thread.

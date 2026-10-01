@@ -2,8 +2,7 @@
 //
 // Usage: swift scripts/make-icon.swift <output.iconset>
 //
-// Design: a night-indigo rounded square with a glowing violet-to-cyan
-// waveform, the same colours as the recording pill (RecordingPill.swift).
+// Design: a porcelain-white rounded square with a quiet purple waveform.
 
 import AppKit
 import Foundation
@@ -22,16 +21,13 @@ let iconEntries: [(String, Int)] = [
     ("icon_512x512@2x.png", 1024),
 ]
 
-let nightTop = NSColor(srgbRed: 0.10, green: 0.07, blue: 0.24, alpha: 1)     // #1A123D
-let nightBottom = NSColor(srgbRed: 0.03, green: 0.03, blue: 0.08, alpha: 1)  // #080814
-let violet = NSColor(srgbRed: 0.66, green: 0.55, blue: 0.98, alpha: 1)       // #A78BFA
-let cyan = NSColor(srgbRed: 0.40, green: 0.91, blue: 0.98, alpha: 1)         // #67E8F9
+let porcelain = NSColor(srgbRed: 0.98, green: 0.98, blue: 1.0, alpha: 1)
+let violet = NSColor(srgbRed: 0.40, green: 0.33, blue: 0.77, alpha: 1)
 
 /// Relative bar heights, symmetric like a breath.
 let barHeights: [CGFloat] = [0.22, 0.46, 0.78, 1.0, 0.78, 0.46, 0.22]
 
-/// macOS 1024 grid: 824-pt body at 100, soft shadow, dark gradient fill,
-/// glowing gradient bars.
+/// macOS 1024 grid: white body, restrained shadow, solid purple bars.
 func drawIcon(size: CGFloat) {
     let k = size / 1024
     let body = NSRect(x: 100 * k, y: 100 * k, width: 824 * k, height: 824 * k)
@@ -39,19 +35,17 @@ func drawIcon(size: CGFloat) {
 
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
     shadow.shadowBlurRadius = 22 * k
     shadow.shadowOffset = NSSize(width: 0, height: -10 * k)
     shadow.set()
-    nightBottom.setFill()
+    porcelain.setFill()
     shape.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    NSGradient(starting: nightTop, ending: nightBottom)?.draw(in: shape, angle: -90)
-    // Faint violet haze behind the bars.
-    NSGradient(colors: [violet.withAlphaComponent(0.28), violet.withAlphaComponent(0)])?
-        .draw(in: shape, relativeCenterPosition: NSPoint(x: 0, y: 0))
-    NSColor.white.withAlphaComponent(0.08).setStroke()
+    porcelain.setFill()
+    shape.fill()
+    NSColor.white.setStroke()
     shape.lineWidth = 2 * k
     shape.stroke()
 
@@ -69,16 +63,8 @@ func drawIcon(size: CGFloat) {
         x += barWidth + gap
     }
 
-    NSGraphicsContext.saveGraphicsState()
-    let glow = NSShadow()
-    glow.shadowColor = violet.withAlphaComponent(0.75)
-    glow.shadowBlurRadius = 60 * k
-    glow.shadowOffset = .zero
-    glow.set()
     violet.setFill()
     bars.fill()
-    NSGraphicsContext.restoreGraphicsState()
-    NSGradient(starting: violet, ending: cyan)?.draw(in: bars, angle: 0)
 }
 
 func png(_ size: NSSize, _ draw: () -> Void) -> Data {

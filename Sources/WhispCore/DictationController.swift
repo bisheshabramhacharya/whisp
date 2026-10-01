@@ -55,6 +55,7 @@ public final class DictationController: ObservableObject {
     @Published public private(set) var statusMessage: String?
     /// Whether the global hotkey monitor is currently running.
     @Published public private(set) var isHotkeyRunning = false
+    @Published public private(set) var isHandsFree = false
 
     // MARK: Level passthrough for the recording pill
 
@@ -150,12 +151,12 @@ public final class DictationController: ObservableObject {
             try hotkey.start()
             isHotkeyRunning = true
             logger.info("Hotkey monitor started")
-            if statusMessage?.hasPrefix("Grant Accessibility") == true {
+            if statusMessage?.hasPrefix("Grant Microphone") == true {
                 statusMessage = nil
             }
         } catch {
             if case HotkeyError.permissionDenied = error {
-                statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
+                statusMessage = "Grant Microphone, Accessibility, and Input Monitoring to enable dictation"
             } else {
                 statusMessage = "Hotkey failed: \(error.localizedDescription)"
             }
@@ -176,7 +177,7 @@ public final class DictationController: ObservableObject {
         guard isHotkeyRunning else { return }
         stopHotkey()
         if isRecording { cancelCapture() }
-        statusMessage = "Grant Accessibility + Input Monitoring to enable the hotkey"
+        statusMessage = "Grant Microphone, Accessibility, and Input Monitoring to enable dictation"
     }
 
     /// Downloads/loads/warms the model. Safe to call more than once; after a failure
@@ -217,6 +218,7 @@ public final class DictationController: ObservableObject {
         case .start:  startCapture()
         case .stop:   stopCapture()
         case .cancel: cancelCapture()
+        case .handsFree: if isRecording && !isHandsFree { isHandsFree = true }
         }
     }
 
@@ -342,6 +344,7 @@ public final class DictationController: ObservableObject {
     }
 
     private func recomputeState() {
+        if !isRecording && isHandsFree { isHandsFree = false }
         let newState: State = isRecording ? .recording : (pendingTranscriptions > 0 ? .transcribing : .idle)
         if newState != state {
             state = newState
