@@ -1,26 +1,15 @@
 <div align="center">
 
-<img src="docs/icon.png" width="128" alt="Whisp icon">
+<img src="docs/hero.png" width="880" alt="Whisp. Your voice. A little less typing. Hold a key, talk, let go. Your words appear wherever you're typing.">
 
-# Whisp
+<br><br>
 
-### Your voice. A little less typing.
-
-**Hold a key, say it, let go. Your words land wherever your cursor is.**
-
-Free, open-source voice dictation for Mac. Runs entirely on your Mac.
-No account, no subscription, no cloud.
-
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000?logo=apple)](#what-you-need)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%20and%20newer-000)](#what-you-need)
-[![100% on-device](https://img.shields.io/badge/100%25-on--device-6654C4)](#is-it-private)
+[![macOS 14+](https://img.shields.io/badge/macOS-14+-black?logo=apple)](#what-you-need)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1+-black)](#what-you-need)
+[![On-device](https://img.shields.io/badge/runs-on--device-5745ad)](#is-it-private)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Install](#install) · [How to use it](#how-to-use-it) · [How fast?](#how-fast-is-it) · [FAQ](#faq)
-
-<br>
-
-<img src="docs/welcome.png" width="760" alt="The Whisp welcome screen: Your voice. A little less typing.">
+**[Install](#install)** · [How to use it](#how-to-use-it) · [How fast?](#how-fast-is-it) · [FAQ](#faq)
 
 </div>
 
@@ -87,8 +76,10 @@ a few minutes.
 a couple of minutes and ends with you dictating your first message:
 
 <p align="center">
-  <img src="docs/setup-flow.png" alt="Whisp's eight setup steps: welcome, privacy, permissions, speech model, mic check, how to dictate, practice email, and ready">
+  <img src="docs/setup-flow.png" width="880" alt="Four of Whisp's setup steps: turn on three permissions, check your mic, dictate a practice email, and you're ready">
 </p>
+
+<p align="center"><sub>Welcome → Privacy → <b>Permissions</b> → Speech model → <b>Mic check</b> → How to dictate → <b>Practice email</b> → <b>Ready</b></sub></p>
 
 Along the way, Whisp asks for three permissions. Click **Enable**, switch
 Whisp on in the System Settings page that opens, and come back. The window
