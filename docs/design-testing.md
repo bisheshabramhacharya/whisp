@@ -15,7 +15,7 @@ Build and install with `bash scripts/build-app.sh --install`. Open Whisp's menu 
 7. Click the email editor, hold your key, speak a sentence, and release. The latest dictation must appear in that editor before Next is available. Typing alone does not complete practice.
 8. Optionally enable launch at login and finish setup. Closing setup early does not mark it complete.
 
-The pill is nearly black and defaults to 120 by 32 points. Recording shows the active app icon and plain white bars. A light gray lock appears only after double-tapping into hands-free recording. Finishing or cancelling clears the lock. Processing shows a thin gray spinner with the app icon. Idle visibility and saved drag position remain intact.
+The pill is nearly black and defaults to 150 by 42 points. Recording shows the active app icon and plain white bars. A light gray lock appears only after double-tapping into hands-free recording. Finishing or cancelling clears the lock. Processing shows a thin gray spinner with the app icon. Idle visibility and saved drag position remain intact.
 
 Check hold/release, double-tap/tap, Escape cancellation, switching apps, the menu's pill sizes, dragging, and relaunching. Existing focus safeguards still copy text instead of pasting into a different app if you switch apps while processing.
 

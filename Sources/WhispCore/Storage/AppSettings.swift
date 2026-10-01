@@ -49,7 +49,7 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(hotkeyKeyCode, forKey: Key.hotkeyKeyCode) }
     }
 
-    /// Recording pill size multiplier (1.0 = 160×42 pt).
+    /// Recording pill size multiplier (1.0 = 200×56 pt).
     @Published public var pillScale: Double {
         didSet { defaults.set(pillScale, forKey: Key.pillScale) }
     }

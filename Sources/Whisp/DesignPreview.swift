@@ -42,7 +42,7 @@ func renderDesignPreviews(to directory: URL) throws {
         try render(hosting, size: NSSize(width: 1000, height: 650), to: directory.appendingPathComponent(name + ".png"))
     }
     for (name, mode, locked) in [("pill-idle", PillView.Mode.idle, false), ("pill-recording", .recording, false), ("pill-locked", .recording, true), ("pill-transcribing", .transcribing, true)] {
-        let pill = PillView(frame: NSRect(x: 0, y: 0, width: 120, height: 32))
+        let pill = PillView(frame: NSRect(x: 0, y: 0, width: 150, height: 42))
         pill.setApplicationIcon(NSImage(contentsOfFile: "/System/Applications/Notes.app/Contents/Resources/AppIcon.icns"), name: "Notes")
         pill.isHandsFree = locked
         pill.mode = mode
@@ -50,7 +50,7 @@ func renderDesignPreviews(to directory: URL) throws {
             throw NSError(domain: "WhispPreview", code: 3, userInfo: [NSLocalizedDescriptionKey: "Incorrect lock or spinner state"])
         }
         for level: Float in [0.12, 0.3, 0.55, 0.8, 0.6, 0.35, 0.65, 0.4, 0.7] { pill.push(level: level) }
-        try render(pill, size: NSSize(width: 120, height: 32), to: directory.appendingPathComponent(name + ".png"))
+        try render(pill, size: NSSize(width: 150, height: 42), to: directory.appendingPathComponent(name + ".png"))
         pill.mode = .idle
         guard !pill.showsLock && !pill.showsSpinner else { throw NSError(domain: "WhispPreview", code: 4) }
     }

@@ -17,7 +17,7 @@ final class RecordingPillController {
     private var state: DictationController.State = .idle
     private var cancellables = Set<AnyCancellable>()
 
-    private static let baseSize = NSSize(width: 160, height: 42)
+    private static let baseSize = NSSize(width: 200, height: 56)
     private static let bottomMargin: CGFloat = 84
     private static let idleAlpha: CGFloat = 0.95
 
