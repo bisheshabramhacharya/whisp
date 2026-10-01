@@ -204,7 +204,7 @@ struct OnboardingView: View {
     let onRetryModel: () -> Void
     @State var step = 0
     @State var practiceText = ""
-    @FocusState private var practiceFocused: Bool
+    @State private var chatText = ""
 
     private let purple = Color(red: 0.34, green: 0.27, blue: 0.68)
     private let ink = Color(white: 0.23)
@@ -336,8 +336,8 @@ struct OnboardingView: View {
                     VStack(alignment: .leading, spacing: 15) {
                         Text("Alex").font(.system(size: 12, weight: .semibold)).foregroundStyle(muted)
                         Text("Could you send the updated draft when you have a moment?").font(.system(size: 14)).lineSpacing(3)
-                        Text("Message Alex…").font(.system(size: 13)).foregroundStyle(muted).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(surface, in: RoundedRectangle(cornerRadius: 12)).padding(.top, 18)
-                        HStack { miniPill; Text("Sure, I'll send it over this afternoon.").font(.system(size: 12)); Spacer() }.padding(12).foregroundStyle(.white).background(Color(white: 0.08), in: Capsule())
+                        OnboardingEditor(text: $chatText, placeholder: "Message Alex…", accessibilityLabel: "Dictation practice reply", fontSize: 13).frame(height: 28).padding(15).background(surface, in: RoundedRectangle(cornerRadius: 12)).padding(.top, 18)
+                        HStack { miniPill; Text(model.recordingState == .recording ? "Listening…" : model.recordingState == .transcribing ? "Typing your words…" : "Hold \(shortcut) to reply").font(.system(size: 12)); Spacer() }.padding(12).foregroundStyle(.white).background(Color(white: 0.08), in: Capsule())
                     }.padding(24)
                 }.frame(width: 470).background(.white, in: RoundedRectangle(cornerRadius: 24)).shadow(color: .black.opacity(0.06), radius: 25, y: 8)
             }.frame(maxWidth: .infinity)
@@ -354,10 +354,7 @@ struct OnboardingView: View {
                             Divider().opacity(0.3)
                             Text("Subject: A quick hello").foregroundStyle(muted)
                             Divider().opacity(0.3)
-                            ZStack(alignment: .topLeading) {
-                                if practiceText.isEmpty { Text("Try saying: Hi Alex, let's meet tomorrow at three.").foregroundStyle(muted).padding(.top, 9).padding(.leading, 5).allowsHitTesting(false) }
-                                TextEditor(text: $practiceText).font(.system(size: 15)).scrollContentBackground(.hidden).focused($practiceFocused).accessibilityLabel("Dictation practice email")
-                            }.frame(height: 130).onAppear { practiceFocused = true }
+                            OnboardingEditor(text: $practiceText, placeholder: "Try saying: Hi Alex, let's meet tomorrow at three.", accessibilityLabel: "Dictation practice email").frame(height: 130)
                         }.font(.system(size: 13)).padding(20)
                     }.frame(width: 520).background(.white, in: UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20)).shadow(color: .black.opacity(0.04), radius: 18, y: 3).padding(.top, 25)
                 }.frame(height: 300).clipped()

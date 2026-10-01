@@ -13,6 +13,7 @@ func renderDesignPreviews(to directory: URL) throws {
     let model = OnboardingModel(permissions: PreviewPermissions())
     try checkOnboardingGates(model)
     try checkMicrophoneLifecycle()
+    try checkEditors()
     let examples: [(String, Int, Bool, String, String)] = [
         ("01-welcome", 0, false, "Loading model…", ""),
         ("02-privacy", 1, false, "Loading model…", ""),
@@ -42,7 +43,7 @@ func renderDesignPreviews(to directory: URL) throws {
         try render(hosting, size: NSSize(width: 1000, height: 650), to: directory.appendingPathComponent(name + ".png"))
     }
     for (name, mode, locked) in [("pill-idle", PillView.Mode.idle, false), ("pill-recording", .recording, false), ("pill-locked", .recording, true), ("pill-transcribing", .transcribing, true)] {
-        let pill = PillView(frame: NSRect(x: 0, y: 0, width: 150, height: 42))
+        let pill = PillView(frame: NSRect(x: 0, y: 0, width: 135, height: 38))
         pill.setApplicationIcon(NSImage(contentsOfFile: "/System/Applications/Notes.app/Contents/Resources/AppIcon.icns"), name: "Notes")
         pill.isHandsFree = locked
         pill.mode = mode
@@ -50,7 +51,7 @@ func renderDesignPreviews(to directory: URL) throws {
             throw NSError(domain: "WhispPreview", code: 3, userInfo: [NSLocalizedDescriptionKey: "Incorrect lock or spinner state"])
         }
         for level: Float in [0.12, 0.3, 0.55, 0.8, 0.6, 0.35, 0.65, 0.4, 0.7] { pill.push(level: level) }
-        try render(pill, size: NSSize(width: 150, height: 42), to: directory.appendingPathComponent(name + ".png"))
+        try render(pill, size: NSSize(width: 135, height: 38), to: directory.appendingPathComponent(name + ".png"))
         pill.mode = .idle
         guard !pill.showsLock && !pill.showsSpinner else { throw NSError(domain: "WhispPreview", code: 4) }
     }
@@ -176,4 +177,65 @@ private func checkMicrophoneLifecycle() throws {
     model.startMicrophoneTest()
     try expect(!model.microphoneTesting && model.microphoneError != nil && transitions.last == false, "Capture failure surfaces an error and resumes dictation")
     print("12 microphone lifecycle checks passed without audio capture")
+}
+
+/// Supplies a key window only inside the offscreen editor checks.
+final class DesignPreviewApplication: NSApplication {
+    var editorCheckWindow: NSWindow?
+    override var keyWindow: NSWindow? { editorCheckWindow ?? super.keyWindow }
+}
+
+private final class EditorPasteProbe: NSTextView {
+    let pasteboard = NSPasteboard.withUniqueName()
+    override func paste(_ sender: Any?) { _ = readSelection(from: pasteboard) }
+}
+
+@MainActor
+private func checkEditors() throws {
+    func expect(_ value: Bool, _ label: String) throws {
+        guard value else { throw NSError(domain: "WhispEditorCheck", code: 1, userInfo: [NSLocalizedDescriptionKey: label]) }
+    }
+    guard let app = NSApp as? DesignPreviewApplication else { return }
+    let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 300, height: 130), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    app.editorCheckWindow = window
+    let previousMenu = app.mainMenu
+    defer { app.editorCheckWindow = nil; app.mainMenu = previousMenu }
+    let probe = EditorPasteProbe(frame: window.contentView!.bounds)
+    probe.isRichText = false
+    window.contentView = probe
+    window.makeFirstResponder(probe)
+    probe.pasteboard.setString("Dictated sentence.", forType: .string)
+    defer { probe.pasteboard.releaseGlobally() }
+    let paste = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9)!
+    try expect(!window.performKeyEquivalent(with: paste) && probe.string.isEmpty, "Without an Edit menu, Command-V must reproduce the missing paste")
+    installEditingMenu()
+    try expect(app.mainMenu!.performKeyEquivalent(with: paste) && probe.string == "Dictated sentence.", "The Edit menu must route Command-V through the focused text responder")
+
+    func editor(in view: NSView) -> OnboardingTextView? {
+        if let text = view as? OnboardingTextView { return text }
+        return view.subviews.compactMap { editor(in: $0) }.first
+    }
+    for size: CGFloat in [13, 15] {
+        var value = ""
+        let binding = Binding<String>(get: { value }, set: { value = $0 })
+        let hosting = NSHostingView(rootView: OnboardingEditor(text: binding, placeholder: "Try saying hello", accessibilityLabel: "Practice", fontSize: size).frame(width: 300, height: 130))
+        window.contentView = hosting
+        hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 130)
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        guard let text = editor(in: hosting) else { throw NSError(domain: "WhispEditorCheck", code: 2) }
+        window.makeFirstResponder(text)
+        try expect(text.isEditable && text.isSelectable && text.font?.pointSize == size, "Both fields must be native editable text views")
+        try expect(text.textContainerInset == .zero && text.textContainer?.lineFragmentPadding == 0, "Placeholder and cursor must share the same text origin and padding")
+        text.insertText("Typed reply", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try expect(value == "Typed reply", "Typing must update the SwiftUI binding")
+        text.setSelectedRange(NSRange(location: 6, length: 5))
+        try expect(text.readSelection(from: probe.pasteboard) && value == "Typed Dictated sentence.", "Paste must replace the selection and update the binding")
+        text.insertText("\nSecond line", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try expect(value == "Typed Dictated sentence.\nSecond line", "Both editors must accept multiline text")
+        let selectAll = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+        try expect(app.mainMenu!.performKeyEquivalent(with: selectAll) && text.selectedRange().length == (value as NSString).length, "Select All must use the native editing menu")
+    }
+    print("Passed 14 offscreen editor checks; private pasteboard only, no desktop key events")
 }
