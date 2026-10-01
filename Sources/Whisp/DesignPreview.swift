@@ -109,6 +109,8 @@ private func checkOnboardingGates(_ model: OnboardingModel) throws {
     model.microphoneConfirmed = true
     try expect(model.canContinue(from: 4, practiceText: ""), "Confirmed microphone unlocks the dictation introduction")
     try expect(!model.canContinue(from: 6, practiceText: "Typed by hand"), "Typing alone must not complete dictation practice")
+    model.dictatedText = " "
+    try expect(!model.canContinue(from: 6, practiceText: "Typed by hand"), "A blank transcript must not pass practice")
     model.dictatedText = "A real dictation."
     try expect(!model.canContinue(from: 6, practiceText: ""), "A transcript without inserted text must not pass practice")
     try expect(model.canContinue(from: 6, practiceText: "A real dictation."), "Inserted dictation should pass practice")
@@ -120,7 +122,7 @@ private func checkOnboardingGates(_ model: OnboardingModel) throws {
     model.microphoneGranted = true
     try expect(model.canContinue(from: 7, practiceText: "A real dictation."), "Successful practice with a ready model should allow completion")
     model.dictatedText = ""
-    print("13 onboarding gate checks passed")
+    print("14 onboarding gate checks passed")
 }
 
 private final class PreviewRecorder: AudioRecording {

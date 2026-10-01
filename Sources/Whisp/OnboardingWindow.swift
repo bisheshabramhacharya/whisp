@@ -70,7 +70,8 @@ final class OnboardingModel: ObservableObject {
     var allGranted: Bool { microphoneGranted && accessibilityGranted && inputMonitoringGranted }
     var modelReady: Bool { modelStatus == "Ready" }
     func practicePassed(in text: String) -> Bool {
-        !dictatedText.isEmpty && text.contains(dictatedText)
+        let dictated = dictatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !dictated.isEmpty && text.contains(dictated)
     }
 
     func canContinue(from step: Int, practiceText: String) -> Bool {

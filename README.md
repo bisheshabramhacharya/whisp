@@ -66,9 +66,11 @@ paste the line above again.
 
 ### 2. Allow three permissions
 
-Whisp opens a **Welcome to Whisp** window. Click **Grant…** next to each item
-and switch Whisp on in the System Settings page that opens. The window ticks
-each one off as you go.
+Whisp opens a **Set up Whisp** window that walks you through setup. On the
+permissions step, click **Enable** next to each item and switch Whisp on in the
+System Settings page that opens. The window ticks each one off as you go.
+Setup then checks your microphone and has you dictate one practice message.
+You can replay it any time from the menu bar with **Open Setup…**.
 
 | Permission | Why Whisp needs it |
 |---|---|
@@ -77,7 +79,7 @@ each one off as you go.
 | **Input Monitoring** | To notice the Right Option key in every app |
 
 While you do this, Whisp downloads its speech model (about 1 GB, once). The
-bottom of the window says **Ready** when it's done.
+speech model step says **Ready to listen** when it's done.
 
 ### 3. Talk
 

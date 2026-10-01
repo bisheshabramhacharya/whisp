@@ -43,6 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             services.pasteLast.start()
         }
 
+        // The completion flag is newer than the app: people updating from an
+        // earlier version who already dictate shouldn't be sent through setup.
+        if !services.settings.onboardingCompleted, allPermissionsGranted,
+           !services.history.loadLast(1).isEmpty {
+            services.settings.onboardingCompleted = true
+        }
+
         // First launch (or missing permissions): show the setup window.
         if !services.settings.onboardingCompleted || !allPermissionsGranted || CommandLine.arguments.contains("--onboarding") {
             showOnboarding()
