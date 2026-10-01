@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-30
 
 ### Added
 - **Guided setup.** Eight short steps: welcome, privacy, permissions, speech model, a microphone check, how to dictate, a practice email you dictate into, and launch at login. Setup only counts as done once you finish it, and **Open Setup…** in the menu replays it. People updating who already dictate skip it.
