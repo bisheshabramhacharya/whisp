@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBar: StatusBarController!
     private var pill: RecordingPillController?
     private var onboarding: OnboardingController?
+    private var microphoneTesting = false
 
     /// Polls permission state after the user was sent to Settings, so the
     /// hotkey starts as soon as Accessibility + Input Monitoring land.
@@ -30,27 +31,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let services = Composition.makeServices()
         self.services = services
 
-        statusBar = StatusBarController(services: services)
+        statusBar = StatusBarController(services: services, onOpenSetup: { [weak self] in self?.showOnboarding() })
         pill = RecordingPillController(controller: services.controller, settings: services.settings)
 
         // Warm the model in the background — first launch may download it.
         services.controller.prepareModel()
 
-        // Start the hotkey as soon as the required permissions exist.
-        if hotkeyPermissionsGranted {
+        // Start dictation only after all three permissions are available.
+        if allPermissionsGranted {
             services.controller.startHotkey()
             services.pasteLast.start()
         }
 
-        // First launch (or missing permissions): show the setup window.
-        if !allPermissionsGranted {
-            showOnboarding()
+        // The completion flag is newer than the app: people updating from an
+        // earlier version who already dictate shouldn't be sent through setup.
+        if !services.settings.onboardingCompleted, allPermissionsGranted,
+           !services.history.loadLast(1).isEmpty {
+            services.settings.onboardingCompleted = true
         }
 
-        // Ask for the mic up front — the first dictation must never hit a TCC
-        // prompt mid-hold (the prompt's delay would silently discard the clip).
-        if !services.permissions.microphoneGranted {
-            Task { _ = await services.permissions.requestMicrophone() }
+        // First launch (or missing permissions): show the setup window.
+        if !services.settings.onboardingCompleted || !allPermissionsGranted || CommandLine.arguments.contains("--onboarding") {
+            showOnboarding()
         }
 
         // Permission checks are event-driven: our own activation (menu clicks,
@@ -71,8 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Runs the permission tracker once. Only meaningful when the grant poll
     /// isn't already driving (same ownership rule as the old watch timer).
     private func checkPermissions() {
-        guard let services, permissionPoll == nil else { return }
-        switch permissionTracker.check(hotkeyPermissionsGranted: hotkeyPermissionsGranted,
+        guard let services, permissionPoll == nil, !microphoneTesting else { return }
+        switch permissionTracker.check(hotkeyPermissionsGranted: allPermissionsGranted,
                                        hotkeyRunning: services.controller.isHotkeyRunning) {
         case .startHotkey:
             services.controller.startHotkey()
@@ -91,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionPoll = nil
         onboarding = nil
         // Grants may have landed while the window was up — start the hotkey now.
-        if let services, hotkeyPermissionsGranted {
+        if let services, allPermissionsGranted {
             services.controller.startHotkey()
             services.pasteLast.start()
         }
@@ -137,19 +139,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permissionPoll = nil
             return
         }
-        if hotkeyPermissionsGranted {
+        if allPermissionsGranted && !microphoneTesting {
             services.controller.startHotkey()
             services.pasteLast.start()
-        }
-        if allPermissionsGranted {
             permissionPoll?.invalidate()
             permissionPoll = nil
-            onboarding?.close()
-            onboarding = nil
         }
     }
 
+    func setMicrophoneTesting(_ active: Bool) -> Bool {
+        if active {
+            guard services.controller.state == .idle else { return false }
+            microphoneTesting = true
+            services.controller.stopHotkey()
+        } else {
+            microphoneTesting = false
+            if allPermissionsGranted {
+                services.controller.startHotkey()
+                services.pasteLast.start()
+            }
+        }
+        return true
+    }
+
+    func finishOnboarding() {
+        guard allPermissionsGranted, services.controller.modelStatus == "Ready" else { return }
+        services.settings.onboardingCompleted = true
+        onboarding?.close()
+    }
+
     private func showOnboarding() {
+        if let onboarding {
+            onboarding.showWindow(nil)
+            return
+        }
         let ob = OnboardingController(services: services, appDelegate: self)
         ob.showWindow(nil)
         onboarding = ob

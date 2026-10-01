@@ -11,7 +11,7 @@ import Foundation
 ///   - Key up after a hold <  `holdThreshold` (a tap)           -> `.cancel`.
 ///   - A second press within `doubleTapWindow` (0.4 s) of a tap release -> `.start`;
 ///     releasing that second press quickly stays recording — hands-free lock
-///     (no event). The next key press then ends hands-free: `.stop`, and its
+///     (`.handsFree`). The next key press then ends hands-free: `.stop`, and its
 ///     release is swallowed.
 ///   - Another *modifier* pressed within `chordGrace` (0.3 s) of a non-hands-free
 ///     hold start -> `.cancel` (the user is doing Option+Cmd+X, not dictating).
@@ -109,7 +109,7 @@ public struct HotkeyStateMachine {
             if now - since < holdThreshold {
                 // Quick release of the second press: lock into hands-free.
                 state = .handsFree
-                return nil
+                return .handsFree
             }
             state = .idle
             return .stop

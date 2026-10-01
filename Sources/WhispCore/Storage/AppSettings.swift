@@ -18,6 +18,7 @@ public final class AppSettings: ObservableObject {
         static let pillOrigin = "pillOrigin"
         static let alwaysShowPill = "alwaysShowPill"
         static let asrEngine = "asrEngine"
+        static let onboardingCompleted = "onboardingCompleted"
     }
 
     private let defaults: UserDefaults
@@ -48,7 +49,7 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(hotkeyKeyCode, forKey: Key.hotkeyKeyCode) }
     }
 
-    /// Recording pill size multiplier (1.0 = 200×52 pt).
+    /// Recording pill size multiplier (1.0 = 180×50.4 pt).
     @Published public var pillScale: Double {
         didSet { defaults.set(pillScale, forKey: Key.pillScale) }
     }
@@ -68,6 +69,11 @@ public final class AppSettings: ObservableObject {
     /// Keep a dimmed pill on screen while idle (so it can be dragged anytime).
     @Published public var alwaysShowPill: Bool {
         didSet { defaults.set(alwaysShowPill, forKey: Key.alwaysShowPill) }
+    }
+
+    /// Set only after the guided setup and dictation practice are complete.
+    @Published public var onboardingCompleted: Bool {
+        didSet { defaults.set(onboardingCompleted, forKey: Key.onboardingCompleted) }
     }
 
     /// Hidden engine switch for A/B testing ASR backends
@@ -125,6 +131,7 @@ public final class AppSettings: ObservableObject {
         self.hotkeyKeyCode = defaults.integer(forKey: Key.hotkeyKeyCode)
         self.pillScale = defaults.double(forKey: Key.pillScale)
         self.alwaysShowPill = defaults.bool(forKey: Key.alwaysShowPill)
+        self.onboardingCompleted = defaults.bool(forKey: Key.onboardingCompleted)
         if let xy = defaults.array(forKey: Key.pillOrigin) as? [Double], xy.count == 2 {
             self.pillOrigin = CGPoint(x: xy[0], y: xy[1])
         } else {

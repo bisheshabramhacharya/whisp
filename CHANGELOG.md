@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Guided setup.** Eight short steps: welcome, privacy, permissions, speech model, a microphone check, how to dictate, a practice email you dictate into, and launch at login. Setup only counts as done once you finish it, and **Open Setup…** in the menu replays it. People updating who already dictate skip it.
+- A small lock appears in the pill while hands-free recording (double-tap) is on.
+
+### Changed
+- The recording pill is a solid near-black capsule showing the icon of the app you're typing into, nine plain white bars while you talk, and a thin spinner while it transcribes. It stays visible while idle, so you can drag it anywhere, and remembers where you put it. The default size is smaller (135 × 38 points).
+- New app icon: a purple waveform on a white tile.
+- Whisp asks for the microphone during setup instead of at launch, and dictation starts only once all three permissions are on.
+
 ## 0.3.1 — 2026-09-30
 
 ### Fixed

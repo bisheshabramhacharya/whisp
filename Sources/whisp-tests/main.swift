@@ -17,6 +17,25 @@ func expect(_ actual: String, _ expected: String, _ label: String = "", line: In
     }
 }
 
+// MARK: - Setup and pill settings survive relaunch
+
+await MainActor.run {
+    let suite = "whisp-settings-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let settings = AppSettings(defaults: defaults)
+    expect(String(settings.onboardingCompleted), "false", "fresh install needs guided setup")
+    expect(String(settings.alwaysShowPill), "true", "pill is visible between dictations")
+    settings.pillOrigin = CGPoint(x: -640, y: 315)
+    settings.onboardingCompleted = true
+    let relaunched = AppSettings(defaults: defaults)
+    expect(String(relaunched.onboardingCompleted), "true", "completed setup survives relaunch")
+    expect(String(Double(relaunched.pillOrigin?.x ?? 0)), "-640.0", "pill position survives relaunch on a left-hand monitor")
+    expect(String(Double(relaunched.pillOrigin?.y ?? 0)), "315.0", "pill height survives relaunch")
+    relaunched.pillOrigin = nil
+    expect(AppSettings(defaults: defaults).pillOrigin == nil ? "reset" : "saved", "reset", "reset position clears the saved origin")
+}
+
 // MARK: - FillerCleaner
 
 let cleaner = FillerCleaner()
@@ -259,7 +278,9 @@ do {
     expect(run([(.keyDown, 0), (.keyUp, 1)]), "start stop", "hold")
     expect(run([(.keyDown, 0), (.keyUp, 0.1)]), "start cancel", "tap cancels")
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4), (.keyDown, 5), (.keyUp, 5.1)]),
-           "start cancel start - stop -", "double-tap locks hands-free; next press stops, release swallowed")
+           "start cancel start handsFree stop -", "double-tap locks hands-free; next press stops, release swallowed")
+    expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4), (.otherKey, 1), (.characterKey, 2)]),
+           "start cancel start handsFree - -", "hands-free event is emitted only when entering the mode")
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 2)]),
            "start cancel start stop", "tap then hold is a normal hold")
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.9), (.keyUp, 1.0)]),
@@ -268,7 +289,7 @@ do {
     expect(run([(.keyDown, 0), (.otherKey, 1), (.keyUp, 2)]), "start - stop", "other key after grace ignored")
     expect(run([(.keyDown, 0), (.escape, 1), (.keyUp, 2)]), "start cancel -", "Esc cancels a hold")
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4), (.escape, 3)]),
-           "start cancel start - cancel", "Esc cancels hands-free")
+           "start cancel start handsFree cancel", "Esc cancels hands-free")
     expect(run([(.keyDown, 0), (.keyUp, 1), (.escape, 1.1)]), "start stop cancel", "Esc after release reaches the controller")
 }
 
@@ -344,6 +365,19 @@ func pipelineTests() async {
         for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
         try? await Task.sleep(nanoseconds: 20_000_000)
     }
+
+    hotkey.onEvent?(.handsFree)
+    expect(controller.isHandsFree.description, "false", "idle hands-free event does not show a lock")
+    hotkey.onEvent?(.start)
+    expect(controller.isHandsFree.description, "false", "ordinary hold does not show a lock")
+    hotkey.onEvent?(.handsFree)
+    expect(controller.isHandsFree.description, "true", "second short tap shows the hands-free lock")
+    hotkey.onEvent?(.cancel)
+    expect(controller.isHandsFree.description, "false", "cancel clears the hands-free lock")
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.handsFree)
+    hotkey.onEvent?(.stop)
+    expect(controller.isHandsFree.description, "false", "release clears the lock before processing")
 
     // A 0.15 s word (under the old 0.3 s floor) is transcribed, not dropped.
     dictate(seconds: 0.15)
@@ -478,7 +512,7 @@ do {
     // Hands-free: our key is physically up — typed characters are just typing.
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4),
                 (.characterKey, 2), (.characterKey, 2.1), (.keyDown, 3), (.keyUp, 3.1)]),
-           "start cancel start - - - stop -", "chars in hands-free are ignored")
+           "start cancel start handsFree - - stop -", "chars in hands-free are ignored")
     // Modifier presses keep the chordGrace semantics.
     expect(run([(.keyDown, 0), (.otherKey, 0.1), (.keyUp, 0.5)]), "start cancel -",
            "modifier within grace cancels")
