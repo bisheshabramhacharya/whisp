@@ -335,6 +335,8 @@ docs/speed/          speed measurements, including the dead ends
 ```
 </details>
 
+If Whisp saves you some typing, a ⭐ helps other people find it.
+
 ## Credits
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0):
