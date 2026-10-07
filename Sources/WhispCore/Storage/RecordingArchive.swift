@@ -17,49 +17,8 @@ public final class RecordingArchive: Sendable {
     public func save(samples: [Float], id: String) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(id).wav")
-        try wavData(samples).write(to: url, options: .atomic)
+        try WAVEncoder.pcm16Data(samples, sampleRate: sampleRate).write(to: url, options: .atomic)
         AppPaths.makeUserOnly(url)
         return url
-    }
-
-    // MARK: - WAV encoding (PCM16, mono, little-endian)
-
-    private func wavData(_ samples: [Float]) -> Data {
-        let dataSize = UInt32(samples.count * 2)
-        var data = Data()
-        data.reserveCapacity(44 + Int(dataSize))
-
-        // RIFF header
-        data.append(contentsOf: "RIFF".utf8)
-        data.appendLE(UInt32(36) + dataSize)
-        data.append(contentsOf: "WAVE".utf8)
-
-        // fmt chunk: PCM, mono, sampleRate, 16-bit
-        data.append(contentsOf: "fmt ".utf8)
-        data.appendLE(UInt32(16))                       // fmt chunk size
-        data.appendLE(UInt16(1))                        // audio format = PCM
-        data.appendLE(UInt16(1))                        // channels
-        data.appendLE(UInt32(sampleRate))               // sample rate
-        data.appendLE(UInt32(sampleRate * 2))           // byte rate
-        data.appendLE(UInt16(2))                        // block align
-        data.appendLE(UInt16(16))                       // bits per sample
-
-        // data chunk
-        data.append(contentsOf: "data".utf8)
-        data.appendLE(dataSize)
-
-        let pcm = samples.map { s -> Int16 in
-            let clamped = max(-1.0, min(1.0, s))
-            return Int16(clamped * Float(Int16.max))
-        }
-        pcm.withUnsafeBytes { data.append(contentsOf: $0) }
-        return data
-    }
-}
-
-private extension Data {
-    mutating func appendLE<T>(_ value: T) {
-        var v = value
-        Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
     }
 }
