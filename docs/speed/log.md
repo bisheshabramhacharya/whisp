@@ -71,6 +71,7 @@ The serial-pipeline model (one decode in flight; a decode at tick T masks ticks 
 - LibriSpeech test-clean 2620 + test-other 500 (`scripts/speed/fetch-librispeech.sh`, refs as `.flac.txt`).
 - Dictation set 300 `say` clips: short commands, questions, one-word, ≤0.3 s blips, trailing names/products, numbers/times/money, multi-sentence takes, plus 3 long takes that came out 4.5–9 min (longer than spec — kept: they exercise the multi-chunk path and caught a replay bug); 8 voices × 3 rates; 0.15 s lead + 1.2 s tail silence (`scripts/speed/gen-dictation.sh`).
 - Edge set 432 clips: quiet final word −20/−30 dB, cough mid-take, noise 10/20 dB SNR, −15 dB low gain, hard clipping, trailing breath, mid-word truncation (`scripts/speed/gen-edge.sh`).
+- Unbroken set 30 clips: 8–14 s of continuous speech with every pause <180 ms (clamped to ≤120 ms and verified), so the live loop never cuts or speculates and the whole take lands in the release leftover (`scripts/speed/gen-unbroken.sh`).
 
 ## Track logs
 
@@ -222,3 +223,39 @@ after the last cut is never near-silent, so `finish()` decodes the last word
 alone instead of re-decoding it with the chunk before it. Recent takes are
 also released within ~15 ms of the last word (p50), so decoding ahead rarely
 had time to help. Not shipped.
+
+## Where release waits come from (2026-10-07, `short`, VM)
+
+Command: `.build/release/whisp-bench --replay --engine short testdata/dictation/*.wav testdata/unbroken/*.wav`
+(300 dictation + 30 unbroken clips = 2,635 simulated releases.)
+
+`ReleaseOutcome.leftoverSamples` records the audio the release still had to
+cover after the last committed chunk (the decoded tail, or the pending span a
+speculation/quiet-tail reuse covered without decoding). Buckets are <5 s /
+5–10 s / 10–15 s / >15 s — <5 s fits w5000, everything past it pays the stock
+15 s window today.
+
+All offsets:
+
+| leftover | releases | share | wait p50 | wait p95 | spec-hit | last-word ok |
+|---|---|---|---|---|---|---|
+| <5 s | 2,314 | 87.8% | 0 | 64 | 72% | 99.0% |
+| 5–10 s | 190 | 7.2% | 126 | 175 | 64% | 100.0% |
+| 10–15 s | 131 | 5.0% | 154 | 199 | 60% | 100.0% |
+| >15 s | 0 | 0% | — | — | — | — |
+
++0 ms only (the common real-world release):
+
+| leftover | releases | share | wait p50 | wait p95 | spec-hit | last-word ok |
+|---|---|---|---|---|---|---|
+| <5 s | 267 | 80.9% | 60 | 66 | 2% | 98.9% |
+| 5–10 s | 39 | 11.8% | 164 | 177 | 8% | 100.0% |
+| 10–15 s | 24 | 7.3% | 179 | 201 | 0% | 100.0% |
+| >15 s | 0 | 0% | — | — | — | — |
+
+Reading: ~19% of +0 releases carry a >5 s leftover and pay the 15 s window —
+roughly flat at 164–179 ms whether the leftover is 6 s or 14 s, because the
+stock encoder runs a fixed 15 s pass. Speculation almost never covers these
+(the take ends in speech, not a pause), so the fix has to be a cheaper decode
+of the leftover itself — the two options measured next are ≤5 s pieces on the
+already-loaded w5000 encoder, and a 10 s window bundle.
