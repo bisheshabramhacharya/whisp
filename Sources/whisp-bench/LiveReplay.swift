@@ -53,11 +53,13 @@ final class ReplayHotkey: HotkeyMonitoring {
     var onEvent: ((HotkeyEvent) -> Void)?
     func start() throws {}
     func stop() {}
+    func reset() {}
 }
 
 @MainActor final class NullPaster: TextPasting {
     func target() -> PasteTarget { PasteTarget(pid: nil, precedingCharacter: Task { nil }) }
     func paste(_ text: String, into target: PasteTarget) async -> PasteResult { .pasted }
+    func copy(_ text: String) -> PasteResult { .copiedSessionInterrupt }
 }
 
 final class SilentMuter: AudioMuting {
