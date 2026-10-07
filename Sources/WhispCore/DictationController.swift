@@ -53,6 +53,8 @@ public final class DictationController: ObservableObject {
     @Published public var modelStatus: String = "Model not started"
     /// Last surfaced error/info message, shown in the menu. Not auto-cleared.
     @Published public private(set) var statusMessage: String?
+    /// Status text when the maximum take length ends a recording on its own.
+    public static let capMessage = "Hit the 10-minute recording cap — everything you said still pastes"
     /// Whether the global hotkey monitor is currently running.
     @Published public private(set) var isHotkeyRunning = false
     @Published public private(set) var isHandsFree = false
@@ -273,6 +275,9 @@ public final class DictationController: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(maximumDuration * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             logger.notice("Auto-stop: \(maximumDuration)s cap reached")
+            // A stop the user didn't ask for: say why before it stops — the
+            // take itself still transcribes and pastes like a normal release.
+            self.statusMessage = Self.capMessage
             self.stopCapture()
         }
     }
