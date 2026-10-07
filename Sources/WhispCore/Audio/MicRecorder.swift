@@ -42,9 +42,10 @@ public final class MicRecorder: AudioRecording {
         interleaved: false
     )!
 
-    /// Guards `samples`, `converter`, `tapInstalled`, `recording` and `inputMaterialized`.
-    /// The tap callback appends on a realtime audio thread; start/stop run on the caller's
-    /// thread (normally main). Critical sections are kept tiny (no conversion under lock).
+    /// Guards `converter`, `tapInstalled`, `inputMaterialized` and the first-buffer
+    /// timestamps. The tap callback appends on a realtime audio thread; start/stop run on
+    /// the caller's thread (normally main). Critical sections are kept tiny (no conversion
+    /// under lock). Captured audio and the recording flag live in `capture`.
     private let lock = NSLock()
     /// Serializes engine lifecycle operations: tap install/removal, engine.start/stop,
     /// and the configuration-change rebuild. The realtime audio thread never takes it,
@@ -53,10 +54,11 @@ public final class MicRecorder: AudioRecording {
     /// Lock order when both are needed: `engineLock` -> `lock`, never the reverse.
     private let engineLock = NSLock()
     private let teardownQueue = DispatchQueue(label: "com.bishesha.whisp.mic-teardown", qos: .userInitiated)
-    private var samples: [Float] = []
+    /// Captured audio plus the recording flag, with the bounded stop-time drain
+    /// that keeps the IO buffer in flight at key-up (the end of the last word).
+    private let capture = CaptureBuffer()
     private var converter: AVAudioConverter?
     private var tapInstalled = false
-    private var recording = false
     /// Set when a device change could not be recovered mid-recording.
     private var inputLost = false
     /// When `start()` was called, and when the first converted buffer arrived (uptime ns).
@@ -80,23 +82,10 @@ public final class MicRecorder: AudioRecording {
 
     private var configChangeObserver: NSObjectProtocol?
 
-    /// Reserved capacity for `samples` (16 kHz audio). `idle` keeps launch light;
-    /// `take` covers the app's 10-minute cap (`DictationController.maximumDuration`)
-    /// so the realtime tap thread never grows the array mid-recording — a realloc
-    /// + copy there can drop buffers and click into the take. `stop()`/`cancel()`
-    /// shrink back to `idle` so a long take's peak isn't held resident forever.
-    private static let idleReserve = 16_000 * 120 // ~7.7 MB
-    private static let takeReserve = 16_000 * 600 // ~38.4 MB
-
-    /// Reserved capacity of `samples` — introspection for tests.
-    public var reservedSampleCapacity: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return samples.capacity
-    }
+    /// Reserved capacity of the capture buffer — introspection for tests.
+    public var reservedSampleCapacity: Int { capture.reservedCapacity }
 
     public init() {
-        samples.reserveCapacity(Self.idleReserve)
         warmUpEngine()
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -139,12 +128,10 @@ public final class MicRecorder: AudioRecording {
         guard AVAudioApplication.shared.recordPermission != .denied else {
             throw MicRecorderError.inputUnavailable
         }
-        // Grow to full-take size on the caller's thread — the realtime tap
+        // Grows to full-take size on the caller's thread — the realtime tap
         // thread then never has to reallocate mid-recording.
-        reserveTakeCapacity()
+        capture.begin()
         lock.lock()
-        samples.removeAll(keepingCapacity: true)
-        recording = true
         inputLost = false
         startedAtNs = DispatchTime.now().uptimeNanoseconds
         firstBufferAtNs = 0
@@ -156,9 +143,7 @@ public final class MicRecorder: AudioRecording {
             try installTapLocked()
         } catch {
             engineLock.unlock()
-            lock.lock()
-            recording = false
-            lock.unlock()
+            capture.discard()
             throw error
         }
         do {
@@ -170,9 +155,7 @@ public final class MicRecorder: AudioRecording {
         } catch {
             teardownLocked()
             engineLock.unlock()
-            lock.lock()
-            recording = false
-            lock.unlock()
+            capture.discard()
             throw MicRecorderError.engineStartFailed(underlying: error)
         }
         engineLock.unlock()
@@ -181,71 +164,52 @@ public final class MicRecorder: AudioRecording {
     }
 
     public func samples(from start: Int) -> [Float] {
-        lock.lock()
-        defer { lock.unlock() }
-        guard recording, start < samples.count else { return [] }
-        return Array(samples[start...])
+        capture.tail(from: start)
     }
 
     public func stop() -> [Float] {
-        // Hand the audio back first; stopping the engine (~40 ms) happens on
-        // `teardownQueue` so transcription doesn't wait for it.
+        // Wait for the IO buffer in flight at release — it holds the end of
+        // the last word. Bounded by CaptureBuffer.tailDrainCap (~30 ms), so
+        // release→paste never pays a full IO quantum.
         let stoppedAtNs = DispatchTime.now().uptimeNanoseconds
+        let (captured, drained) = capture.finish()
         lock.lock()
-        // Move the buffer out instead of copying it: `let` + fresh array makes
-        // `captured` the sole owner — removeAll(keepingCapacity:) would first
-        // copy the whole recording under copy-on-write.
-        let captured = samples
-        samples = []
-        samples.reserveCapacity(Self.idleReserve)
-        recording = false
         lostInput = inputLost
         let (started, firstBuffer, firstCount) = (startedAtNs, firstBufferAtNs, firstBufferSamples)
         lock.unlock()
+        // Stopping the engine (~40 ms) happens on `teardownQueue` so
+        // transcription doesn't wait for it.
         teardownWhenIdle()
         endLevelReporting()
         // Audio missing from the clip = wall time since start() minus audio captured.
         // "head" = arrival of the first buffer minus the audio it held: time after start()
-        // that was never captured. The rest of "missing" is the undelivered last buffer.
+        // that was never captured. A negative "missing" means the drain kept audio
+        // past the release instant. "drained" = the in-flight buffer arrived in time.
         let wallMs = Double(stoppedAtNs - started) / 1e6
         let audioMs = Double(captured.count) / 16.0
         let firstBufferMs = firstBuffer > 0 ? Double(firstBuffer - started) / 1e6 : -1
         let headMs = firstBuffer > 0 ? firstBufferMs - Double(firstCount) / 16.0 : -1
         logger.notice("""
             capture: wall=\(Int(wallMs))ms audio=\(Int(audioMs))ms missing=\(Int(wallMs - audioMs))ms \
-            firstBuffer=\(Int(firstBufferMs))ms head=\(Int(headMs))ms
+            firstBuffer=\(Int(firstBufferMs))ms head=\(Int(headMs))ms drained=\(drained)
             """)
         return captured
     }
 
     public func cancel() {
-        lock.lock()
-        samples.removeAll(keepingCapacity: true)
-        shrinkReserveLocked()
-        recording = false
-        lock.unlock()
+        capture.discard()
         // A tap is usually the first half of a double-tap: leave the mic running long
         // enough for the second press to record without restarting it.
         teardownWhenIdle(after: 0.5)
         endLevelReporting()
     }
 
-    /// Grows `samples` to full-take size on the caller's thread — `start()` calls
-    /// it before touching the engine so the realtime tap thread never reallocates
-    /// mid-recording (a realloc + copy there can drop buffers).
+    /// Grows the capture buffer to full-take size on the caller's thread —
+    /// `start()` calls it before touching the engine so the realtime tap
+    /// thread never reallocates mid-recording (a realloc + copy there can
+    /// drop buffers).
     public func reserveTakeCapacity() {
-        lock.lock()
-        samples.reserveCapacity(Self.takeReserve)
-        lock.unlock()
-    }
-
-    /// MUST be called with `lock` held. Releases capacity above the idle reserve
-    /// so one long take doesn't keep ~30 MB attached to the buffer forever.
-    private func shrinkReserveLocked() {
-        if samples.capacity > Self.idleReserve {
-            samples = []
-            samples.reserveCapacity(Self.idleReserve)
-        }
+        capture.reserveTake()
     }
 
     // MARK: - Engine plumbing
@@ -257,9 +221,7 @@ public final class MicRecorder: AudioRecording {
         teardownQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.engineLock.lock()
-            self.lock.lock()
-            let idle = !self.recording
-            self.lock.unlock()
+            let idle = !self.capture.isRecording
             if idle { self.teardownLocked() }
             self.engineLock.unlock()
         }
@@ -354,15 +316,16 @@ public final class MicRecorder: AudioRecording {
         // Resampling can overshoot beyond [-1, 1]; the ASR contract requires that range.
         var lo: Float = -1, hi: Float = 1
         vDSP_vclip(channelData[0], 1, &lo, &hi, channelData[0], 1, vDSP_Length(count))
-        lock.lock()
-        if recording {
+        // Appends only while a take is live (including the stop-time drain);
+        // a buffer in flight at key-up lands here and ends the drain early.
+        if capture.append(UnsafeBufferPointer(start: channelData[0], count: count)) {
+            lock.lock()
             if firstBufferAtNs == 0 {
                 firstBufferAtNs = DispatchTime.now().uptimeNanoseconds
                 firstBufferSamples = count
             }
-            samples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: count))
+            lock.unlock()
         }
-        lock.unlock()
 
         // RMS → dB → 0...1. -60 dB (silence) maps to 0, 0 dBFS maps to 1.
         var rms: Float = 0
@@ -403,9 +366,7 @@ public final class MicRecorder: AudioRecording {
     private func handleConfigurationChange() {
         engineLock.lock()
         teardownLocked()
-        lock.lock()
-        let wasRecording = recording
-        lock.unlock()
+        let wasRecording = capture.isRecording
         if wasRecording {
             do {
                 try installTapLocked()

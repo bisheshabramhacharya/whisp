@@ -495,6 +495,79 @@ do {
            "shrunk", "buffer releases take-size capacity after stop()")
 }
 
+// MARK: - Capture drain (last word at release)
+
+// At key-up one IO buffer is always in flight holding the end of the last
+// word. finish() must wait for it — returning early when it lands, never
+// past the ~30 ms cap. Driven without audio hardware by appending from a
+// background thread like the realtime tap does.
+do {
+    let cap = CaptureBuffer()
+    cap.begin()
+    let head: [Float] = [1, 2, 3]
+    _ = head.withUnsafeBufferPointer { cap.append($0) }
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.008) {
+        let tail: [Float] = [4, 5]
+        _ = tail.withUnsafeBufferPointer { cap.append($0) }
+    }
+    let (got, drained) = cap.finish()
+    let waitMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    expect(drained.description, "true", "drain catches the buffer in flight at release")
+    expect(got.description, "[1.0, 2.0, 3.0, 4.0, 5.0]",
+           "stop() keeps audio that arrives after key-up")
+    expect(waitMs < 30 ? "early" : "capped", "early",
+           "drain returns on the buffer, not the cap (\(Int(waitMs)) ms)")
+}
+
+// A dead or silent input must not stall release->paste: the wait ends at the
+// cap and keeps what was already captured.
+do {
+    let cap = CaptureBuffer()
+    cap.begin()
+    let head: [Float] = [7]
+    _ = head.withUnsafeBufferPointer { cap.append($0) }
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    let (got, drained) = cap.finish()
+    let waitMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    expect(drained.description, "false", "drain gives up when nothing arrives")
+    expect(got.description, "[7.0]", "cap timeout keeps what was captured")
+    expect(waitMs >= 25 && waitMs < 200 ? "capped" : "\(Int(waitMs))", "capped",
+           "drain is bounded near the 30 ms cap")
+}
+
+// stop() with no live take (already stopped, cancelled, or a start that never
+// delivered) must not pay the drain wait.
+do {
+    let cap = CaptureBuffer()
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    let (got, drained) = cap.finish()
+    let waitMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    expect(waitMs < 5 ? "instant" : "\(Int(waitMs))ms", "instant",
+           "finish() without a take never waits")
+    expect(got.isEmpty && !drained ? "ok" : "?", "ok", "finish() without a take is empty")
+}
+
+// Cancel path: audio and the recording flag are dropped at once, late buffers
+// are refused, and a new take starts clean (the double-tap second press).
+do {
+    let cap = CaptureBuffer()
+    cap.begin()
+    let head: [Float] = [1]
+    _ = head.withUnsafeBufferPointer { cap.append($0) }
+    cap.discard()
+    let late: [Float] = [2]
+    expect(late.withUnsafeBufferPointer { cap.append($0) }.description, "false",
+           "buffers after cancel are dropped")
+    expect(cap.tail(from: 0).isEmpty.description, "true", "cancel drops captured audio")
+    expect(cap.isRecording.description, "false", "cancel ends the take")
+
+    cap.begin()
+    let next: [Float] = [9]
+    _ = next.withUnsafeBufferPointer { cap.append($0) }
+    expect(cap.tail(from: 0).description, "[9.0]", "a new take starts clean")
+}
+
 // A character key early in a Right Option hold is an Option+char chord
 // (@, Option+Backspace, ...) even after a dwell — cancel within characterGrace.
 // Later it's a stray key during real dictation and must not discard the take.
