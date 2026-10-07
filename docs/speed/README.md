@@ -38,9 +38,20 @@ paid for 15 s of encoder work.
 ## What's next
 
 About a third of releases still wait over 100 ms: the speech after the last
-pause was longer than 5 s, so it goes to the 15 s encoder. A 10 s window
-would cover most of those, at ~600 MB more Neural Engine memory, unless the
-windows can share one weight file (Core ML multi-function models, macOS 15+).
+pause was longer than 5 s, so it goes to the 15 s encoder. Measured fixes:
+
+- **5–10 s leftovers (~12% of releases)** — an opt-in 10 s encoder window
+  (`parakeet_unified_encoder_w10000_int8`, same weights) decodes them in one
+  pass: bucket p50 164 → 130 ms on the VM, transcripts identical to the 15 s
+  window. Install instructions in `tools/convert/RELEASE.md`. Without the
+  bundle, the opt-in `split` engine covers most of the same ground by
+  decoding two overlapped 5 s pieces (p50 164 → 150 ms VM, ~2% residual
+  decode variance).
+- **10–15 s leftovers (~7%)** — no cheaper option at the same weights: two
+  pieces on any window cost more than one 15 s pass. Still pays the flat
+  window.
+- **Multi-function bundles** are a toolchain dead end (needs macOS 15+ and
+  can't int8-quantize, coremltools 9.0).
 
 ## Reproduce
 
@@ -56,4 +67,5 @@ scripts/speed/m1-check.sh <folder of wavs> parakeet,short
 
 Detailed logs: [log.md](log.md), [short window](log-b-short-window.md),
 [streaming](log-c-streaming.md), [decoder and pipeline](log-d-decoder.md),
+[split + 10 s window](log-e-split-and-w10000.md),
 and the [full report](vm-report.md).
