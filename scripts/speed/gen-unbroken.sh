@@ -126,7 +126,7 @@ lead = [0.0] * (16000 * 15 // 100)
 tail = [0.0] * (16000 * 12 // 10)
 body = struct.pack('<%df' % (len(lead) + len(speech) + len(tail)),
                    *(lead + speech + tail))
-out = header[:4] + struct.pack('<I', len(header) - 8 + len(body)) + header[8:]
+out = header[:4] + struct.pack('<I', len(header) - 8 + len(body)) + header[8:] + body
 i = out.index(b'data')
 out = out[:i+4] + struct.pack('<I', len(body)) + out[i+8:]
 open(wav, 'wb').write(out)
