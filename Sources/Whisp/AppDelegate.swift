@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionTracker = HotkeyPermissionTracker()
     private var activationObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
+    /// Sleep/lock/user-switch observers that tell the controller to finish the
+    /// take as a copy instead of a paste.
+    private var suspensionObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? AppPaths.ensureDirectories()
@@ -68,6 +71,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in self?.checkPermissions() }
         }
+
+        // Sleep and fast user switch; screen lock comes through the distributed
+        // center (it doesn't resign the session on every configuration).
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            suspensionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.services?.controller.systemSuspending() }
+            })
+        }
+        suspensionObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.services?.controller.systemSuspending() }
+        })
     }
 
     /// Runs the permission tracker once. Only meaningful when the grant poll
@@ -106,6 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+        }
+        for observer in suspensionObservers {
+            NotificationCenter.default.removeObserver(observer)
+            DistributedNotificationCenter.default().removeObserver(observer)
         }
         services?.controller.shutdown()
     }
