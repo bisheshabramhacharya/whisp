@@ -25,10 +25,11 @@ public struct HistoryEntry: Codable, Sendable, Identifiable {
 }
 
 /// Append-only JSONL history at AppPaths.historyFile.
-/// Appends run on one serial queue (DictationController's persistence queue); reads
-/// run on the main thread. They share no mutable state — the encoder is only used by
-/// appends, the decoder only by reads — and a read racing an append just drops the
-/// half-written last line.
+/// Appends run on one serial queue (DictationController's persistence queue) and
+/// use O_APPEND so two racing writers can't overwrite each other mid-line; reads
+/// run on the main thread. They share no mutable state — the encoder is only used
+/// by appends, the decoder only by reads — and a read racing an append just drops
+/// the half-written last line.
 public final class HistoryStore: @unchecked Sendable {
 
     public let fileURL: URL
@@ -65,15 +66,21 @@ public final class HistoryStore: @unchecked Sendable {
             return
         }
 
-        let handle = try FileHandle(forWritingTo: fileURL)
-        do {
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-            try handle.close()
-        } catch {
-            try? handle.close()
-            throw error
+        // O_APPEND, not seek-to-end + write: every write lands at the true EOF
+        // even when two writers race (a manual edit tool tailing the file, two
+        // stores sharing a path), so a line can never be clobbered mid-write.
+        let fd = open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { close(fd) }
+        try line.withUnsafeBytes { buf in
+            var written = 0
+            while written < line.count {
+                let n = Darwin.write(fd, buf.baseAddress!.advanced(by: written), line.count - written)
+                guard n > 0 else { throw CocoaError(.fileWriteUnknown) }
+                written += n
+            }
         }
+        AppPaths.makeUserOnly(fileURL)
     }
 
     /// Returns the most recent `count` entries, newest first.
