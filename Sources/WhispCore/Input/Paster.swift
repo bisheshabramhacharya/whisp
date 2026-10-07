@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 import Foundation
 
@@ -39,6 +40,11 @@ public final class Paster: TextPasting {
 
     /// How often to re-read the focused element while waiting out `restoreDelay`.
     private static let confirmPollNanos: UInt64 = 50_000_000
+
+    /// Whether Secure Event Input is on at paste time — injectable for tests.
+    /// While a secure field holds focus (password prompts, etc.), synthetic
+    /// keystrokes are swallowed or land nowhere, so paste must copy instead.
+    public var secureEventInput: () -> Bool = { IsSecureEventInputEnabled() }
 
     /// Hard cap on every Accessibility query so a hung target app can't stall pasting.
     private nonisolated static let axTimeout: Float = 0.02 // 20 ms
@@ -135,6 +141,16 @@ public final class Paster: TextPasting {
         }
 
         let pasteboard = self.pasteboard
+        // Secure Event Input means a secure field holds focus somewhere and
+        // would swallow the synthetic Cmd+V — copy instead of pasting, and
+        // leave the text for the user's own Cmd+V (no restore either).
+        if secureEventInput() {
+            pendingRestore?.task.cancel()
+            pendingRestore = nil
+            pasteboard.clearContents()
+            pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
+            return .copiedSecureInput
+        }
         if await focusLeft(target) {
             pendingRestore?.task.cancel()
             pendingRestore = nil
