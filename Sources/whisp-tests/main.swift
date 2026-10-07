@@ -809,7 +809,7 @@ func prewarmTests() async {
         recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
     controller.startHotkey()
     hotkey.onEvent?(.start)
-    try? await Task.sleep(nanoseconds: 450_000_000)
+    try? await Task.sleep(nanoseconds: 550_000_000)
     hotkey.onEvent?(.stop)
     try? await Task.sleep(nanoseconds: 100_000_000)
     let sizes = engine.sizes
