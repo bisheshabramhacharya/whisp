@@ -626,6 +626,151 @@ func a2RaceTests() async {
 }
 await a2RaceTests()
 
+// MARK: - The hunt (disk full, racing writes, 10-min resource bound)
+
+// Two writers racing history.jsonl: appends use O_APPEND so each line lands at
+// the true EOF — no seek-to-end overwrite, no interleaved bytes.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-race-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("history.jsonl")
+    let storeA = HistoryStore(fileURL: file), storeB = HistoryStore(fileURL: file)
+    func entry(_ n: Int) -> HistoryEntry {
+        HistoryEntry(id: "e\(n)", date: Date(), durationSec: 1, raw: "r\(n)", cleaned: "c\(n)", latencyMs: 0)
+    }
+    try! storeA.append(entry(0)) // pre-create: the race hits the append path
+    let group = DispatchGroup()
+    let q = DispatchQueue(label: "race", attributes: .concurrent)
+    for i in 1...50 {
+        group.enter(); q.async { try! storeA.append(entry(i)); group.leave() }
+        group.enter(); q.async { try! storeB.append(entry(i + 50)); group.leave() }
+    }
+    group.wait()
+    let lines = try! String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+    expect(lines.count.description, "101", "racing appends keep every line")
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decodable = lines.filter { line in
+        (try? decoder.decode(HistoryEntry.self, from: Data(line.utf8))) != nil
+    }
+    expect(decodable.count.description, "101", "racing appends keep every line intact")
+}
+
+// Disk-full writes must never clobber an existing dictionary: the atomic
+// write throws before the file is touched.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-dictfull-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let dict = dir.appendingPathComponent("dictionary.json")
+    let before = #"{"terms": ["Vinted"], "replacements": []}"#
+    try! before.write(to: dict, atomically: true, encoding: .utf8)
+    try! FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+    var threw = false
+    do { try PersonalDictionary.addTerm("Depop", fileURL: dict) } catch { threw = true }
+    expect(threw.description, "true", "dictionary write on a full disk throws")
+    expect((try? String(contentsOf: dict, encoding: .utf8)) ?? "?", before,
+           "failed dictionary write leaves the file alone")
+}
+
+// A recorder that yields audio progressively, like a real capture, and a
+// process-resident-size probe for the resource-bounds check.
+final class ServedRecorder: AudioRecording {
+    var onLevel: ((Float) -> Void)?
+    let lostInput = false
+    private var served = 0
+    let total: Int, serving: Int
+    init(total: Int, serving: Int) { self.total = total; self.serving = serving }
+    func start() throws {}
+    func samples(from start: Int) -> [Float] {
+        served = min(served + serving, total)
+        return [Float](repeating: 0.1, count: max(0, served - start))
+    }
+    func stop() -> [Float] { [Float](repeating: 0.1, count: total) }
+    func cancel() {}
+}
+// Peak resident-set-size watermark in bytes (macOS units for ru_maxrss).
+func peakRssBytes() -> UInt64 {
+    var r = rusage()
+    getrusage(RUSAGE_SELF, &r)
+    return UInt64(r.ru_maxrss)
+}
+
+@MainActor
+func huntTests() async {
+    // Hands-free 10-minute take: 9.6M samples (38 MB) served progressively.
+    // Memory may spike for buffers but stays a small multiple of the audio,
+    // and the take lands intact with its real duration.
+    do {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-hunt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let hotkey = FakeHotkey(), paster = FakePaster()
+        let recorder = ServedRecorder(total: 9_600_000, serving: 1_600_000)
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+        settings.autoMute = false
+        settings.keepRecordings = false
+        let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+        let controller = DictationController(
+            transcriber: SlowTranscriber(), recorder: recorder, hotkey: hotkey, paster: paster,
+            cleaner: FillerCleaner(), muter: NoMuter(), sounds: CountingSounds(), settings: settings,
+            history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("rec")))
+        try! controller.startHotkey()
+        let baseline = peakRssBytes()
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.handsFree)
+        // 100 ms polls × ~1.2 s serves all 10 simulated minutes to the chunk loop.
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        hotkey.onEvent?(.stop)
+        for _ in 0..<400 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+        controller.flushPersistence()
+        let peakDelta = Double(Int64(peakRssBytes()) - Int64(baseline)) / 1e6
+        print(String(format: "10-min fake take: peak RSS watermark +%.0f MB", peakDelta))
+        expect(paster.pasted.count.description, "1", "10-min hands-free take lands as one paste")
+        expect(paster.pasted.first?.hasPrefix("Clip ") ?? false ? "yes" : "no", "yes",
+               "10-min take pastes the transcribed audio")
+        expect(history.loadLast(1).first?.durationSec.description ?? "?", "600.0",
+               "10-min take records its real duration")
+        expect((peakDelta < 400).description, "true", "10-min take peak memory stays bounded (<400 MB)")
+    }
+
+    // Disk full: a history append that can't write still pastes the take and
+    // says so in the menu instead of losing it silently.
+    do {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-full-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let historyFile = dir.appendingPathComponent("history.jsonl")
+        try! " ".write(to: historyFile, atomically: true, encoding: .utf8)
+        try! FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: historyFile.path)
+        let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+        settings.autoMute = false
+        settings.keepRecordings = false
+        let history = HistoryStore(fileURL: historyFile)
+        let controller = DictationController(
+            transcriber: SlowTranscriber(), recorder: recorder, hotkey: hotkey, paster: paster,
+            cleaner: FillerCleaner(), muter: NoMuter(), sounds: CountingSounds(), settings: settings,
+            history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("rec")))
+        try! controller.startHotkey()
+        recorder.next = [Float](repeating: 0.1, count: 16_000)
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.stop)
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+        controller.flushPersistence()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        expect(paster.pasted.description, "[\"Clip 1.\"]", "full disk still pastes the take")
+        expect((controller.statusMessage?.contains("Couldn't save") ?? false).description, "true",
+               "full disk surfaces a menu warning")
+    }
+}
+await huntTests()
+
 // While recording, each live tick tells the engine how much audio a release
 // decode would get, so an engine with several encoder sizes can wake that one.
 final class GrowingRecorder: AudioRecording {
