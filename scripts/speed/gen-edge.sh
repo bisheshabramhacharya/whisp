@@ -42,8 +42,9 @@ made = 0
 for f in files:
     base = f[:-4]
     ref = os.path.join(src, base+'.txt')
-    if not os.path.exists(ref): continue
-    txt = open(ref).read().strip()
+    # A .txt ref is only needed when the caller measures WER on the output;
+    # last-word replay checks run fine without one.
+    txt = open(ref).read().strip() if os.path.exists(ref) else ''
     x, _ = read_wav(os.path.join(src, f))
     if len(x) < 16000*2: continue  # want room for the tail transforms
     n = len(x)
