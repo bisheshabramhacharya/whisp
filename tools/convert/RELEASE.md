@@ -40,3 +40,36 @@ gh release create models-v2 --title "Models v2" --notes-file ../../RELEASE.md \
 
 Then point `ShortWindowEngine.fastBundle` at the new tag and checksum. The zip
 holds the bundle's contents at its root (no enclosing folder).
+
+## Opt-in 10 s window (`speed-models-*` draft)
+
+The 10 s window is a draft-release experiment, not part of `models-v1`: it is
+never auto-downloaded, so installing it is the opt-in. With it installed,
+leftovers from 5–10 s decode in one ~10 s pass instead of a flat 15 s pass —
+on the dev VM that cut the 5–10 s bucket's median release wait from 164 ms to
+130 ms with transcripts identical to the 15 s encoder (same weights).
+
+| asset | SHA-256 |
+|---|---|
+| `parakeet_unified_encoder_w10000_int8.mlmodelc.zip` (502 MB) | `ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50` |
+
+Build it the same way (`--windows 10 --validate`); install manually:
+
+```bash
+cd tools/convert
+uv run --no-sync python convert-short-window.py --windows 10 --validate --install
+```
+
+or from the draft release, verifying the checksum before installing:
+
+```bash
+cd "$(mktemp -d)"
+curl -sLO "https://github.com/bisheshabramhacharya/whisp/releases/download/speed-models-20261007/parakeet_unified_encoder_w10000_int8.mlmodelc.zip"
+echo "ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50  parakeet_unified_encoder_w10000_int8.mlmodelc.zip" | shasum -a 256 -c -
+ditto -x -k parakeet_unified_encoder_w10000_int8.mlmodelc.zip \
+  "$HOME/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/"
+```
+
+`ShortWindowEngine` discovers `parakeet_unified_encoder_w10000_int8.mlmodelc`
+on the next launch — no code change and no restart flag needed. Removing the
+bundle restores stock behavior.
