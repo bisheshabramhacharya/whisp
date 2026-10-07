@@ -152,10 +152,7 @@ public final class Paster: TextPasting {
             return .copiedSecureInput
         }
         if await focusLeft(target) {
-            pendingRestore?.task.cancel()
-            pendingRestore = nil
-            pasteboard.clearContents()
-            pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
+            writeToClipboard(text)
             return .copiedAppChanged
         }
 
@@ -200,6 +197,21 @@ public final class Paster: TextPasting {
         scheduleRestore(snapshot: snapshot, expectedChangeCount: expectedChangeCount,
                         generation: generation, text: text, context: context)
         return .pasted
+    }
+
+    public func copy(_ text: String) -> PasteResult {
+        writeToClipboard(text)
+        return .copiedSessionInterrupt
+    }
+
+    /// Leaves the trimmed text on the clipboard for the user's own Cmd+V:
+    /// any pending restore is cancelled so the old clipboard can't clobber it.
+    private func writeToClipboard(_ text: String) {
+        pendingRestore?.task.cancel()
+        pendingRestore = nil
+        let pasteboard = self.pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
     }
 
     /// Dictation is appended to a word/sentence (so needs a separating space) unless the

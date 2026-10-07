@@ -63,6 +63,10 @@ public protocol HotkeyMonitoring: AnyObject {
     /// Throws HotkeyError.permissionDenied if Accessibility/Input Monitoring is not granted.
     func start() throws
     func stop()
+    /// Drops held-key state without stopping the listener — used after
+    /// sleep/lock/user-switch, where a key-up can be lost and a key still
+    /// physically down would otherwise look stuck.
+    func reset()
 }
 
 public enum HotkeyError: Error {
@@ -159,6 +163,9 @@ public enum PasteResult: Sendable {
     /// Secure Event Input was on at paste time (password fields and similar):
     /// keystrokes would be swallowed, so the text was left on the clipboard.
     case copiedSecureInput
+    /// The Mac slept, locked, or switched users before paste time; the text was
+    /// left on the clipboard because the target session was gone.
+    case copiedSessionInterrupt
 }
 
 /// Inserts text into the frontmost app at the cursor.
@@ -167,6 +174,9 @@ public protocol TextPasting: AnyObject {
     /// Call at key release.
     func target() -> PasteTarget
     func paste(_ text: String, into target: PasteTarget) async -> PasteResult
+    /// Leaves text on the clipboard without posting keystrokes — for takes
+    /// whose target is gone by definition (sleep/lock/user-switch).
+    func copy(_ text: String) -> PasteResult
 }
 
 /// Non-rewriting cleanup: removes fillers/stutters and applies personal dictionary.

@@ -58,6 +58,7 @@ func renderDesignPreviews(to directory: URL) throws {
     // Status-menu warning rows — where clipboard-fallback outcomes surface.
     for (name, message) in [
         ("status-secure-input", DictationController.secureInputMessage),
+        ("status-session-interrupt", DictationController.sessionInterruptMessage),
     ] {
         let row = NSTextField(labelWithString: "⚠︎ \(message)")
         row.font = .menuFont(ofSize: 0)
@@ -66,7 +67,7 @@ func renderDesignPreviews(to directory: URL) throws {
         try render(row, size: NSSize(width: 360, height: 22),
                    to: directory.appendingPathComponent(name + ".png"))
     }
-    print("Rendered \(examples.count) onboarding screens, 4 pill states, and 1 status message with visibility checks to \(directory.path)")
+    print("Rendered \(examples.count) onboarding screens, 4 pill states, and 2 status messages with visibility checks to \(directory.path)")
 }
 
 @MainActor
