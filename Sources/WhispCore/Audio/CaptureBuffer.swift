@@ -36,6 +36,14 @@ public final class CaptureBuffer {
         samples.reserveCapacity(Self.idleReserve)
     }
 
+    /// Whether a finish() drain is waiting on the in-flight buffer —
+    /// introspection for tests driving the drain without audio hardware.
+    public var isDraining: Bool {
+        cond.lock()
+        defer { cond.unlock() }
+        return draining
+    }
+
     /// Whether a take is live (begin() called, finish()/discard() not yet).
     /// Read for engine-lifecycle decisions while the take drains.
     public var isRecording: Bool {

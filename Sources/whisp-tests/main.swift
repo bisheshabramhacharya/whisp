@@ -499,22 +499,28 @@ do {
 
 // At key-up one IO buffer is always in flight holding the end of the last
 // word. finish() must wait for it — returning early when it lands, never
-// past the ~30 ms cap. Driven without audio hardware by appending from a
-// background thread like the realtime tap does.
+// past the ~30 ms cap. Driven without audio hardware: finish() runs on a
+// background thread; once isDraining reports the wait armed, the tap-thread
+// append lands and must end it promptly (no timer to flake on slow runners).
 do {
     let cap = CaptureBuffer()
     cap.begin()
     let head: [Float] = [1, 2, 3]
     _ = head.withUnsafeBufferPointer { cap.append($0) }
-    let t0 = DispatchTime.now().uptimeNanoseconds
-    DispatchQueue.global().asyncAfter(deadline: .now() + 0.008) {
-        let tail: [Float] = [4, 5]
-        _ = tail.withUnsafeBufferPointer { cap.append($0) }
+    var outcome: (samples: [Float], drained: Bool)?
+    let done = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        outcome = cap.finish()
+        done.signal()
     }
-    let (got, drained) = cap.finish()
+    while !cap.isDraining {}
+    let tail: [Float] = [4, 5]
+    _ = tail.withUnsafeBufferPointer { cap.append($0) }
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    done.wait()
     let waitMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-    expect(drained.description, "true", "drain catches the buffer in flight at release")
-    expect(got.description, "[1.0, 2.0, 3.0, 4.0, 5.0]",
+    expect((outcome?.drained ?? false).description, "true", "drain catches the buffer in flight at release")
+    expect((outcome?.samples ?? []).description, "[1.0, 2.0, 3.0, 4.0, 5.0]",
            "stop() keeps audio that arrives after key-up")
     expect(waitMs < 30 ? "early" : "capped", "early",
            "drain returns on the buffer, not the cap (\(Int(waitMs)) ms)")
