@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 import os
 
 // MARK: - Extra service contracts (not in Contracts.swift; concrete impls are owned by other modules)
@@ -75,6 +76,22 @@ public final class DictationController: ObservableObject {
     private let settings: AppSettings
     private let history: HistoryStore
     private let recordings: RecordingArchive
+    /// WAV scratch files for in-flight takes — a leftover at launch means a
+    /// crash lost the take mid-transcription and it gets recovered then.
+    private let pendingTakes: PendingTakes
+    /// Where recovered take text lands (default: the clipboard; injected in tests).
+    /// The app the take was dictated into is gone by recovery time, so it copies
+    /// rather than pasting — same landing as every other no-target path.
+    public var clipboardSink: (String) -> Void = { text in
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(text, forType: .string)
+    }
+    /// True when something is already on the clipboard — a recovered take won't
+    /// clobber it; the text still lands in History. Injected in tests.
+    public var clipboardOccupied: () -> Bool = {
+        NSPasteboard.general.string(forType: .string) != nil
+    }
 
     // MARK: Internals
 
@@ -120,7 +137,8 @@ public final class DictationController: ObservableObject {
         sounds: SoundPlaying,
         settings: AppSettings,
         history: HistoryStore,
-        recordings: RecordingArchive
+        recordings: RecordingArchive,
+        pendingTakes: PendingTakes = PendingTakes()
     ) {
         self.transcriber = transcriber
         self.recorder = recorder
@@ -132,6 +150,7 @@ public final class DictationController: ObservableObject {
         self.settings = settings
         self.history = history
         self.recordings = recordings
+        self.pendingTakes = pendingTakes
 
         self.hotkey.onEvent = { [weak self] event in
             self?.handle(event)
@@ -497,6 +516,18 @@ public final class DictationController: ObservableObject {
         pendingTranscriptions += 1
         recomputeState()
 
+        // The take's audio goes to pending/ now so a crash mid-transcription
+        // loses nothing: recovered (transcribed -> clipboard + history) at the
+        // next launch. Deleted as soon as the take lands — "keep recordings"
+        // never applies to it. Ordered on persistQueue against the later remove.
+        let pendingFile = pendingTakes.fileURL(
+            takeID: "clip-\(id)-\(UUID().uuidString.lowercased().prefix(8))")
+        let pendingTakes = self.pendingTakes
+        persistQueue.async {
+            do { try pendingTakes.save(samples: samples, to: pendingFile) }
+            catch { self.logger.error("pending save failed: \(error.localizedDescription, privacy: .public)") }
+        }
+
         let transcription = Task { [weak self] () -> Result<(String, Int), Error> in
             guard let self else { return .failure(CancellationError()) }
             // Esc between enqueue and task start: don't spend a decode on a dead clip.
@@ -516,7 +547,7 @@ public final class DictationController: ObservableObject {
             guard let self else { return }
             await self.process(id: id, result: result, samples: samples, chunks: chunks.map(\.texts.count),
                                target: target, duration: duration, startedAt: startedAt,
-                               releasedAt: releasedAt, stopMs: stopMs)
+                               releasedAt: releasedAt, stopMs: stopMs, pendingFile: pendingFile)
             self.pendingTranscriptions -= 1
             self.recomputeState()
         }
@@ -524,7 +555,11 @@ public final class DictationController: ObservableObject {
 
     private func process(id: Int, result: Result<(String, Int), Error>, samples: [Float], chunks: Int?,
                          target: PasteTarget, duration: TimeInterval, startedAt: Date,
-                         releasedAt: DispatchTime, stopMs: Int) async {
+                         releasedAt: DispatchTime, stopMs: Int, pendingFile: URL) async {
+        // However the take ends — pasted, copied, cancelled, filtered, or
+        // failed — it is finished here, so its pending file goes away.
+        let pendingTakes = self.pendingTakes
+        defer { persistQueue.async { pendingTakes.remove(pendingFile) } }
         let transcribedAt = DispatchTime.now()
         let raw: String, transcribeMs: Int
         switch result {
@@ -607,6 +642,66 @@ public final class DictationController: ObservableObject {
     /// Blocks until queued history/WAV writes are on disk (app termination, tests).
     public func flushPersistence() {
         persistQueue.sync {}
+    }
+
+    // MARK: - Crash recovery
+
+    /// Status text when a leftover take was recovered onto the clipboard.
+    public static let recoveryCopiedMessage =
+        "Recovered a take the app lost — text copied, press ⌘V to paste"
+    /// Status text when the clipboard already held something (take kept in History).
+    public static let recoverySavedMessage =
+        "Recovered a take the app lost — find it in History"
+
+    /// Any WAV still in `pending/` is a take that never finished — a crash or
+    /// force-quit lost it mid-transcription. Each one is decoded, cleaned,
+    /// kept in history, and copied to the clipboard (the app it was dictated
+    /// into is unknown now, so it never pastes). The file is always deleted
+    /// afterwards: it was never a kept recording, just a take in flight.
+    /// Runs once at launch from AppDelegate; a no-op when the dir is empty.
+    public func recoverPendingTakes() async {
+        let leftovers = pendingTakes.list()
+        guard !leftovers.isEmpty else { return }
+        logger.notice("Recovering \(leftovers.count) unfinished take(s)")
+        var recovered = 0, copied = false
+        for url in leftovers {
+            defer { pendingTakes.remove(url) }
+            guard let samples = pendingTakes.load(url), !samples.isEmpty else {
+                logger.error("pending take unreadable: \(url.lastPathComponent, privacy: .public)")
+                continue
+            }
+            let raw: String
+            do {
+                if !prepareStarted { prepareStarted = true; try await transcriber.prepare() }
+                raw = try await transcribe(samples, chunks: nil)
+            } catch {
+                logger.error("pending take transcribe failed: \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+            let cleaned = cleaner.clean(raw)
+            guard !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let entry = HistoryEntry(
+                id: UUID().uuidString,
+                date: pendingTakes.fileDate(url),
+                durationSec: Double(samples.count) / Double(sampleRate),
+                raw: raw,
+                cleaned: cleaned,
+                latencyMs: 0
+            )
+            lastResult = entry
+            persist(entry, samples: settings.keepRecordings ? samples : nil)
+            // Many takes, one clipboard: each recovered take overwrites it, so
+            // ⌘V lands the most recent one — and only when the clipboard isn't
+            // already holding the user's own copy.
+            if !clipboardOccupied() {
+                clipboardSink(cleaned)
+                copied = true
+            }
+            recovered += 1
+        }
+        guard recovered > 0 else { return }
+        statusMessage = copied ? Self.recoveryCopiedMessage : Self.recoverySavedMessage
+        if settings.sounds { sounds.playError() }
     }
 
     private static func ms(since start: DispatchTime) -> Int {
