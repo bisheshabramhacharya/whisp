@@ -177,6 +177,100 @@ expect(SpeechSegmenter.join(["Hello", "", "Bishesha said hi."]), "Hello Bishesha
 expect(SpeechSegmenter.join(["It stops.", "changing words."]), "It stops changing words.", "seam period dropped")
 expect(SpeechSegmenter.join(["Meet at 5 p.m.", "tomorrow."]), "Meet at 5 p.m. tomorrow.", "abbreviation kept")
 
+// MARK: - Piecewise engine ("split") leftovers
+
+// The piece window is the largest loaded window at most a third of the 15 s
+// stock encoder — genuinely short, so two pieces beat one stock pass. A
+// half-stock window is not a piece candidate (two of its passes cost more
+// than one stock pass), and with no short bundle the engine is a no-op.
+let window5 = 5 * 16_000, window10 = 10 * 16_000
+expect(ShortWindowEngine.piecewiseLimit(windows: [window15, window5]).description, window5.description,
+       "piece window is the 5 s bundle")
+expect(ShortWindowEngine.piecewiseLimit(windows: [window15]).description, window15.description,
+       "no short bundle: stock limit, same as `short`")
+expect(ShortWindowEngine.piecewiseLimit(windows: []).description, window15.description,
+       "empty cache: stock limit")
+expect(ShortWindowEngine.piecewiseLimit(windows: [window15, window10]).description, window15.description,
+       "a 10 s bundle alone is not a piece window")
+expect(ShortWindowEngine.piecewiseLimit(windows: [window15, window10, window5]).description, window5.description,
+       "a 10 s bundle doesn't displace the 5 s piece window")
+
+// Which leftovers get split: the engine splits only when the input lands in
+// the piecewise band and no non-stock window already fits. `splitTwo` is the
+// piece producer: two pieces ≤ maxSamples sharing `overlap` of audio.
+let overlap = 8_000
+expect(SpeechSegmenter.splitTwo(tone(5.0), maxSamples: window5, overlap: overlap).count.description, "1",
+       "input at the piece window stays whole")
+expect(SpeechSegmenter.splitTwo(tone(12), maxSamples: window5, overlap: overlap).count.description, "1",
+       "input past the band stays whole")
+let bandPieces = SpeechSegmenter.splitTwo(tone(8), maxSamples: window5, overlap: overlap)
+expect(bandPieces.count.description, "2", "leftover in the band splits in two")
+expect(bandPieces.allSatisfy { $0.count <= window5 } ? "fits" : "\(bandPieces.map(\.count))", "fits",
+       "both pieces fit the 5 s window")
+
+// Nothing dropped at the cut: the first piece is a prefix of the input, the
+// second a suffix, and the overlap covers the cut from both sides.
+let full8 = tone(8)
+expect(bandPieces[0] == Array(full8.prefix(bandPieces[0].count)) ? "prefix" : "mismatch", "prefix",
+       "first piece is the input's prefix")
+expect(bandPieces[1] == Array(full8.suffix(bandPieces[1].count)) ? "suffix" : "mismatch", "suffix",
+       "second piece is the input's suffix")
+expect(bandPieces[0].count + bandPieces[1].count - overlap >= full8.count ? "covers" : "gap", "covers",
+       "pieces overlap the cut — no samples skipped")
+
+// Where it splits: the cut sits in the range leaving both pieces ≤ max, and
+// prefers a quiet 100 ms, so a real pause wins.
+let pauseBand = SpeechSegmenter.splitTwo(
+    tone(4.7) + silence(0.6) + tone(4.2), maxSamples: window5, overlap: 3_200)
+expect(pauseBand.count == 2 && abs(pauseBand[0].count - 76_800) <= 8_000
+       ? "in pause" : "at \(pauseBand[0].count)", "in pause",
+       "cut lands in the quiet gap, not mid-word")
+
+// A run of quiet frames is a word gap; a shorter dip is inside a word. When
+// only mid-word dips exist the tail reaches back a full word instead, and a
+// leftover too long for that big a tail stays whole (the stock window takes
+// it) rather than produce a piece that doesn't fit.
+let dipBand = SpeechSegmenter.splitTwo(
+    tone(4) + silence(0.05) + tone(0.5) + silence(0.4) + tone(3.5),
+    maxSamples: window5, overlap: overlap)
+expect(dipBand.count == 2 && dipBand[0].count >= 70_400 && dipBand[0].count <= 80_000
+       ? "in pause" : "at \(dipBand.first?.count ?? -1)", "in pause",
+       "a real pause beats a shorter dip for the cut")
+expect(SpeechSegmenter.splitTwo(tone(9.2), maxSamples: window5, overlap: overlap).count.description, "1",
+       "unbroken leftover too long for a word-covering tail stays whole")
+
+// Merging overlapped pieces: the words inside the overlap are decoded twice —
+// drop the tail's copies; a truncated side yields to the complete word.
+expect(SpeechSegmenter.joinOverlap(
+    "reschedule the dentist appointment.", "Appointment that was supposed"),
+       "reschedule the dentist appointment that was supposed",
+       "word spanning the cut is not duplicated")
+expect(SpeechSegmenter.joinOverlap(
+    "reschedule the dentist appointment.", "Dentist appointment that was"),
+       "reschedule the dentist appointment that was",
+       "a run of overlap words is dropped together")
+expect(SpeechSegmenter.joinOverlap(
+    "whether the inv", "the invoice from the office"),
+       "whether the invoice from the office",
+       "truncated head word yields to the complete tail word")
+expect(SpeechSegmenter.joinOverlap(
+    "and ab", "and about a cup"),
+       "and about a cup",
+       "a mid-run head fragment yields to the tail's word")
+expect(SpeechSegmenter.joinOverlap(
+    "reschedule the appointment.", "ment that was"),
+       "reschedule the appointment that was",
+       "tail fragment of a completed word is dropped")
+expect(SpeechSegmenter.joinOverlap(
+    "wondering about the", "theory of it"),
+       "wondering about the theory of it",
+       "a real short word is never dropped as a fragment")
+
+// The engine name resolves.
+expect(ASREngine.knownNames.contains("split") ? "known" : "missing", "known", "'split' is a known engine")
+expect(String(describing: type(of: ASREngine.make(named: "split"))), "ShortWindowEngine",
+       "'split' builds a ShortWindowEngine")
+
 // MARK: - SpeechSegmenter.finish
 
 /// Counts model calls; returns a fixed string per call.

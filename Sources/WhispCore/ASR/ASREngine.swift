@@ -12,7 +12,7 @@ public enum ASREngine {
     public static let defaultName = "short"
 
     /// Every name `make(named:)` accepts. Kept in sync with the switch.
-    public static let knownNames: [String] = ["short", "parakeet", "streaming", "par2"]
+    public static let knownNames: [String] = ["short", "split", "parakeet", "streaming", "par2"]
 
     public static func isKnown(_ name: String) -> Bool {
         knownNames.contains(name)
@@ -30,6 +30,11 @@ public enum ASREngine {
         // last word in ~5% of releases (vs ~1% offline).
         case "streaming":
             return StreamingEngine()
+        // "split": leftovers past the largest short encoder window decode as
+        // <=5 s pieces on it instead of one 15 s pass. Opt-in; identical to
+        // "short" until a short-window bundle is installed.
+        case "split":
+            return ShortWindowEngine(piecewise: true)
         // "par2": second decode lane for mid-chunk releases (waits max(rem,tail)
         // instead of rem+tail). Costs ~600 MB for the extra model set — opt-in.
         case "par2":
