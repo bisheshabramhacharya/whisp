@@ -54,6 +54,8 @@ it's free, it's open source, and your voice never leaves your Mac.
 | **Internet** | Only once, to download the speech model |
 | **Language** | English |
 
+**On Windows?** There's a Windows version too: see [windows/README.md](windows/README.md).
+
 ## Install
 
 **1. Open Terminal.** Press ⌘Space, type *Terminal*, press Return.
