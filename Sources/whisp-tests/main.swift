@@ -291,6 +291,56 @@ do {
     expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4), (.escape, 3)]),
            "start cancel start handsFree cancel", "Esc cancels hands-free")
     expect(run([(.keyDown, 0), (.keyUp, 1), (.escape, 1.1)]), "start stop cancel", "Esc after release reaches the controller")
+    // A release injected by the missed-key-up watchdog is just a .keyUp — it
+    // finishes a hold like a real one, and can never do anything in hands-free.
+    expect(run([(.keyDown, 0), (.keyUp, 0.1), (.keyDown, 0.3), (.keyUp, 0.4), (.keyUp, 5)]),
+           "start cancel start handsFree -", "a stray key-up in hands-free produces nothing")
+}
+
+// keyExpectedDown gates the watchdog: armed exactly while a hold physically
+// holds the key — never in hands-free, where the key is up by definition.
+do {
+    var m = HotkeyStateMachine()
+    func down(_ input: HotkeyStateMachine.Input, now: Double) -> String {
+        _ = m.handle(input, now: now)
+        return m.keyExpectedDown ? "armed" : "safe"
+    }
+    expect(down(.keyDown, now: 0), "armed", "watchdog arms on hold")
+    expect(down(.keyUp, now: 1), "safe", "watchdog disarms on release")
+    expect(down(.keyDown, now: 1.2), "armed", "tap start arms")
+    expect(down(.keyUp, now: 1.3), "safe", "tap end disarms")
+    expect(down(.keyDown, now: 1.6), "armed", "second hold arms")
+    expect(down(.keyUp, now: 1.7), "safe", "hands-free never arms the watchdog")
+    expect(down(.keyDown, now: 3), "safe", "hands-free ending press doesn't arm")
+    expect(down(.keyUp, now: 3.1), "safe", "swallowed release stays unarmed")
+}
+
+// MARK: - KeyUpWatchdog
+
+// While armed, a key that is physically up means the real key-up was lost:
+// fire one synthetic release and disarm. Never polls unarmed.
+do {
+    var physical = true
+    var releases = 0
+    let watchdog = KeyUpWatchdog(isKeyDown: { physical })
+    watchdog.onMissedRelease = { releases += 1 }
+    watchdog.checkNow()
+    expect(releases.description, "0", "unarmed watchdog never polls")
+    watchdog.arm()
+    expect((watchdog.armed && releases == 0).description, "true", "held key keeps it armed")
+    watchdog.checkNow()
+    expect(releases.description, "0", "still held: nothing fires")
+    physical = false
+    watchdog.checkNow()
+    expect((!watchdog.armed && releases == 1).description, "true", "physically up fires one release")
+    watchdog.checkNow()
+    expect(releases.description, "1", "missed release fires once")
+    physical = true
+    watchdog.arm()
+    watchdog.disarm()
+    physical = false
+    watchdog.checkNow()
+    expect(releases.description, "1", "disarmed watchdog is inert")
 }
 
 // MARK: - DictationController pipeline (fakes)
