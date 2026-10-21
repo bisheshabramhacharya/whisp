@@ -81,10 +81,7 @@ public final class Paster: TextPasting {
 
         let pasteboard = NSPasteboard.general
         if let pid = target.pid, NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
-            pendingRestore?.work.cancel()
-            pendingRestore = nil
-            pasteboard.clearContents()
-            pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
+            writeToClipboard(text)
             return .copiedAppChanged
         }
 
@@ -142,6 +139,21 @@ public final class Paster: TextPasting {
         pendingRestore = (snapshot, expectedChangeCount, work)
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay, execute: work)
         return .pasted
+    }
+
+    public func copy(_ text: String) -> PasteResult {
+        writeToClipboard(text)
+        return .copiedSessionInterrupt
+    }
+
+    /// Leaves the trimmed text on the clipboard for the user's own Cmd+V:
+    /// any pending restore is cancelled so the old clipboard can't clobber it.
+    private func writeToClipboard(_ text: String) {
+        pendingRestore?.work.cancel()
+        pendingRestore = nil
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text.trimmingCharacters(in: .whitespaces), forType: .string)
     }
 
     /// Dictation is appended to a word/sentence (so needs a separating space) unless the

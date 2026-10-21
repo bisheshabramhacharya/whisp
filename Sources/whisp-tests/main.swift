@@ -307,8 +307,10 @@ final class FakeRecorder: AudioRecording {
 }
 final class FakeHotkey: HotkeyMonitoring {
     var onEvent: ((HotkeyEvent) -> Void)?
+    var resets = 0
     func start() throws {}
     func stop() {}
+    func reset() { resets += 1 }
 }
 /// Returns "clip <seconds>" after a delay that is longer for longer clips' ids given.
 final class SlowTranscriber: Transcribing {
@@ -324,11 +326,17 @@ final class SlowTranscriber: Transcribing {
 }
 @MainActor final class FakePaster: TextPasting {
     var pasted: [String] = []
+    var copied: [String] = []
     var result = PasteResult.pasted
+    var copyResult = PasteResult.copiedSessionInterrupt
     func target() -> PasteTarget { PasteTarget(pid: 1, precedingCharacter: Task { nil }) }
     func paste(_ text: String, into target: PasteTarget) async -> PasteResult {
         if result == .pasted { pasted.append(text) }
         return result
+    }
+    func copy(_ text: String) -> PasteResult {
+        if copyResult == .copiedSessionInterrupt { copied.append(text) }
+        return copyResult
     }
 }
 final class NoMuter: AudioMuting { func mute() {}; func restore() {} }
@@ -452,6 +460,80 @@ func pipelineTests() async {
     expect(paster.pasted.description, "[\"Clip 1.\"]", "next take still pastes")
 }
 await pipelineTests()
+
+// MARK: - Session interrupt (sleep/lock/user-switch)
+
+// The Mac sleeping, locking, or switching users mid-take: capture stops like a
+// key-up, the take still transcribes and lands in history — but it copies to
+// the clipboard instead of pasting (the target session is gone), and the
+// held-key state is reset so a key still down can't look stuck.
+@MainActor
+func sessionInterruptTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-susp-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    settings.keepRecordings = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    try! controller.startHotkey()
+
+    func dictate(seconds: Double) {
+        recorder.next = [Float](repeating: 0.1, count: Int(seconds * 16_000))
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.stop)
+    }
+    func settle() async {
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+
+    // Baseline: a normal take pastes.
+    dictate(seconds: 1)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 1.\"]", "baseline take pastes")
+
+    // Suspended while recording: the take transcribes, copies, and says why.
+    recorder.next = [Float](repeating: 0.1, count: 32_000)
+    hotkey.onEvent?(.start)
+    controller.systemSuspending()
+    await settle()
+    expect(paster.copied.description, "[\"Clip 2.\"]", "suspended take copies, not pastes")
+    expect(paster.pasted.description, "[\"Clip 1.\"]", "nothing pasted during suspension")
+    expect(hotkey.resets.description, "1", "held-key state reset on suspend")
+    expect((controller.statusMessage?.contains("slept or locked") ?? false).description, "true",
+           "suspension tells the user to paste")
+
+    // Suspended with two takes still transcribing: both copy.
+    dictate(seconds: 1)
+    dictate(seconds: 2)
+    controller.systemSuspending()
+    await settle()
+    expect(paster.copied.description, "[\"Clip 2.\", \"Clip 1.\", \"Clip 2.\"]",
+           "every queued take copies")
+    expect(hotkey.resets.description, "2", "second suspend resets again")
+
+    // After waking, the next take pastes normally again.
+    dictate(seconds: 3)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 1.\", \"Clip 3.\"]", "post-suspension take pastes")
+
+    // Suspending while idle resets the key state but touches nothing else.
+    controller.systemSuspending()
+    expect(hotkey.resets.description, "3", "idle suspend still resets")
+    expect(paster.copied.description, "[\"Clip 2.\", \"Clip 1.\", \"Clip 2.\"]",
+           "idle suspend copies nothing")
+
+    // Copied takes are still in history.
+    controller.flushPersistence()
+    let saved = history.loadLast(10).map(\.cleaned)
+    expect(saved.count.description, "5", "copied takes still land in history")
+}
+await sessionInterruptTests()
 
 // MARK: - Lead storage
 
@@ -725,6 +807,17 @@ func pasterTests() async {
     _ = await paster.paste("more words", into: t2)
     try? await Task.sleep(nanoseconds: 450_000_000)
     expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
+
+    // copy() (the sleep/lock/user-switch path): the text lands on the
+    // clipboard for the user's own Cmd+V and nothing restores over it.
+    board.clearContents()
+    board.setString(marker, forType: .string)
+    let copyOutcome = paster.copy(" wake words ")
+    expect(copyOutcome == .copiedSessionInterrupt ? "copied" : "\(copyOutcome)", "copied",
+           "session-interrupt copy returns the copied result")
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    expect(board.string(forType: .string) ?? "?", "wake words",
+           "copy leaves trimmed text on the clipboard")
 }
 // Opt-in: it overwrites the real clipboard and posts a real ⌘V into the frontmost app.
 if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
