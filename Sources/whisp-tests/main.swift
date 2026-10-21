@@ -453,6 +453,117 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - Crash mid-transcription
+
+// A take in flight has its audio in pending/ — deleted when it lands. A file
+// left at launch means a crash took the process down mid-transcription:
+// recoverPendingTakes() decodes it, keeps it in history, copies the text
+// (its target app is long gone), and always deletes the file.
+@MainActor
+func crashRecoveryTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-crash-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let pendDir = dir.appendingPathComponent("pending")
+    let pendTakes = PendingTakes(directory: pendDir)
+
+    // WAV round-trip: what save writes is what load decodes.
+    let samples: [Float] = [0, 0.5, -0.5, 1, -1]
+    let wavURL = pendTakes.fileURL(takeID: "t-1")
+    try! pendTakes.save(samples: samples, to: wavURL)
+    expect(pendTakes.list().count.description, "1", "pending file listed")
+    let loaded = pendTakes.load(wavURL)!
+    expect((loaded.count == samples.count && abs(loaded[1] - 0.5) < 0.001).description,
+           "true", "pending WAV decodes to the same samples")
+    let junk = pendDir.appendingPathComponent("junk.wav")
+    try! "not a wav".write(to: junk, atomically: true, encoding: .utf8)
+    expect((pendTakes.load(junk) == nil).description, "true", "corrupt pending file reads nil")
+    pendTakes.remove(wavURL)
+    pendTakes.remove(junk)
+    expect(pendTakes.list().count.description, "0", "round-trip cleaned up")
+
+    // In-flight lifecycle: a normal take writes pending/ then deletes it.
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    settings.keepRecordings = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")),
+        pendingTakes: pendTakes)
+    var copied: [String] = []
+    controller.clipboardSink = { copied.append($0) }
+    controller.clipboardOccupied = { false }
+    try! controller.startHotkey()
+    func settle() async {
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+    recorder.next = [Float](repeating: 0.1, count: 32_000)
+    // While the transcription is still in flight the take's WAV sits in pending/.
+    transcriber.delays[2] = 400_000_000
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.stop)
+    controller.flushPersistence()
+    expect(pendTakes.list().count.description, "1", "in-flight take has a pending WAV")
+    await settle()
+    controller.flushPersistence()
+    expect(pendTakes.list().count.description, "0", "finished take deletes its pending WAV")
+
+    // A cancelled take finishes too — its pending file is removed, not recovered.
+    recorder.next = [Float](repeating: 0.1, count: 32_000)
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.stop)
+    hotkey.onEvent?(.cancel)
+    await settle()
+    controller.flushPersistence()
+    expect(pendTakes.list().count.description, "0", "cancelled take deletes its pending WAV")
+
+    // Crash leftovers: two takes plus a corrupt file — both recover, in order;
+    // only the first lands on the clipboard; every file is gone after.
+    try! pendTakes.save(samples: [Float](repeating: 0.1, count: 32_000),
+                        to: pendTakes.fileURL(takeID: "clip-1-aaaa"))
+    try! await Task.sleep(nanoseconds: 20_000_000)
+    try! pendTakes.save(samples: [Float](repeating: 0.1, count: 48_000),
+                        to: pendTakes.fileURL(takeID: "clip-2-bbbb"))
+    try! "garbage".write(to: pendDir.appendingPathComponent("clip-3-bad.wav"),
+                         atomically: true, encoding: .utf8)
+    await controller.recoverPendingTakes()
+    controller.flushPersistence()
+    expect(pendTakes.list().count.description, "0", "all pending files consumed")
+    expect(copied.description, "[\"Clip 2.\", \"Clip 3.\"]", "recovered takes land on the clipboard in order")
+    // loadLast returns newest-first.
+    expect(history.loadLast(10).map(\.cleaned).description,
+           "[\"Clip 3.\", \"Clip 2.\", \"Clip 2.\"]", "both recovered takes land in history in order")
+    expect((controller.statusMessage?.contains("Recovered") ?? false).description, "true",
+           "menu says a take was recovered")
+
+    // Clipboard already holding user content: recovered text stays in History only.
+    copied = []
+    controller.clipboardOccupied = { true }
+    try! pendTakes.save(samples: [Float](repeating: 0.1, count: 16_000),
+                        to: pendTakes.fileURL(takeID: "clip-4-cccc"))
+    await controller.recoverPendingTakes()
+    controller.flushPersistence()
+    expect(copied.description, "[]", "occupied clipboard is not clobbered")
+    expect(history.loadLast(1).first?.cleaned ?? "?", "Clip 1.", "take still lands in history")
+    expect((controller.statusMessage?.contains("History") ?? false).description, "true",
+           "menu points at History instead")
+
+    // An empty transcript leftover is deleted without touching anything.
+    transcriber.text = ""
+    try! pendTakes.save(samples: [Float](repeating: 0.1, count: 16_000),
+                        to: pendTakes.fileURL(takeID: "clip-5-dddd"))
+    let before = history.loadLast(10).count
+    await controller.recoverPendingTakes()
+    controller.flushPersistence()
+    expect(pendTakes.list().count.description, "0", "empty leftover deleted")
+    expect(history.loadLast(10).count.description, before.description, "empty take adds no history")
+    expect(copied.description, "[]", "empty take copies nothing")
+}
+await crashRecoveryTests()
+
 // MARK: - Lead storage
 
 // Dictation data is private: the data dir and every file in it must be

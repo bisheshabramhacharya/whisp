@@ -36,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Warm the model in the background — first launch may download it.
         services.controller.prepareModel()
+        // Takes a previous crash left mid-transcription: decode, keep in
+        // history, copy to the clipboard. No-op when pending/ is empty.
+        Task { await services.controller.recoverPendingTakes() }
 
         // Start dictation only after all three permissions are available.
         if allPermissionsGranted {
