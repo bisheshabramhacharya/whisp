@@ -36,6 +36,11 @@ public struct ReleaseOutcome: Sendable {
     public let lastWordSurvived: Bool
     /// True when speculation covered the tail (no decode needed at release).
     public let speculationHit: Bool
+    /// Audio after the last committed chunk the release had to cover: the
+    /// span `finish()` decoded (including a rewound chunk), or the pending
+    /// span a speculation hit or near-silent reuse covered without decoding.
+    /// For `LiveDecoding` engines it is the whole captured take.
+    public let leftoverSamples: Int
 }
 
 public struct ReplayReport: Sendable {
@@ -271,7 +276,7 @@ public struct ReleaseReplayer {
             outcomes.append(ReleaseOutcome(
                 offsetMs: offset, waitMs: wait, text: text,
                 lastWordSurvived: Self.lastWordSurvives(releaseText: text, fullText: fullText),
-                speculationHit: false))
+                speculationHit: false, leftoverSamples: captured))
         }
         // Feed busy% = total time spent inside feed() across all simulated
         // releases vs the audio they covered — the live-path CPU tax.
@@ -322,6 +327,7 @@ public struct ReleaseReplayer {
         var speculationHit = false
         var text = ""
         var wait = inFlightRemainder
+        var leftover = clipped.count - committed
         if let spec = speculation,
             SpeechSegmenter.quietAfter(Array(clipped), start: committed, end: spec.end) {
             // Reuse pause speculation; a speculation still in flight is waited on.
@@ -341,6 +347,7 @@ public struct ReleaseReplayer {
                     tailStart = last
                 }
             }
+            leftover = clipped.count - tailStart
             if text.isEmpty {
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 let tailText = tailStart < clipped.count
@@ -354,7 +361,7 @@ public struct ReleaseReplayer {
         return ReleaseOutcome(
             offsetMs: offsetMs, waitMs: wait, text: text,
             lastWordSurvived: Self.lastWordSurvives(releaseText: text, fullText: fullText),
-            speculationHit: speculationHit)
+            speculationHit: speculationHit, leftoverSamples: leftover)
     }
 
     /// The last word of the full transcript survives when it (or its prefix,
@@ -410,6 +417,57 @@ public struct ReplayAggregate {
                 format: "  +%4d ms: wait p50 %5.0f  p95 %5.0f  mean %5.0f | no-wait %4.0f%% | spec-hit %4.0f%% | last-word ok %5.1f%% | words vs whole clip %d/%d differ (%d releases)",
                 offset, Self.pct(waits, 0.5), Self.pct(waits, 0.95), mean, noWait, spec, survived,
                 wd.diffs, wd.words, o.count))
+        }
+        return out
+    }
+
+    /// Leftover-length buckets: <5 s / 5–10 s / 10–15 s / >15 s of audio the
+    /// release still had to cover. This is where long waits come from — a
+    /// leftover past the shortest loaded window pays the 15 s encoder.
+    static let leftoverBuckets: [(label: String, lo: Int, hi: Int)] = [
+        ("<5 s", 0, 5 * 16_000),
+        ("5–10 s", 5 * 16_000, 10 * 16_000),
+        ("10–15 s", 10 * 16_000, 15 * 16_000),
+        (">15 s", 15 * 16_000, Int.max),
+    ]
+
+    /// Per-bucket table for one outcome set: release share, wait p50/p95,
+    /// speculation-hit share, last-word survival.
+    static func bucketTable(_ outcomes: [ReleaseOutcome]) -> [String] {
+        var out: [String] = []
+        let total = outcomes.count
+        for b in leftoverBuckets {
+            let label = b.label.padding(toLength: 7, withPad: " ", startingAt: 0)
+            let inBucket = outcomes.filter { $0.leftoverSamples >= b.lo && $0.leftoverSamples < b.hi }
+            guard !inBucket.isEmpty else {
+                out.append(String(format: "  %@ %5d %5.0f%% %8@ %8@ %8@ %8@",
+                                  label, 0, 0.0, "-", "-", "-", "-"))
+                continue
+            }
+            let waits = inBucket.map(\.waitMs).sorted()
+            let share = Double(inBucket.count) / Double(total) * 100
+            let spec = Double(inBucket.filter(\.speculationHit).count) / Double(inBucket.count) * 100
+            let survived = Double(inBucket.filter(\.lastWordSurvived).count) / Double(inBucket.count) * 100
+            out.append(String(format:
+                "  %@ %5d %5.1f%% %8.0f %8.0f %7.0f%% %8.1f%%",
+                label, inBucket.count, share, pct(waits, 0.5), pct(waits, 0.95), spec, survived))
+        }
+        return out
+    }
+
+    /// Bucket table over all simulated releases, then over just the +0 ms
+    /// offset (the common real-world release).
+    public func bucketLines() -> [String] {
+        let all = perOffset.sorted { $0.key < $1.key }.flatMap(\.value)
+        var out = [String(format:
+            "Leftover-length buckets over %d releases (all offsets):", all.count),
+            "  bucket   count  share  wait p50  wait p95  spec-hit  last-word"]
+        out += Self.bucketTable(all)
+        if let atZero = perOffset[0], !atZero.isEmpty {
+            out.append(String(format:
+                "Leftover-length buckets over %d releases at +0 ms:", atZero.count))
+            out.append("  bucket   count  share  wait p50  wait p95  spec-hit  last-word")
+            out += Self.bucketTable(atZero)
         }
         return out
     }
