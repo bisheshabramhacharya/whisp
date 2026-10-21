@@ -784,6 +784,32 @@ checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
             .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
 
+// Hostile learning: wrong fixes the owner didn't mean.
+// An edit that looks like app autocorrect is indistinguishable from a user fix —
+// junk sources learn instantly, so a bad "Pychy -> Pitchy" lands in one edit.
+checkLearn("Open Pychy now.", "Open Pitchy now.",
+           [.replacement(from: "Pychy", to: "Pitchy")],
+           "autocorrect-looking junk fix learns right away")
+// Two adjacent changed words merge into one diff block; a stoplisted word in
+// the block kills the whole substitution, so the junk fix is lost too —
+// protective, but it means an autocorrect run touching "Pychy now" teaches zero.
+checkLearn("Open Pychy now.", "Open Pitchy Now.", [],
+           "merged block with a stoplist word learns nothing")
+// The same two fixes in separate sentence blocks each learn on their own.
+checkLearn("Open Pychy now. Meet tuesday.", "Open Pitchy now. Meet Tuesday.",
+           [.replacement(from: "Pychy", to: "Pitchy"),
+            .pending(from: "tuesday", to: "Tuesday", kind: .term)],
+           "two fixes in separate blocks both learn")
+// Three real fixes in one take: the per-paste cap learns only the first two.
+checkLearn("I use the soul model. Open Pychy now. We sell on vinted.",
+           "I use the Sol model. Open Pitchy now. We sell on Vinted.",
+           [.pending(from: "soul", to: "Sol", kind: .replacement),
+            .replacement(from: "Pychy", to: "Pitchy")],
+           "third fix in a take is dropped by the 2-fix cap")
+// A rewrite of most of the take teaches nothing (same guard, smaller take).
+checkLearn("We sell on vinted today.", "Ship it tomorrow instead.", [],
+           "rewrite of the whole take learns nothing")
+
 // Long takes: one fix in the middle of ~3000 words learns just that fix, and
 // the diff stays cheap because only the changed middle is compared.
 do {
@@ -973,7 +999,73 @@ do {
     }
 }
 
-// MARK: - Model download
+// Hostile sentences from the backlog: each case pins what the cleaner does
+// today. Rows marked DOCUMENTED are current behavior kept on purpose —
+// they're listed as open questions in the PR.
+do {
+    let hostile: [(String, String)] = [
+        // Fillers hiding inside real words — never removed
+        ("The umbrella is red.", "The umbrella is red."),
+        ("Uhura gave the order.", "Uhura gave the order."),
+        ("I likely agree.", "I likely agree."),
+        ("It's, likely, true.", "It's, likely, true."),
+        ("Um-huh, that's right.", "Um-huh, that's right."),
+        ("The likelihood is high.", "The likelihood is high."),
+        ("Sum the values.", "Sum the values."),
+        // Numbers — words are never rewritten to digits, non-clock decimals stay
+        ("two hundred and twenty two.", "two hundred and twenty two."),
+        ("Pi is about 3.14.", "Pi is about 3.14."),
+        ("Room 5.30 is free.", "Room 5.30 is free."),
+        ("Meet at 13.30.", "Meet at 13.30."),
+        ("Call at 0.30 PM.", "Call at 0.30 PM."),
+        // Money — units guard keeps bare decimals alone
+        ("I owe you 5.30 bucks.", "I owe you 5.30 bucks."),
+        ("About 5.30 dollars today.", "About 5.30 dollars today."),
+        ("It costs around 5.30 dollars.", "It costs around 5.30 dollars."),
+        // DOCUMENTED (ambiguous): bare "at X.YZ" converts even when the user
+        // meant a price or a ratio — the trigger word can't tell them apart.
+        ("The total is at 5.30.", "The total is at 5:30."),
+        ("The ratio is at 3.14.", "The ratio is at 3:14."),
+        ("It costs around 5.30.", "It costs around 5:30."),
+        // DOCUMENTED: "half past" isn't a trigger word, so this stays dotted.
+        ("The train left half past 5.30.", "The train left half past 5.30."),
+        // Clock times that convert
+        ("It starts at 5.30.", "It starts at 5:30."),
+        ("5.30pm works.", "5:30pm works."),
+        ("by 5.30 or so.", "by 5:30 or so."),
+        // End-of-take punctuation
+        ("Really um?", "Really?"),
+        ("Um um um.", ""),
+        ("Wait, um...", "Wait..."),
+        ("It was, like.", "It was."),
+        ("I guess, you know?", "I guess?"),
+        // Sentence-initial filler stripped: first word capitalizes as a take
+        // start — right at a line start, debatable pasted mid-sentence.
+        ("um, then we should go.", "Then we should go."),
+        ("the rest of the sentence.", "the rest of the sentence."),
+        // Abbreviation + comma ("e.g.,") is not a sentence end: the next word
+        // must not capitalize after a filler is removed.
+        ("For example, e.g., um, this thing.", "For example, e.g., this thing."),
+        // But a quote closing a sentence still counts as its end.
+        ("She said \"go.\" um, he left.", "She said \"go.\" He left."),
+    ]
+    for (input, output) in hostile {
+        expect(cleaner.clean(input), output, "hostile(\"\(input)\")")
+    }
+
+    // Overlapping dictionary rules: longest `from` wins.
+    let overlapDict = PersonalDictionary(terms: [], replacements: [
+        "ChatGPT": ["chat g p t"], "GPT": ["g p t"],
+        "NYC": ["new york"], "York City": ["york city"],
+    ])
+    expect(overlapDict.apply("ask g p t today."), "ask GPT today.", "shorter phrase still matches alone")
+    expect(overlapDict.apply("ask chat g p t today."), "ask ChatGPT today.", "longest match wins")
+    // DOCUMENTED: longest `from` applies first ("york city" beats "new york"),
+    // but "new york" then re-matches inside the replacement's own output
+    // ("new York") — suffix-overlapping rules can both fire on one span.
+    expect(overlapDict.apply("meet in new york city."), "meet in NYC City.",
+           "overlapping phrases: shorter rule re-matches the longer output")
+}
 
 // RemoteBundle.install: checksum first, and the bundle only appears under its
 // final name once fully unpacked.

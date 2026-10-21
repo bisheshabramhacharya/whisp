@@ -251,7 +251,14 @@ private struct Token {
     }
 
     var text: String { leading + core + trailing }
-    var endsSentence: Bool { trailing.contains { ".?!".contains($0) } }
+    /// True only when the trailing punctuation *ends* in .?! — a comma after an
+    /// abbreviation's dot ("e.g.,") is mid-sentence, but a closer after real
+    /// sentence punctuation ("go.\"" or "done.)") still ends it.
+    var endsSentence: Bool {
+        guard let last = trailing.last(where: { !")]}\"'\u{201D}\u{2019}".contains($0) })
+        else { return false }
+        return ".?!".contains(last)
+    }
 
     mutating func capitalizeFirst() {
         guard let f = core.first, f.isLowercase else { return }
