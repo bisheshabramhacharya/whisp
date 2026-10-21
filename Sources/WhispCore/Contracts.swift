@@ -125,6 +125,9 @@ public enum PasteResult: Sendable {
     case pasted
     /// Focus moved to another app while transcribing; the text was left on the clipboard.
     case copiedAppChanged
+    /// Secure Event Input was on at paste time (password fields and similar):
+    /// keystrokes would be swallowed, so the text was left on the clipboard.
+    case copiedSecureInput
 }
 
 /// Inserts text into the frontmost app at the cursor.

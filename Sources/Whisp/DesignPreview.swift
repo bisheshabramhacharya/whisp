@@ -55,7 +55,18 @@ func renderDesignPreviews(to directory: URL) throws {
         pill.mode = .idle
         guard !pill.showsLock && !pill.showsSpinner else { throw NSError(domain: "WhispPreview", code: 4) }
     }
-    print("Rendered \(examples.count) onboarding screens and 4 pill states with visibility checks to \(directory.path)")
+    // Status-menu warning rows — where clipboard-fallback outcomes surface.
+    for (name, message) in [
+        ("status-secure-input", DictationController.secureInputMessage),
+    ] {
+        let row = NSTextField(labelWithString: "⚠︎ \(message)")
+        row.font = .menuFont(ofSize: 0)
+        row.textColor = .labelColor
+        row.lineBreakMode = .byTruncatingTail
+        try render(row, size: NSSize(width: 360, height: 22),
+                   to: directory.appendingPathComponent(name + ".png"))
+    }
+    print("Rendered \(examples.count) onboarding screens, 4 pill states, and 1 status message with visibility checks to \(directory.path)")
 }
 
 @MainActor

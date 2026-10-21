@@ -53,6 +53,9 @@ public final class DictationController: ObservableObject {
     @Published public var modelStatus: String = "Model not started"
     /// Last surfaced error/info message, shown in the menu. Not auto-cleared.
     @Published public private(set) var statusMessage: String?
+    /// Status text when Secure Event Input turns a paste into a copy — the
+    /// user pastes it themselves with ⌘V. Shared with the design previews.
+    public static let secureInputMessage = "Secure typing is on — text copied, press ⌘V to paste"
     /// Whether the global hotkey monitor is currently running.
     @Published public private(set) var isHotkeyRunning = false
     @Published public private(set) var isHandsFree = false
@@ -565,6 +568,9 @@ public final class DictationController: ObservableObject {
         let latencyMs = Self.ms(since: releasedAt)
         if outcome == .copiedAppChanged {
             statusMessage = "You switched apps while transcribing — text copied, press ⌘V to paste"
+            if settings.sounds { sounds.playError() }
+        } else if outcome == .copiedSecureInput {
+            statusMessage = Self.secureInputMessage
             if settings.sounds { sounds.playError() }
         }
 

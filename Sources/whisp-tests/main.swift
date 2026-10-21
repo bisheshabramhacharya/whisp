@@ -417,13 +417,22 @@ func pipelineTests() async {
     expect((controller.statusMessage?.contains("switched apps") ?? false).description, "true", "app change reported")
     paster.result = .pasted
 
+    // Secure Event Input on: the take lands on the clipboard, never pasted,
+    // and the user is told to ⌘V it themselves.
+    paster.result = .copiedSecureInput
+    dictate(seconds: 1)
+    await settle()
+    expect((controller.statusMessage?.contains("Secure typing") ?? false).description, "true",
+           "secure input tells the user to paste")
+    paster.result = .pasted
+
     // History and recordings are written off the pipeline, and in order.
     controller.flushPersistence()
     let saved = history.loadLast(10).map(\.cleaned)
-    expect(saved.description, "[\"Clip 1.\", \"Clip 2.\", \"Clip 1.\", \"Clip 3.\", \"Clip 0.\"]",
+    expect(saved.description, "[\"Clip 1.\", \"Clip 1.\", \"Clip 2.\", \"Clip 1.\", \"Clip 3.\", \"Clip 0.\"]",
            "history persisted in order (cancelled clip skipped)")
     let wavs = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("recordings").path)) ?? []
-    expect(wavs.count.description, "5", "one WAV per pasted dictation")
+    expect(wavs.count.description, "6", "one WAV per pasted dictation")
 
     // A3: a take that transcribes to nothing is surfaced, not silent.
     paster.pasted = []
@@ -725,6 +734,20 @@ func pasterTests() async {
     _ = await paster.paste("more words", into: t2)
     try? await Task.sleep(nanoseconds: 450_000_000)
     expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
+
+    // Secure Event Input on: no Cmd+V is posted, the text stays on the
+    // clipboard, and the user's old clipboard is not restored over it.
+    board.clearContents()
+    board.setString(marker, forType: .string)
+    let defaultSecureCheck = paster.secureEventInput
+    paster.secureEventInput = { true }
+    let secureOutcome = await paster.paste("secret words", into: paster.target())
+    paster.secureEventInput = defaultSecureCheck
+    expect(secureOutcome == .copiedSecureInput ? "copied" : "\(secureOutcome)", "copied",
+           "secure input copies instead of pasting")
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    expect(board.string(forType: .string) ?? "?", "secret words",
+           "secure copy stays on the clipboard (no restore)")
 }
 // Opt-in: it overwrites the real clipboard and posts a real ⌘V into the frontmost app.
 if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
