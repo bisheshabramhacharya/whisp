@@ -453,6 +453,52 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - 10-minute cap
+
+// The hard cap ends the take like a key-up: everything said still pastes and
+// the menu says why it stopped. Same path in push-to-talk and hands-free.
+@MainActor
+func capTests() async {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-cap-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let transcriber = SlowTranscriber(), sounds = CountingSounds()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    settings.keepRecordings = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))
+    try! controller.startHotkey()
+    func settle() async {
+        for _ in 0..<200 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+
+    // Push-to-talk: shrink the cap; the take ends on its own, still pastes,
+    // and a real release afterwards is a no-op.
+    controller.maximumDuration = 0.1
+    recorder.next = [Float](repeating: 0.1, count: 32_000)
+    hotkey.onEvent?(.start)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 2.\"]", "capped take still pastes")
+    expect((controller.statusMessage?.contains("cap") ?? false).description, "true",
+           "cap tells the user why it stopped")
+    hotkey.onEvent?(.stop)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 2.\"]", "release after the cap does nothing")
+
+    // Hands-free: same cap path, hands-free flag cleared with the take.
+    recorder.next = [Float](repeating: 0.1, count: 16_000)
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.handsFree)
+    await settle()
+    expect(paster.pasted.description, "[\"Clip 2.\", \"Clip 1.\"]", "hands-free cap still pastes")
+    expect(controller.isHandsFree.description, "false", "cap ends hands-free too")
+}
+await capTests()
+
 // MARK: - Lead storage
 
 // Dictation data is private: the data dir and every file in it must be
