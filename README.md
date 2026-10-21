@@ -6,6 +6,7 @@
 
 [![macOS 14+](https://img.shields.io/badge/macOS-14+-black?logo=apple)](#what-you-need)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1+-black)](#what-you-need)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4)](windows/README.md)
 [![On-device](https://img.shields.io/badge/runs-on--device-5745ad)](#is-it-private)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -54,7 +55,15 @@ it's free, it's open source, and your voice never leaves your Mac.
 | **Internet** | Only once, to download the speech model |
 | **Language** | English |
 
-**On Windows?** There's a Windows version too: see [windows/README.md](windows/README.md).
+**On Windows?** Whisp runs on Windows 10 and 11 too: hold **Right Alt** instead
+of Right Option. Install it by pasting this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/windows/install.ps1 | iex
+```
+
+See [windows/README.md](windows/README.md) for requirements, speed, and how to
+bring over your dictionary and history from a Mac.
 
 ## Install
 
