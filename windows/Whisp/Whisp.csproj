@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- UI Automation (caret lookup for smart spacing) ships with the WPF framework. -->
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Whisp</RootNamespace>
+    <AssemblyName>Whisp</AssemblyName>
+    <ApplicationIcon>Resources\whisp.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- System.Windows.Forms and System.Windows (WPF) share type names; keep WPF out of global usings. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Drawing" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Net.Http" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
+    <Using Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WhispCore\WhispCore.csproj" />
+  </ItemGroup>
+
+</Project>

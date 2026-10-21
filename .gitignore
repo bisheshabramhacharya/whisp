@@ -5,5 +5,9 @@
 .DS_Store
 .build-*/
 
+# Windows (.NET) build output
+windows/**/bin/
+windows/**/obj/
+
 # Local benchmark data (LibriSpeech, generated dictation clips) — never commit
 testdata/

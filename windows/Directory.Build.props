@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.4.0</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Authors>Bishesha Bramhacharya</Authors>
+    <Product>Whisp</Product>
+  </PropertyGroup>
+</Project>

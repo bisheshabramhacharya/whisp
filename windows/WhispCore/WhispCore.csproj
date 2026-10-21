@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Platform-free logic shared by the Windows app and its tests: text cleanup,
+       dictionary, hotkey state machine, speech segmenter, storage. A line-by-line
+       port of Sources/WhispCore so both platforms behave the same. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Whisp.Core</RootNamespace>
+    <AssemblyName>WhispCore</AssemblyName>
+  </PropertyGroup>
+
+</Project>
