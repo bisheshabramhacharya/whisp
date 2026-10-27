@@ -25,6 +25,16 @@ private let asrLogger = Logger(subsystem: "com.bishesha.whisp", category: "ASR")
 /// behaves exactly like the 15 s engine (and `fastBundle` is fetched in the
 /// background, then used without a relaunch); input > 15 s →
 /// `UnifiedAsrManager`'s sliding-window path.
+///
+/// `piecewise` mode (engine name "split") covers the band where the stock
+/// engine pays a flat 15 s pass for a leftover barely past the short encoder:
+/// an input in `(short window, 2×short window]` that only the 15 s window
+/// would otherwise fit decodes as two quiet-cut pieces on the short window
+/// (`SpeechSegmenter.splitTwo`). Anything a non-stock window already fits is
+/// routed there instead, and inputs past twice the short window keep `short`'s
+/// own path — two half-stock passes cost more than one stock pass. With no
+/// short bundle loaded it degrades to the stock path, so the engine is safe
+/// before `fastBundle` arrives.
 public final class ShortWindowEngine: Transcribing, StatusReporting {
     /// The stock encoder weights re-traced at a 5 s window (`tools/convert/`).
     public static let fastBundle = RemoteBundle(
@@ -40,9 +50,20 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
     /// same default as `ParakeetTranscriber`.
     public var silenceThreshold: Float = 0.004
 
-    private let engine = Engine()
+    /// The window `piecewise` mode cuts pieces on, in samples: the largest
+    /// loaded window at most a third of the stock 15 s, i.e. genuinely short
+    /// (w5000 today). A half-stock window (w10000) is not a piece candidate —
+    /// two of its passes cost more than one stock pass. Returns the stock
+    /// window when no such bundle is loaded, making piecewise a no-op.
+    public static func piecewiseLimit(windows: [Int]) -> Int {
+        windows.filter { $0 <= Engine.maxWindowSamples / 3 }.max() ?? Engine.maxWindowSamples
+    }
 
-    public init() {}
+    private let engine: Engine
+
+    public init(piecewise: Bool = false) {
+        engine = Engine(piecewise: piecewise)
+    }
 
     public func prepare() async throws {
         try await engine.prepare(status: { [weak self] message in
@@ -105,7 +126,16 @@ extension ShortWindowEngine {
 
     fileprivate actor Engine {
         /// Largest window the offline export supports.
-        private static let maxWindowSamples = 15 * 16_000
+        static let maxWindowSamples = 15 * 16_000
+
+        /// `split` engine: an input in `(piece window, 2×piece window]` that
+        /// only the 15 s window would otherwise fit decodes as two quiet-cut
+        /// pieces on the piece window instead of one flat 15 s pass.
+        private let piecewise: Bool
+
+        init(piecewise: Bool) {
+            self.piecewise = piecewise
+        }
 
         private var prepared = false
         private var preparing: Task<Void, Error>?
@@ -298,6 +328,17 @@ extension ShortWindowEngine {
             variants.first { $0.windowSamples >= samples }
         }
 
+        /// The variant `piecewise` decodes pieces on, when one is loaded.
+        /// The overlap between pieces, in samples (0.5 s): long enough for a
+        /// word spanning the cut to be complete inside both pieces.
+        static let piecewiseOverlapSamples = 16_000 / 2
+        private var piecewiseWindow: WindowVariant? {
+            guard piecewise else { return nil }
+            let limit = ShortWindowEngine.piecewiseLimit(windows: variants.map(\.windowSamples))
+            return limit < Self.maxWindowSamples
+                ? variants.first { $0.windowSamples == limit } : nil
+        }
+
         /// Key press: every take starts short, so wake the smallest window.
         func rewarm() async {
             warmIfStale(variants.first)
@@ -305,9 +346,15 @@ extension ShortWindowEngine {
 
         /// While recording: wake the window a release decode of `samples`
         /// would use, so crossing into the 15 s window doesn't pay its wake-up
-        /// at release.
+        /// at release. A band input under `piecewise` decodes on the piece
+        /// window, so that's the window to keep warm.
         func prewarm(forSamples samples: Int) {
-            warmIfStale(variant(for: samples))
+            var target = samples
+            if let pieceW = piecewiseWindow, target > pieceW.windowSamples,
+                target <= 2 * pieceW.windowSamples {
+                target = pieceW.windowSamples
+            }
+            warmIfStale(variant(for: min(target, Self.maxWindowSamples)))
         }
 
         private func warmIfStale(_ variant: WindowVariant?) {
@@ -318,12 +365,33 @@ extension ShortWindowEngine {
         }
 
         func transcribe(_ samples: [Float]) async throws -> String {
+            // Piecewise band: the stock engine would pay a flat 15 s pass, but
+            // two quiet-cut pieces on the short window are cheaper. Only when
+            // no non-stock window already fits the input — a fitting mid
+            // window (w10000) decodes it in one pass, which is cheaper still.
+            // The 0.5 s overlap keeps a word spanning the cut whole in at
+            // least one piece; joinOverlap drops its second decode.
+            if let pieceW = piecewiseWindow,
+                samples.count > pieceW.windowSamples,
+                variant(for: samples.count)?.windowSamples == Self.maxWindowSamples {
+                let pieces = SpeechSegmenter.splitTwo(
+                    samples, maxSamples: pieceW.windowSamples,
+                    overlap: Self.piecewiseOverlapSamples)
+                if pieces.count == 2 {
+                    let first = try transcribeWindow(
+                        pieces[0], variant: variant(for: pieces[0].count) ?? pieceW)
+                    let second = try transcribeWindow(
+                        pieces[1], variant: variant(for: pieces[1].count) ?? pieceW)
+                    return SpeechSegmenter.joinOverlap(first, second)
+                }
+            }
             if let variant = variant(for: samples.count) {
                 return try transcribeWindow(samples, variant: variant)
             }
-            // Longer than the largest window: decode it in window-sized pieces on
-            // the encoders already loaded. Loading a second model set here instead
-            // cost 30-75 s at release when Core ML had to recompile it.
+            // Longer than the largest window the engine may use: decode it in
+            // window-sized pieces on the encoders already loaded. Loading a
+            // second model set here instead cost 30-75 s at release when
+            // Core ML had to recompile it.
             if let largest = variants.last {
                 var parts: [String] = []
                 for piece in SpeechSegmenter.split(samples, maxSamples: largest.windowSamples) {

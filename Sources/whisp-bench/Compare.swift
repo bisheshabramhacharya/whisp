@@ -116,6 +116,7 @@ public struct CompareRunner {
         case "parakeet", "baseline": return ParakeetTranscriber()
         case "profiled": return ProfiledTranscriber()
         case "short": return ShortWindowEngine()
+        case "split": return ShortWindowEngine(piecewise: true)
         case "par2": return ParakeetTranscriber(model: .unified, unifiedLanes: 2)
         case "streaming": return StreamingEngine()
         default: throw CompareError.unknownEngine(name)
@@ -164,6 +165,13 @@ public struct CompareRunner {
             }
         }
 
+        if ProcessInfo.processInfo.environment["WHISP_DEBUG_TEXTS"] != nil {
+            for (e, engine) in engines.enumerated() {
+                for (i, f) in files.enumerated() {
+                    print("TEXTS \(engine.name) \(f.name): \(texts[e][i])")
+                }
+            }
+        }
         // Stats vs engine 0 as baseline.
         var stats: [EngineStats] = []
         for (e, engine) in engines.enumerated() {

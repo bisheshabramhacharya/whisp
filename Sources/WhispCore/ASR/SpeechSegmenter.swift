@@ -183,6 +183,143 @@ public enum SpeechSegmenter {
         return join(texts)
     }
 
+    /// Splits `samples` into two overlapping pieces `[0, cut]` and
+    /// `[cut - overlap, end]`, each at most `maxSamples`, cutting at the
+    /// quietest 100 ms inside `[count - max + overlap, max]`. The overlap
+    /// keeps a word spanning the cut whole in at least one piece — the second
+    /// piece re-decodes it, and `joinOverlap` drops the duplicate. Expects
+    /// `maxSamples < samples.count <= 2 * maxSamples - overlap`; returns
+    /// `[samples]` outside that range, letting callers treat it as the contract.
+    public static func splitTwo(
+        _ samples: [Float], maxSamples: Int, overlap: Int
+    ) -> [[Float]] {
+        guard samples.count > maxSamples, samples.count <= 2 * maxSamples - overlap,
+            overlap >= 0, overlap < maxSamples
+        else { return [samples] }
+        let window = 10  // 100 ms, same granularity as split()
+        let lo = samples.count - maxSamples + overlap
+        let hi = maxSamples
+        // A mid-word cut needs the tail piece to reach far enough back for the
+        // boundary word to decode whole (~1.2 s covers any spoken word). That
+        // shortens where the tail may start, shrinking the band this works on.
+        let wordOverlap = max(overlap, 19_200)
+        let energies = frameEnergies(samples)
+        let threshold = pauseThreshold(loud: percentile(energies, 0.9) ?? 0)
+        // Prefer cuts inside a real pause: a run of >=8 below-threshold frames
+        // (~80 ms) is a word gap, while dips inside a word are shorter. The
+        // quietest mid-word cut is the fallback for genuinely unbroken speech.
+        var runEnd = [Int](repeating: -1, count: energies.count)
+        var runStart = [Int](repeating: 0, count: energies.count)
+        var end = energies.count - 1
+        var start = 0
+        for f in 0..<energies.count {
+            if energies[f] >= threshold { start = f + 1 }
+            runStart[f] = start
+        }
+        for f in (0..<energies.count).reversed() {
+            if energies[f] >= threshold { end = f - 1 }
+            runEnd[f] = end
+        }
+        var cut = -1
+        var pad = overlap
+        var quietestSum = Float.greatestFiniteMagnitude
+        var center = lo / frame
+        while center * frame <= hi {
+            let i0 = max(0, center - window / 2)
+            let i1 = min(energies.count, center + window / 2)
+            guard i1 > i0 else { break }
+            if center < energies.count, runEnd[center] - runStart[center] + 1 >= 8 {
+                let sum = energies[i0..<i1].reduce(0, +)
+                if sum < quietestSum {
+                    quietestSum = sum
+                    cut = center * frame
+                }
+            }
+            center += 1
+        }
+        if cut < 0 {
+            center = max(0, (samples.count - maxSamples + wordOverlap) / frame)
+            while center * frame <= hi {
+                let i0 = max(0, center - window / 2)
+                let i1 = min(energies.count, center + window / 2)
+                guard i1 > i0 else { break }
+                let sum = energies[i0..<i1].reduce(0, +)
+                if sum < quietestSum {
+                    quietestSum = sum
+                    cut = center * frame
+                }
+                center += 1
+            }
+            pad = wordOverlap
+        }
+        if cut < 0 { return [samples] }  // no split fits both pieces in a window
+        let tailStart = max(0, cut - pad)
+        return [Array(samples[..<cut]), Array(samples[tailStart...])]
+    }
+
+    /// Joins the transcripts of `splitTwo` pieces, which share `overlap` of
+    /// audio. Words inside the overlap are decoded twice — once as the head's
+    /// last words and once as the tail's first — so the largest run of
+    /// matching boundary words is kept once, preferring whichever side has
+    /// the complete word when the cut truncated the other. Anything that
+    /// doesn't match is kept: a real new word must never be dropped, so a
+    /// short common word is never read as a fragment.
+    public static func joinOverlap(_ head: String, _ tail: String) -> String {
+        let h = head.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !h.isEmpty, !t.isEmpty else { return join([h, t]) }
+        var hw = h.split(separator: " ").map(String.init)
+        var tw = t.split(separator: " ").map(String.init)
+        let norm = { (w: String) in w.lowercased().filter(\.isLetter) }
+        let fragment = { (a: String, _ b: String) in
+            a.count >= 2 && a != b && (b.hasPrefix(a) || b.hasSuffix(a))
+        }
+        let match = { (a: String, b: String) in
+            a == b || fragment(a, b) || fragment(b, a)
+        }
+        // Largest boundary run decoded twice (the overlap can hold several
+        // words). All `k` pairs must match to count as a shared run.
+        var k = 0
+        let maxK = min(hw.count, tw.count, 4)
+        outer: for cand in (1...maxK).reversed() {
+            for j in 0..<cand {
+                if !match(norm(hw[hw.count - cand + j]), norm(tw[j])) { continue outer }
+            }
+            k = cand
+        }
+        if k > 0 {
+            var dropTail = Set<Int>()
+            var dropHead = Set<Int>()
+            for j in 0..<k {
+                let a = norm(hw[hw.count - k + j]), b = norm(tw[j])
+                if a == b {
+                    dropTail.insert(j)
+                } else if fragment(a, b) {
+                    // a truncated at the cut — unless it's a real word that
+                    // merely shares letters with the boundary word.
+                    if !joinOverlapWholeWords.contains(a) { dropHead.insert(hw.count - k + j) }
+                } else if !joinOverlapWholeWords.contains(b) {
+                    dropTail.insert(j)  // b is a fragment of a's complete word
+                }
+            }
+            hw = hw.enumerated().compactMap { dropHead.contains($0.offset) ? nil : $0.element }
+            tw = tw.enumerated().compactMap { dropTail.contains($0.offset) ? nil : $0.element }
+        }
+        return join([hw.joined(separator: " "), tw.joined(separator: " ")])
+    }
+
+    /// Words too common to risk dropping as "fragments" — "the" must never
+    /// vanish just because the previous word happened to start with it.
+    private static let joinOverlapWholeWords: Set<String> = [
+        "a", "i", "an", "as", "at", "am", "be", "by", "do", "go", "he", "if",
+        "in", "is", "it", "me", "my", "no", "of", "on", "or", "so", "to", "up",
+        "us", "we", "the", "and", "but", "for", "are", "was", "you", "all",
+        "can", "had", "her", "his", "how", "its", "may", "new", "now", "old",
+        "our", "out", "she", "too", "use", "way", "who", "any", "did", "get",
+        "has", "him", "let", "not", "one", "put", "say", "see", "two", "own",
+        "off", "top",
+    ]
+
     /// Splits audio longer than `maxSamples` into pieces that each fit one encoder
     /// window, cutting at the quietest 100 ms of the last 5 s before each limit.
     /// Release tails can exceed the largest window (quiet speech the live loop
