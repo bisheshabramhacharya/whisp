@@ -138,6 +138,7 @@ func runReplay(
     print(String(format: "Release replay over %d files (engine %@, mic-drop %.0f ms):",
                  files.count, engineName, micDropMs))
     for line in aggregate.lines() { print(line) }
+    for line in aggregate.bucketLines() { print(line) }
 }
 
 // MARK: - --compare
