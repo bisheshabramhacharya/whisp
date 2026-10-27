@@ -1107,6 +1107,7 @@ expect(dictHas("Priya").description, "true", "unknown-name casing is saved")
 expect(saveNotices.last ?? "", "saved to dictionary: Priya", "term save alerts after the write")
 
 // Fixes the gate can't see are pending once, then written the second time.
+@MainActor
 func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: String, _ label: String) {
     let before = saveNotices.count
     watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))

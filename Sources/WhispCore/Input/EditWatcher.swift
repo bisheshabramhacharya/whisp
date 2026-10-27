@@ -206,7 +206,7 @@ public final class EditWatcher: CorrectionWatching {
             case .replacement(let from, let to):
                 try? PersonalDictionary.removeReplacement(from: from, to: to, fileURL: dictionaryFile)
             case .removed(let from, let to):
-                try? PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
+                _ = try? PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
             case .pending(let from, let to, _):
                 pending.remove(from: from, to: to)
             }
