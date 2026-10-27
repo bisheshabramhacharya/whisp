@@ -9,9 +9,9 @@ namespace Whisp.Core.Text;
 /// - hesitation sounds anywhere ("um", "uh", "erm", "hmm"),
 /// - "like" / "you know" / "I mean" when set off by commas ("It was, like, huge"),
 /// - immediate stutters ("I I think", "the, the") except intentional doubles
-///   ("that that", "had had", "no no", "very very"),
+///   ("that that", "had had", "no no", "very very") and repeated numbers ("4 4", "404 404"),
 /// - restarted phrases: the abandoned first try in "go to the go to desktop" or
-///   "I want to, I want to go",
+///   "I want to, I want to go", but not a repeated run of numbers ("1 2 1 2 5"),
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
 /// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
@@ -101,6 +101,19 @@ public sealed class FillerCleaner
         "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
     };
 
+    /// Codes and counts ("4", "404", "3.14"), which people repeat on purpose.
+    /// A letter anywhere ("4th", "R2") keeps the token a word, so a real stutter of it still drops.
+    private static bool IsNumericWord(string word)
+    {
+        var digit = false;
+        foreach (var ch in word)
+        {
+            if (char.IsNumber(ch)) digit = true;
+            else if (char.IsLetter(ch)) return false;
+        }
+        return digit;
+    }
+
     /// Sentence-initial lead-ins whose comma survives when a following filler is removed ("So, um, we" -> "So, we").
     private static readonly HashSet<string> LeadIns = new()
     {
@@ -148,7 +161,8 @@ public sealed class FillerCleaner
             Token prev = tokens[i - 1], cur = tokens[i];
             var separable = prev.Trailing.Length == 0 || prev.Trailing == ",";
             if (separable && cur.Word.Length > 0 && cur.Leading.Length == 0 && prev.Leading.Length == 0
-                && cur.Word == prev.Word && !IntentionalDoubles.Contains(cur.Word))
+                && cur.Word == prev.Word && !IntentionalDoubles.Contains(cur.Word)
+                && !IsNumericWord(cur.Word))
             {
                 // Keep the second copy's punctuation, the first copy's casing.
                 tokens[i] = new Token("", prev.Core, cur.Trailing);
@@ -169,7 +183,8 @@ public sealed class FillerCleaner
 
     /// Drops the first copy of a 2–4 word phrase that is immediately repeated, optionally
     /// with one abandoned word in between: "go to the go to desktop" -> "go to desktop".
-    /// Never crosses a sentence end, and leaves chants made of intentional doubles alone.
+    /// Never crosses a sentence end, leaves chants made of intentional doubles alone,
+    /// and leaves a phrase made only of numbers alone ("press 1 2 1 2 5" is a code).
     private static void RemoveRestarts(List<Token> tokens)
     {
         var i = 0;
@@ -203,6 +218,12 @@ public sealed class FillerCleaner
                     chant = (w == tokens[i].Word && IntentionalDoubles.Contains(w)) || w.Length == 0;
                 }
                 if (chant) continue;
+                // A phrase of only numbers ("1 2 1 2 5", "5 5 5 5 now") is a code, not a restart.
+                // A word phrase that merely contains a number still is ("go to 4 go to 4 now").
+                var numeric = true;
+                for (var k = i; k < i + n && numeric; k++)
+                    numeric = IsNumericWord(tokens[k].Word);
+                if (numeric) continue;
                 // A repeat that runs to the end of the take ("Let's go let's go!") or
                 // keeps alternating ("ran and ran and ran") is emphasis, not a restart.
                 if (second + n >= tokens.Count || tokens[second + n].Word == tokens[i].Word) continue;

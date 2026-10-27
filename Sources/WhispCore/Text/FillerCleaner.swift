@@ -5,9 +5,9 @@ import Foundation
 /// - hesitation sounds anywhere ("um", "uh", "erm", "hmm"),
 /// - "like" / "you know" / "I mean" when set off by commas ("It was, like, huge"),
 /// - immediate stutters ("I I think", "the, the") except intentional doubles
-///   ("that that", "had had", "no no", "very very"),
+///   ("that that", "had had", "no no", "very very") and repeated numbers ("4 4", "404 404"),
 /// - restarted phrases: the abandoned first try in "go to the go to desktop" or
-///   "I want to, I want to go",
+///   "I want to, I want to go", but not a repeated run of numbers ("1 2 1 2 5"),
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
 /// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
@@ -85,6 +85,17 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
         "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
     ]
 
+    /// Codes and counts ("4", "404", "3.14"), which people repeat on purpose.
+    /// A letter anywhere ("4th", "R2") keeps the token a word, so a real stutter of it still drops.
+    private static func isNumericWord(_ word: String) -> Bool {
+        var digit = false
+        for ch in word {
+            if ch.isNumber { digit = true }
+            else if ch.isLetter { return false }
+        }
+        return digit
+    }
+
     /// Sentence-initial lead-ins whose comma survives when a following filler is removed ("So, um, we" -> "So, we").
     private static let leadIns: Set<String> = [
         "so", "well", "yes", "yeah", "no", "okay", "ok", "oh", "right", "now", "anyway", "actually",
@@ -126,7 +137,8 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
             let prev = tokens[i - 1], cur = tokens[i]
             let separable = prev.trailing.isEmpty || prev.trailing == ","
             if separable, !cur.word.isEmpty, cur.leading.isEmpty, prev.leading.isEmpty,
-               cur.word == prev.word, !Self.intentionalDoubles.contains(cur.word) {
+               cur.word == prev.word, !Self.intentionalDoubles.contains(cur.word),
+               !Self.isNumericWord(cur.word) {
                 // Keep the second copy's punctuation, the first copy's casing.
                 tokens[i] = Token(leading: "", core: prev.core, trailing: cur.trailing)
                 tokens.remove(at: i - 1)
@@ -143,7 +155,8 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
 
     /// Drops the first copy of a 2–4 word phrase that is immediately repeated, optionally
     /// with one abandoned word in between: "go to the go to desktop" -> "go to desktop".
-    /// Never crosses a sentence end, and leaves chants made of intentional doubles alone.
+    /// Never crosses a sentence end, leaves chants made of intentional doubles alone,
+    /// and leaves a phrase made only of numbers alone ("press 1 2 1 2 5" is a code).
     private func removeRestarts(_ tokens: inout [Token]) {
         var i = 0
         scan: while i < tokens.count {
@@ -160,6 +173,9 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
                           !first.allSatisfy({
                               ($0.word == tokens[i].word && Self.intentionalDoubles.contains($0.word))
                                   || $0.word.isEmpty }),
+                          // A phrase of only numbers ("1 2 1 2 5", "5 5 5 5 now") is a code, not a restart.
+                          // A word phrase that merely contains a number still is ("go to 4 go to 4 now").
+                          !first.allSatisfy({ Self.isNumericWord($0.word) }),
                           // A repeat that runs to the end of the take ("Let's go let's go!") or
                           // keeps alternating ("ran and ran and ran") is emphasis, not a restart.
                           second + n < tokens.count, tokens[second + n].word != tokens[i].word

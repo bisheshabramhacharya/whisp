@@ -82,6 +82,9 @@ let cases: [(String, String)] = [
     ("No no no no.", "No no no no."),
     ("I can can make make it.", "I can make it."),
     ("Just do that Do that, but fast.", "Just do that, but fast."),
+    // A number inside a real stutter or restart still drops the words, not the digits.
+    ("Go to 4 go to 4 now.", "Go to 4 now."),
+    ("We we need room 404 404 today.", "We need room 404 404 today."),
     // Never rewrites
     ("She went to the ER.", "She went to the ER."),
     ("It's 5 mm wide.", "It's 5 mm wide."),
@@ -925,6 +928,13 @@ do {
         ("Wake up wake up!", "Wake up wake up!"),
         ("On off on off.", "On off on off."),
         ("Press 1 2 1 2.", "Press 1 2 1 2."),
+        // Repeated numbers are a code or a count. The old "Press 1 2 1 2." row stayed
+        // only because the repeat ran to the end of the take.
+        ("code 4 4 7.", "code 4 4 7."),
+        ("press 1 2 1 2 5.", "press 1 2 1 2 5."),
+        ("call 5 5 5 1 2 1 2.", "call 5 5 5 1 2 1 2."),
+        ("call 5 5 5 5 now.", "call 5 5 5 5 now."),
+        ("The code is 4, 4, 7.", "The code is 4, 4, 7."),
         ("He ran and ran and ran.", "He ran and ran and ran."),
         ("Up down up down up.", "Up down up down up."),
         ("Thank you thank you.", "Thank you thank you."),
