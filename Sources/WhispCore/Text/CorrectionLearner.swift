@@ -189,11 +189,14 @@ public final class CorrectionLearner {
         let kind: Kind = caseOnly ? .term : .replacement
         let known = fromWords.allSatisfy(isKnownWord)
         if !known {
-            // Not in the spell checker. Usually model junk ("Pychy" → "pi CLI"),
-            // which is learned right away — but a name the checker doesn't know
-            // ("Priya" → "Anil") is a different person, not a mishearing. Seeing
-            // that swap twice would still be the wrong rule, so it is dropped.
-            guard caseOnly || Self.plausibleMishearing(from, to) else { return nil }
+            // Close to the correction ("Pychy" → "pi CLI"): save it now.
+            // Anything else waits for a second sighting. One swap of "Priya"
+            // for "Anil" is not saved, but a repeated mishearing the gate
+            // misses ("Filip" → "Phillip" — Soundex keeps the first letter,
+            // so F and Ph never match) still lands.
+            guard caseOnly || Self.plausibleMishearing(from, to) else {
+                return .pending(from: from, to: to, kind: kind)
+            }
             return caseOnly ? .term(to) : .replacement(from: from, to: to)
         }
         // Real word: only learn a fix that plausibly sounds/looks the same,

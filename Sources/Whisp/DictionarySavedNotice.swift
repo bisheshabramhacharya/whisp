@@ -95,18 +95,24 @@ final class DictionarySavedNotice {
 
     /// Sizes the capsule to the line of text and pins it to the top-right of
     /// the visible frame (below the menu bar, clear of the Dock).
+    ///
+    /// `NSString.size` is about 4 pt narrower than the text field actually
+    /// draws, which clipped the correction ("Pychy → pi…"). The cell's own
+    /// size includes that padding.
     private func place(_ message: String) {
         label.stringValue = message
         background.setAccessibilityLabel(message)
-        let font = label.font ?? NSFont.systemFont(ofSize: 13, weight: .medium)
-        let textWidth = (message as NSString).size(withAttributes: [.font: font]).width
         let visible = Self.screenWithMouse()?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 800, height: 600)
         let margin: CGFloat = 16
         let padX: CGFloat = 16
         let height: CGFloat = 34
+        let fitting = label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: 200))
+            ?? NSSize(width: 10_000, height: height)
+        let contentWidth = ceil(fitting.width)
         let maxWidth = max(160, visible.width - margin * 2)
-        let width = min(maxWidth, ceil(textWidth) + padX * 2)
+        let labelWidth = min(contentWidth, maxWidth - padX * 2)
+        let width = labelWidth + padX * 2
         let frame = NSRect(
             x: visible.maxX - width - margin,
             y: visible.maxY - height - 12,
@@ -115,7 +121,7 @@ final class DictionarySavedNotice {
         )
         panel.setFrame(frame, display: true)
         background.frame = NSRect(origin: .zero, size: frame.size)
-        label.frame = NSRect(x: padX, y: 0, width: width - padX * 2, height: height)
+        label.frame = NSRect(x: padX, y: 0, width: labelWidth, height: height)
         background.layer?.cornerRadius = height / 2
     }
 

@@ -918,8 +918,8 @@ if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
 // MARK: - Auto-learn
 
 // The learner's "real word" oracle is a set here. "Pychy" is unknown model
-// junk. "Priya" and "Anil" are left out on purpose: a name the spell checker
-// doesn't know must not be saved just because it is missing from this set.
+// junk. Names like Priya, Filip, and Ellem are left out on purpose: the spell
+// checker doesn't know them, so they exercise the unknown-word gate.
 let knownWords: Set<String> = [
     "soul", "use", "the", "model", "open", "now", "we", "sell", "on", "vinted",
     "meet", "tuesday", "monday", "should", "ship", "it", "send", "to", "him",
@@ -943,7 +943,8 @@ checkLearn("I use the soul model.", "I use the Sol model.",
 checkLearn("Open Pychy now.", "Open pi CLI now.",
            [.replacement(from: "Pychy", to: "pi CLI")], "junk from learns right away")
 checkLearn("Meet Priya today.", "Meet Anil today.",
-           [], "priya→anil is a different person, not learned")
+           [.pending(from: "Priya", to: "Anil", kind: .replacement)],
+           "priya→anil waits for a second sighting")
 checkLearn("Meet priya today.", "Meet Priya today.",
            [.term("Priya")], "casing an unknown name still learns")
 checkLearn("We sell on vinted.", "We sell on Vinted.",
@@ -970,6 +971,28 @@ checkLearn("I use the Sol model.", "I use the soul model.",
 checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
             .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
+
+// Review edge cases for the mishearing gate (PR #52).
+// "gonna" and "2nd" are unknown to this oracle and fail the gate, so they
+// wait for a second sighting instead of being dropped.
+checkLearn("Meet Priya today.", "Meet today.", [], "deleting an unknown name learns nothing")
+checkLearn("We gonna ship it.", "We will ship it.",
+           [.pending(from: "gonna", to: "will", kind: .replacement)],
+           "rewording slang is not a mishearing")
+checkLearn("Use 2nd copy.", "Use 3rd copy.",
+           [.pending(from: "2nd", to: "3rd", kind: .replacement)],
+           "digit-led words with no Soundex key do not match")
+checkLearn("Open Pychy.", "Open pi CLI. Thanks", [.replacement(from: "Pychy", to: "pi CLI")],
+           "gate still passes the trailing-cut fix")
+checkLearn("Email Filip today.", "Email Phillip today.",
+           [.pending(from: "Filip", to: "Phillip", kind: .replacement)],
+           "Filip→Phillip first sighting is pending")
+checkLearn("Email Katie today.", "Email Caty today.",
+           [.pending(from: "Katie", to: "Caty", kind: .replacement)],
+           "Katie→Caty first sighting is pending")
+checkLearn("Email Ellem today.", "Email LLM today.",
+           [.pending(from: "Ellem", to: "LLM", kind: .replacement)],
+           "Ellem→LLM first sighting is pending")
 
 // Long takes: one fix in the middle of ~3000 words learns just that fix, and
 // the diff stays cheap because only the changed middle is compared.
@@ -1058,11 +1081,11 @@ watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(String(saveNotices.count), String(noticesAfterPychy), "duplicate rule is not announced again")
 
-// A different person is not a mishearing: no rule, no alert.
+// A different person is not saved the first time: pending only, no alert.
 watcher.apply(learner.decide(pasted: "Meet Priya today.",
                                    current: "Meet Anil today.", existingRules: []))
-expect(dictHas("Priya").description, "false", "priya→anil is not written")
-expect(dictHas("Anil").description, "false", "anil is not written")
+expect(dictHas("Priya").description, "false", "priya→anil is not written the first time")
+expect(dictHas("Anil").description, "false", "anil is not written the first time")
 expect(String(saveNotices.count), String(noticesAfterPychy), "priya→anil shows no save alert")
 
 // Undo of the learned batch restores the pre-learn state.
@@ -1082,6 +1105,21 @@ watcher.apply(learner.decide(pasted: "Meet priya today.",
                                    current: "Meet Priya today.", existingRules: []))
 expect(dictHas("Priya").description, "true", "unknown-name casing is saved")
 expect(saveNotices.last ?? "", "saved to dictionary: Priya", "term save alerts after the write")
+
+// Fixes the gate can't see are pending once, then written the second time.
+func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: String, _ label: String) {
+    let before = saveNotices.count
+    watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
+    expect(dictHas(from).description, "false", "\(label) first sighting not saved")
+    expect(String(saveNotices.count), String(before), "\(label) first sighting shows no alert")
+    watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
+    expect(dictHas(from).description, "true", "\(label) second sighting saved")
+    expect(dictHas(to).description, "true", "\(label) target saved")
+    expect(saveNotices.last ?? "", "saved to dictionary: \(from) → \(to)", "\(label) alerts after the second write")
+}
+learnTwice("Email Filip today.", "Email Phillip today.", "Filip", "Phillip", "Filip→Phillip")
+learnTwice("Email Katie today.", "Email Caty today.", "Katie", "Caty", "Katie→Caty")
+learnTwice("Email Ellem today.", "Email LLM today.", "Ellem", "LLM", "Ellem→LLM")
 
 // Malformed dictionary.json: no write, no crash, no alert.
 let noticesBeforeFailure = saveNotices.count
