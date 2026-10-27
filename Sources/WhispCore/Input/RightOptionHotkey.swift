@@ -103,6 +103,15 @@ public final class RightOptionHotkey: HotkeyMonitoring {
         previousFlags = 0
     }
 
+    /// Sleep/lock/user-switch can swallow the key-up of a hold in progress;
+    /// clearing the state machine keeps a still-held key from looking stuck and
+    /// the tap keeps listening for whatever comes next.
+    public func reset() {
+        machine = HotkeyStateMachine()
+        isOurKeyDown = false
+        previousFlags = 0
+    }
+
     // MARK: - Event plumbing
 
     /// Called on whatever thread the event tap uses; keep it minimal — re-arm the tap
