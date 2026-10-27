@@ -283,7 +283,7 @@ public final class Paster: TextPasting {
         var axDiffers: Bool?
         if let release = await target.axWindow?.value,
            let current = Self.focusedWindow(pid: pid) {
-            axDiffers = !CFEqual(release.element as CFType, current as CFType)
+            axDiffers = !CFEqual(release.element, current)
         }
         return Self.focusLeftTarget(releasePID: target.pid, currentPID: currentPID,
                                     releaseWindow: target.windowID, currentWindow: currentWindow,
@@ -396,14 +396,17 @@ public final class Paster: TextPasting {
             // No focused element and no override: nothing to poll. One wait, then restore.
             let canWatch = confirm != nil || context != nil
             while true {
-                guard let self, self.restoreGeneration == generation, !Task.isCancelled else { return }
+                // One unwrap per iteration. A second `guard let self` in this
+                // scope is a compile error: the first binding is already Paster.
+                guard let self else { return }
+                guard self.restoreGeneration == generation, !Task.isCancelled else { return }
                 let soFar = elapsed()
                 if soFar < fallbackNanos {
                     let remaining = fallbackNanos - soFar
                     let nap = canWatch ? min(Self.confirmPollNanos, remaining) : remaining
                     try? await Task.sleep(nanoseconds: max(nap, 1_000_000))
                 }
-                guard let self, self.restoreGeneration == generation, !Task.isCancelled else { return }
+                guard self.restoreGeneration == generation, !Task.isCancelled else { return }
                 if pasteboard.changeCount != expectedChangeCount {
                     if self.pendingRestore?.changeCount == expectedChangeCount { self.pendingRestore = nil }
                     return
@@ -419,7 +422,7 @@ public final class Paster: TextPasting {
                         }.value
                     }
                 }
-                guard let self, self.restoreGeneration == generation, !Task.isCancelled else { return }
+                guard self.restoreGeneration == generation, !Task.isCancelled else { return }
                 if pasteboard.changeCount != expectedChangeCount {
                     if self.pendingRestore?.changeCount == expectedChangeCount { self.pendingRestore = nil }
                     return
