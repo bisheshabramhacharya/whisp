@@ -42,6 +42,10 @@ enum Composition {
             dictionaryFile: AppPaths.dictionaryFile,
             pendingFile: AppPaths.pendingCorrectionsFile
         ) { settings.learnFromCorrections }
+        // Retained by the watcher for the life of the app. Fires only after a
+        // correction was written to dictionary.json.
+        let savedNotice = DictionarySavedNotice()
+        learnWatcher.onDictionarySaved = { savedNotice.show($0) }
         paster.onInserted = { [weak learnWatcher] context, text, pid in
             learnWatcher?.record(context, text: text, pid: pid)
         }
