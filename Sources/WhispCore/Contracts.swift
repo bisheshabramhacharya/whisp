@@ -80,19 +80,40 @@ public struct FocusedContext: @unchecked Sendable { // AXUIElement is a CFType
     public let preceding: Character?
     /// Up to 40 UTF-16 characters of text before the cursor (the anchor).
     public let beforeText: String
+    /// UTF-16 length of the selection at key release. 0 when the caret is collapsed.
+    public let selectionLength: Int
+    /// Document length in UTF-16 units at key release, when the element reports it.
+    public let characterCount: Int?
+    /// Selected text at key release, when it was non-empty and short enough to read.
+    /// Used so an unchanged selection is not mistaken for a completed paste.
+    public let selectedText: String?
 
-    public init(element: AXUIElement, cursorLocation: Int, preceding: Character?, beforeText: String) {
+    public init(element: AXUIElement, cursorLocation: Int, preceding: Character?, beforeText: String,
+                selectionLength: Int = 0, characterCount: Int? = nil, selectedText: String? = nil) {
         self.element = element
         self.cursorLocation = cursorLocation
         self.preceding = preceding
         self.beforeText = beforeText
+        self.selectionLength = selectionLength
+        self.characterCount = characterCount
+        self.selectedText = selectedText
     }
+}
+
+/// Focused window at key release, for the same-app window check when the
+/// window list doesn't yield an id. Compared with `CFEqual` at paste time.
+public struct AXWindowToken: @unchecked Sendable {
+    public let element: AXUIElement
+    public init(_ element: AXUIElement) { self.element = element }
 }
 
 /// Where a dictation should land, captured at key release.
 public struct PasteTarget: Sendable {
     /// Frontmost app at key release.
     public let pid: pid_t?
+    /// Frontmost on-screen window of that app at key release, when known.
+    /// Nil does not block a paste: the window couldn't be identified.
+    public let windowID: UInt32?
     /// The focused-element lookup running in the background so the
     /// Accessibility round-trips overlap transcription instead of delaying
     /// the paste.
@@ -102,28 +123,38 @@ public struct PasteTarget: Sendable {
     /// General-pasteboard contents captured at key release, off the main thread, so
     /// the restore snapshot doesn't have to wait on the pasteboard server at paste time.
     public let clipboard: Task<ClipboardCapture, Never>?
+    /// Focused window captured at key release when `windowID` was unavailable.
+    public let axWindow: Task<AXWindowToken?, Never>?
 
     public init(pid: pid_t?, focused: Task<FocusedContext?, Never>,
-                clipboard: Task<ClipboardCapture, Never>? = nil) {
+                clipboard: Task<ClipboardCapture, Never>? = nil,
+                windowID: UInt32? = nil,
+                axWindow: Task<AXWindowToken?, Never>? = nil) {
         self.pid = pid
+        self.windowID = windowID
         self.focused = focused
         self.precedingCharacter = Task { await focused.value?.preceding }
         self.clipboard = clipboard
+        self.axWindow = axWindow
     }
 
     /// For fakes and callers that only care about the preceding character.
     public init(pid: pid_t?, precedingCharacter: Task<Character?, Never>,
-                clipboard: Task<ClipboardCapture, Never>? = nil) {
+                clipboard: Task<ClipboardCapture, Never>? = nil,
+                windowID: UInt32? = nil,
+                axWindow: Task<AXWindowToken?, Never>? = nil) {
         self.pid = pid
+        self.windowID = windowID
         self.focused = Task { nil }
         self.precedingCharacter = precedingCharacter
         self.clipboard = clipboard
+        self.axWindow = axWindow
     }
 }
 
 public enum PasteResult: Sendable {
     case pasted
-    /// Focus moved to another app while transcribing; the text was left on the clipboard.
+    /// Focus moved to another app or window while transcribing; the text was left on the clipboard.
     case copiedAppChanged
 }
 

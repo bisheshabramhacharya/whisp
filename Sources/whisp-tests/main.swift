@@ -417,7 +417,7 @@ func pipelineTests() async {
     paster.result = .copiedAppChanged
     dictate(seconds: 1)
     await settle()
-    expect((controller.statusMessage?.contains("switched apps") ?? false).description, "true", "app change reported")
+    expect((controller.statusMessage?.contains("switched windows") ?? false).description, "true", "window change reported")
     paster.result = .pasted
 
     // History and recordings are written off the pipeline, and in order.
@@ -711,13 +711,14 @@ func pasterTests() async {
     let board = NSPasteboard.general
     let paster = Paster()
     let marker = "whisp-test-marker-\(UUID().uuidString.prefix(6))"
+    let settle = UInt64((paster.restoreDelay + 0.5) * 1_000_000_000)
 
     board.clearContents()
     board.setString(marker, forType: .string)
     let t = paster.target()
     _ = await paster.paste("dictated words", into: t)
     expect(board.string(forType: .string) ?? "?", "dictated words", "paste writes text")
-    try? await Task.sleep(nanoseconds: 450_000_000)
+    try? await Task.sleep(nanoseconds: settle)
     expect(board.string(forType: .string) ?? "?", marker, "clipboard restored after paste")
 
     // The user copies between key release and paste -> the newer clipboard wins.
@@ -726,9 +727,187 @@ func pasterTests() async {
     board.clearContents()
     board.setString("user copy", forType: .string)
     _ = await paster.paste("more words", into: t2)
-    try? await Task.sleep(nanoseconds: 450_000_000)
+    try? await Task.sleep(nanoseconds: settle)
     expect(board.string(forType: .string) ?? "?", "user copy", "newer clipboard restored")
 }
+
+// A target that doesn't paste on the Cmd+V — it reads the clipboard later.
+// Change count does not move on a read, which is the bug: restoring on a
+// timer alone can put the old clipboard back before this read.
+@MainActor
+final class LateClipboardReader {
+    private let pasteboard: NSPasteboard
+    private let delay: TimeInterval
+    private var task: Task<Void, Never>?
+    private(set) var pasted: String?
+
+    init(pasteboard: NSPasteboard, delay: TimeInterval) {
+        self.pasteboard = pasteboard
+        self.delay = delay
+    }
+
+    func arm() {
+        let board = pasteboard
+        let delay = delay
+        task = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            pasted = board.string(forType: .string)
+        }
+    }
+
+    func wait() async { await task?.value }
+}
+
+@MainActor
+func pasterReliabilityTests() async {
+    // Focus decision: pid, then window id, then the accessibility window.
+    // A missing window id must not block the paste by itself.
+    expect(Paster.focusLeftTarget(releasePID: 1, currentPID: 2, releaseWindow: 9, currentWindow: 9, axWindowDiffers: false) ? "hold" : "paste",
+           "hold", "different app holds the paste")
+    expect(Paster.focusLeftTarget(releasePID: 1, currentPID: 1, releaseWindow: 9, currentWindow: 10, axWindowDiffers: false) ? "hold" : "paste",
+           "hold", "same app, different window holds the paste")
+    expect(Paster.focusLeftTarget(releasePID: 1, currentPID: 1, releaseWindow: 9, currentWindow: 9, axWindowDiffers: true) ? "hold" : "paste",
+           "paste", "matching window ids win over the accessibility element")
+    expect(Paster.focusLeftTarget(releasePID: 1, currentPID: 1, releaseWindow: nil, currentWindow: nil, axWindowDiffers: true) ? "hold" : "paste",
+           "hold", "accessibility window change holds the paste when ids are unknown")
+    expect(Paster.focusLeftTarget(releasePID: 1, currentPID: 1, releaseWindow: nil, currentWindow: 4, axWindowDiffers: nil) ? "hold" : "paste",
+           "paste", "unknown window does not block the paste")
+    expect(Paster.focusLeftTarget(releasePID: nil, currentPID: 3, releaseWindow: nil, currentWindow: nil, axWindowDiffers: nil) ? "hold" : "paste",
+           "paste", "no release pid does not block the paste")
+
+    // Insertion proof. A slice that merely matches is not enough when that text
+    // could already have been in the field.
+    expect(Paster.insertionConfirmed(needle: "hello", slice: nil, characterCountBefore: 0, characterCountAfter: 5, selectionLength: 0, selectedText: nil) == nil ? "unsure" : "sure",
+           "unsure", "unreadable element is not confirmation")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "world", characterCountBefore: 5, characterCountAfter: 10, selectionLength: 0, selectedText: nil) == false ? "no" : "yes",
+           "no", "different text is not the dictation")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: 4, characterCountAfter: 9, selectionLength: 0, selectedText: nil) == true ? "yes" : "no",
+           "yes", "length grew by the insertion")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: 9, characterCountAfter: 9, selectionLength: 0, selectedText: nil) == false ? "no" : "yes",
+           "no", "matching slice whose length didn't change is not a paste")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: nil, characterCountAfter: nil, selectionLength: 0, selectedText: nil) == nil ? "unsure" : "sure",
+           "unsure", "collapsed caret without a length can't be proved")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: 5, characterCountAfter: 5, selectionLength: 5, selectedText: "hello") == nil ? "unsure" : "sure",
+           "unsure", "selection that was already the dictation is not proof")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: nil, characterCountAfter: nil, selectionLength: 3, selectedText: "old") == true ? "yes" : "no",
+           "yes", "a different selection replaced by the needle is proof")
+    expect(Paster.insertionConfirmed(needle: "hello", slice: "hello", characterCountBefore: nil, characterCountAfter: nil, selectionLength: 5, selectedText: nil) == nil ? "unsure" : "sure",
+           "unsure", "unread same-length selection is not proof")
+
+    let noop: @MainActor () -> Void = {}
+
+    // Slow target: reads 500 ms after the paste. The old 300 ms restore would
+    // hand it the previous clipboard. Nothing here confirms an insertion, so
+    // the text has to stay put until restoreDelay.
+    do {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let marker = "user-clipboard-\(UUID().uuidString)"
+        let dictated = "dictated-\(UUID().uuidString)"
+        board.clearContents()
+        board.setString(marker, forType: .string)
+        let paster = Paster(pasteboard: board, postPaste: noop)
+        paster.frontmostProcessID = { 4242 }
+        paster.frontmostWindowID = { _ in 7 }
+        // No focused element, so nothing can confirm the paste early — and no
+        // real Accessibility read, so a nearby text field can't add a leading space.
+        paster.confirmInsertion = { _ in nil }
+        expect(paster.restoreDelay > 0.5 ? "holds" : "short", "holds", "fallback outlasts a 500 ms reader")
+        let target = PasteTarget(pid: 4242, precedingCharacter: Task { nil }, windowID: 7)
+        let result = await paster.paste(dictated, into: target)
+        expect(String(describing: result), String(describing: PasteResult.pasted), "late target is still a paste")
+        expect(board.string(forType: .string) ?? "?", dictated, "dictation is on the clipboard for the target")
+        let reader = LateClipboardReader(pasteboard: board, delay: 0.5)
+        reader.arm()
+        await reader.wait()
+        expect(reader.pasted ?? "?", dictated, "500 ms reader gets the dictation, not the old clipboard")
+        try? await Task.sleep(nanoseconds: UInt64(paster.restoreDelay * 1_000_000_000))
+        expect(board.string(forType: .string) ?? "?", marker, "old clipboard returns after the fallback")
+    }
+
+    // Once the insertion is confirmed, restore without waiting out the fallback.
+    do {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let marker = "user-clipboard-\(UUID().uuidString)"
+        board.clearContents()
+        board.setString(marker, forType: .string)
+        let paster = Paster(pasteboard: board, postPaste: noop)
+        paster.frontmostProcessID = { 4242 }
+        paster.frontmostWindowID = { _ in 7 }
+        paster.restoreDelay = 30
+        paster.confirmInsertion = { _ in true }
+        let started = Date()
+        _ = await paster.paste("dictated-\(UUID().uuidString)",
+                               into: PasteTarget(pid: 4242, precedingCharacter: Task { nil }, windowID: 7))
+        var restored = false
+        for _ in 0..<15 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if board.string(forType: .string) == marker { restored = true; break }
+        }
+        expect(restored ? "yes" : "no", "yes", "confirmed insertion restores the clipboard")
+        expect(Date().timeIntervalSince(started) < 5 ? "soon" : "waited", "soon", "confirm does not wait out the fallback")
+    }
+
+    // A write after ours wins, even if we would otherwise restore.
+    do {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.setString("original", forType: .string)
+        let paster = Paster(pasteboard: board, postPaste: noop)
+        paster.frontmostProcessID = { 4242 }
+        paster.frontmostWindowID = { _ in 7 }
+        paster.restoreDelay = 0.3
+        paster.confirmInsertion = { _ in nil }
+        _ = await paster.paste("dictated", into: PasteTarget(pid: 4242, precedingCharacter: Task { nil }, windowID: 7))
+        board.clearContents()
+        board.setString("user copy", forType: .string)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        expect(board.string(forType: .string) ?? "?", "user copy", "a newer clipboard write is left alone")
+    }
+
+    // Same app, another window: don't paste into it. The text stays available
+    // and the user's previous clipboard is not what gets restored over it.
+    do {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.setString("original", forType: .string)
+        let paster = Paster(pasteboard: board, postPaste: noop)
+        var window: UInt32 = 1
+        paster.frontmostProcessID = { 4242 }
+        paster.frontmostWindowID = { _ in window }
+        paster.restoreDelay = 0.2
+        paster.confirmInsertion = { _ in true }
+        let target = PasteTarget(pid: 4242, precedingCharacter: Task { nil }, windowID: 1)
+        window = 2
+        let result = await paster.paste("dictated words", into: target)
+        expect(String(describing: result), String(describing: PasteResult.copiedAppChanged), "same app, other window is not pasted")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        expect(board.string(forType: .string) ?? "?", "dictated words", "dictation stays on the clipboard for a manual paste")
+    }
+
+    // Different process, same as before.
+    do {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.setString("original", forType: .string)
+        let paster = Paster(pasteboard: board, postPaste: noop)
+        var pid: pid_t = 1
+        paster.frontmostProcessID = { pid }
+        paster.frontmostWindowID = { _ in 5 }
+        let target = PasteTarget(pid: 1, precedingCharacter: Task { nil }, windowID: 5)
+        pid = 2
+        let result = await paster.paste("dictated words", into: target)
+        expect(String(describing: result), String(describing: PasteResult.copiedAppChanged), "different app is not pasted")
+        expect(board.string(forType: .string) ?? "?", "dictated words", "dictation left on the clipboard when the app changed")
+    }
+}
+// Private pasteboard and no key events: always safe to run.
+await pasterReliabilityTests()
+
 // Opt-in: it overwrites the real clipboard and posts a real ⌘V into the frontmost app.
 if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
     await pasterTests()
