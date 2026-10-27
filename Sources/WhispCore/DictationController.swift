@@ -564,7 +564,7 @@ public final class DictationController: ObservableObject {
         let pasteMs = Self.ms(since: pasteStart)
         let latencyMs = Self.ms(since: releasedAt)
         if outcome == .copiedAppChanged {
-            statusMessage = "You switched apps while transcribing — text copied, press ⌘V to paste"
+            statusMessage = "You switched windows while transcribing — text copied, press ⌘V to paste"
             if settings.sounds { sounds.playError() }
         }
 
