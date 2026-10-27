@@ -35,19 +35,60 @@ paid for 15 s of encoder work.
 | Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
 
-## What's next
+## 10 s window (not measured here)
 
-About a third of releases still wait over 100 ms: the speech after the last
-pause was longer than 5 s, so it goes to the 15 s encoder. A 10 s window
-would cover most of those, at ~600 MB more Neural Engine memory, unless the
-windows can share one weight file (Core ML multi-function models, macOS 15+).
+About a third of releases still waited over 100 ms because the speech after
+the last pause was longer than 5 s, so it went to the 15 s encoder. Room
+noise keeps the segmenter from finding those pauses, and cutting more often
+dropped the last word, so the segmenter is unchanged.
+
+`ShortWindowEngine` now also uses a 10 s encoder
+(`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
+the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
+full-attention pass, so the text matches the 15 s model; splitting it into
+5 s pieces would not. The window is prewarmed the same way: while you talk,
+the engine wakes the size a release of the audio so far would use.
+
+It is a second int8 bundle, not one shared weight file. A multi-function
+Core ML model only loads on macOS 15, and this app is macOS 14. The int8
+quantizer also rejects multi-function models, and the constants baked at
+trace time differ per window, so two bundles cannot share `weight.bin`.
+One int8 window is about 560 MB on disk. How much resident memory grows
+after load has not been measured.
+
+The zip is not published yet. Until its SHA-256 is filled in on
+`ShortWindowEngine.middleBundle`, the app does not try to download it.
+Build it locally with `tools/convert` (`--windows 10 --install`). No speed
+number for the 10 s window is claimed here: this environment cannot run Core ML.
 
 ## Reproduce
 
 ```sh
 swift build -c release
-.build/release/whisp-bench --compare parakeet,short --runs 2 --idle 0 <wavs…>
-.build/release/whisp-bench --replay --engine short <wavs…>
+swift run -c release whisp-tests
+
+# one-time, on a Mac: build the 10 s encoder into the FluidAudio cache
+cd tools/convert && uv sync
+uv pip install --no-deps --force-reinstall \
+  "nemo_toolkit @ git+https://github.com/NVIDIA-NeMo/NeMo.git@95f92737cfb8ee0123bb328b07a2d24c6d859aff"
+uv run --no-sync python convert-short-window.py --windows 10 --validate --install
+cd ../..
+
+# The "short loaded windows" line must include 10s. "resident" is phys_footprint
+# after prepare. Run it once without the bundle (move the .mlmodelc aside) and
+# once with it; the difference is the 10 s encoder's resident cost. Use the
+# second launch — the first also pays to compile the model.
+.build/release/whisp-bench --replay --engine short --offsets 0 <one wav>
+
+# Identical text. Use files whose speech is 5–10 s. agree must be 1.0000, and
+# "short encoder decodes" must show a 10s bucket whose inputs sit in that range,
+# not a 15s bucket. No warning about 5–10s audio on a larger window.
+.build/release/whisp-bench --compare parakeet,short --runs 2 --idle 0 <5–10 s wavs>
+
+# p95 wait at release, same files, bundle installed vs moved aside. Last-word
+# ok must match. Read the numbers off the machine; they are not known yet.
+.build/release/whisp-bench --replay --engine short <wavs>
+
 # real time, through the app's own dictation code, next to what the app measured:
 .build/release/whisp-bench --live --history ~/Library/Application\ Support/Whisp/history.jsonl \
   ~/Library/Application\ Support/Whisp/recordings/<id>.wav …

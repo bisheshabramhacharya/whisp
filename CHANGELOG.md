@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **10 s encoder window.** Speech that runs past 5 s without a pause was still encoded at the stock 15 s size. When `parakeet_unified_encoder_w10000_int8.mlmodelc` is in the model cache, that audio uses the 10 s window instead, same text path as the 15 s model. The app downloads it once the zip is published and its checksum is filled in; until then, build it with `tools/convert` (`--windows 10 --install`). Pause detection is unchanged.
+
 ## 0.4.0 — 2026-09-30
 
 ### Added

@@ -19,18 +19,64 @@ private let asrLogger = Logger(subsystem: "com.bishesha.whisp", category: "ASR")
 ///
 /// Transcript parity argument: full attention masks by `mel_length` only, and
 /// mel `per_feature` normalization uses only valid frames, so a short window
-/// computes the same values for the valid region as the 15 s model.
+/// computes the same values for the valid region as the 15 s model. A 7 s
+/// tail on the 10 s window matches the 15 s model; chunking that tail into
+/// 5 s pieces would not, because each piece would attend to different audio.
 ///
-/// Fallbacks keep the engine safe on any machine: no short bundles present →
-/// behaves exactly like the 15 s engine (and `fastBundle` is fetched in the
-/// background, then used without a relaunch); input > 15 s →
-/// `UnifiedAsrManager`'s sliding-window path.
+/// Fallbacks: a pinned bundle that isn't on disk is fetched in the background
+/// once its checksum is published, then used without a relaunch. Until then
+/// the next larger window runs, which with no short bundles at all is the
+/// stock 15 s encoder. Audio longer than every loaded window is split across
+/// those windows.
 public final class ShortWindowEngine: Transcribing, StatusReporting {
+    /// Largest window the offline export supports (the stock encoder).
+    public static let maxWindowSamples = 15 * 16_000
+    /// Stock weights re-traced at 5 s. Clips that fit here are the fast path
+    /// measured at 48.6 ms p50 on the 8 GB M1 (vs 98.9 ms on the 15 s encoder).
+    public static let fastWindowSeconds = 5
+    /// Tails longer than 5 s and up to 10 s. Room noise keeps the segmenter
+    /// from cutting, so this is the speech a release still has to encode.
+    /// 8 s would leave 8–15 s on the stock encoder; 10 s is the size that
+    /// covers most of those tails without a third extra bundle.
+    public static let middleWindowSeconds = 10
+
     /// The stock encoder weights re-traced at a 5 s window (`tools/convert/`).
     public static let fastBundle = RemoteBundle(
         name: "parakeet_unified_encoder_w5000_int8.mlmodelc",
         url: URL(string: "https://github.com/bisheshabramhacharya/whisp/releases/download/models-v1/parakeet_unified_encoder_w5000_int8.mlmodelc.zip")!,
         sha256: "2ebd982a4e5b896f41d6cc05554de76c04a837c7879e07d7b9475d80129f4584")
+
+    /// Same weights traced at 10 s. A separate int8 bundle, not a multi-function
+    /// model: those only load on macOS 15 (this app is macOS 14), the int8
+    /// quantizer rejects them, and each window's traced constants differ so
+    /// two bundles cannot share one weight file. `sha256` stays empty until
+    /// the zip is published (`tools/convert/RELEASE.md`). An empty checksum is
+    /// not downloaded — a missing asset must not fail every launch — but a
+    /// bundle placed in the model cache by `--install` is used immediately.
+    public static let middleBundle = RemoteBundle(
+        name: "parakeet_unified_encoder_w\(middleWindowSeconds * 1000)_int8.mlmodelc",
+        url: URL(string: "https://github.com/bisheshabramhacharya/whisp/releases/download/models-v2/parakeet_unified_encoder_w\(middleWindowSeconds * 1000)_int8.mlmodelc.zip")!,
+        sha256: "")
+
+    /// Shortest first. Fetched when missing, but only with a published checksum.
+    public static let pinnedBundles: [RemoteBundle] = [fastBundle, middleBundle]
+
+    /// Pinned bundles that still need a download. Already-present names and
+    /// bundles with an empty checksum are left out.
+    public static func bundlesToFetch(
+        _ bundles: [RemoteBundle] = pinnedBundles, presentNames: Set<String>
+    ) -> [RemoteBundle] {
+        bundles.filter { !$0.sha256.isEmpty && !presentNames.contains($0.name) }
+    }
+
+    /// Smallest window length that can hold `samples`, or nil when every
+    /// window is shorter. `windows` need not be sorted. A release wakes this
+    /// same window while you talk; waking the next one early would run a cold
+    /// encoder the release might not use, and that decode sits on the same
+    /// queue as the real one.
+    public static func fittingWindowSamples(_ samples: Int, windows: [Int]) -> Int? {
+        windows.sorted().first { $0 >= samples }
+    }
 
     /// Human-readable status updates ("Downloading model…", "Ready", …).
     /// Always invoked on the main thread.
@@ -54,8 +100,16 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
         await engine.rewarm()
     }
 
+    /// While recording: wake the window a release of `samples` would use, so
+    /// crossing from the 5 s window into the 10 s one (or from 10 s into 15 s)
+    /// doesn't pay that wake-up at release.
     public func prewarm(forSamples samples: Int) async {
         await engine.prewarm(forSamples: samples)
+    }
+
+    /// Encoder windows actually loaded, shortest first. Empty before `prepare`.
+    public func loadedWindowSamples() async -> [Int] {
+        await engine.loadedWindowSamples()
     }
 
     /// Per-stage wall time of one windowed decode, for speed tooling.
@@ -97,16 +151,58 @@ extension ShortWindowEngine {
 
     /// One encoder window variant: a bundle in the model cache and the window
     /// length it was traced at (in 16 kHz samples).
-    struct WindowVariant: Sendable {
-        let windowSamples: Int
-        let url: URL
-        let int8: Bool
+    public struct WindowVariant: Sendable {
+        public let windowSamples: Int
+        public let url: URL
+        public let int8: Bool
+
+        public init(windowSamples: Int, url: URL, int8: Bool) {
+            self.windowSamples = windowSamples
+            self.url = url
+            self.int8 = int8
+        }
+    }
+
+    /// Every usable encoder bundle in `dir`: the stock 15 s offline encoder
+    /// (int8 preferred, fp16 accepted) plus any
+    /// `parakeet_unified_encoder_w{ms}[_int8]` export, shortest first.
+    /// int8 wins when a window exists in both precisions.
+    public static func discoverVariants(in dir: URL) -> [WindowVariant] {
+        let fm = FileManager.default
+        var found: [WindowVariant] = []
+        for suffix in ["_int8.mlmodelc", ".mlmodelc"] {
+            let int8 = suffix == "_int8.mlmodelc"
+            let name = "parakeet_unified_encoder\(suffix)"
+            let url = dir.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) {
+                found.append(WindowVariant(
+                    windowSamples: maxWindowSamples, url: url, int8: int8))
+                break
+            }
+        }
+        let entries = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        var shorts: [WindowVariant] = []
+        for entry in entries where entry.hasSuffix(".mlmodelc") {
+            guard let range = entry.range(
+                of: #"parakeet_unified_encoder_w(\d+)(?:_int8)?\.mlmodelc"#,
+                options: .regularExpression), range == entry.startIndex..<entry.endIndex,
+                let ms = Int(entry.dropFirst("parakeet_unified_encoder_w".count)
+                    .prefix(while: \.isNumber))
+            else { continue }
+            shorts.append(WindowVariant(
+                windowSamples: ms * 16,
+                url: dir.appendingPathComponent(entry),
+                int8: entry.contains("_int8")))
+        }
+        var byWindow: [Int: WindowVariant] = [:]
+        for v in shorts {
+            if let existing = byWindow[v.windowSamples], existing.int8 { continue }
+            byWindow[v.windowSamples] = v
+        }
+        return byWindow.values.sorted { $0.windowSamples < $1.windowSamples } + found
     }
 
     fileprivate actor Engine {
-        /// Largest window the offline export supports.
-        private static let maxWindowSamples = 15 * 16_000
-
         private var prepared = false
         private var preparing: Task<Void, Error>?
         /// When each window's encoder last ran (uptime ns), keyed by windowSamples.
@@ -188,9 +284,9 @@ extension ShortWindowEngine {
             // downloaded candidate bundles instead of touching the cache.
             var extra: [WindowVariant] = []
             if let env = ProcessInfo.processInfo.environment["WHISP_MODEL_DIR"] {
-                extra = Self.discoverVariants(in: URL(fileURLWithPath: env))
+                extra = ShortWindowEngine.discoverVariants(in: URL(fileURLWithPath: env))
             }
-            variants = Self.discoverVariants(in: dir)
+            variants = ShortWindowEngine.discoverVariants(in: dir)
             for variant in extra where variants.allSatisfy({ $0.windowSamples != variant.windowSamples }) {
                 variants.append(variant)
             }
@@ -209,22 +305,31 @@ extension ShortWindowEngine {
                 _ = try? transcribeWindow(silence, variant: variant)
             }
             prepared = true
+            let labels = variants.map { "\($0.windowSamples / 16_000)s" }.joined(separator: ",")
+            asrLogger.info("Encoder windows: \(labels, privacy: .public)")
             await status("Ready")
-            if !variants.contains(where: { $0.windowSamples < Self.maxWindowSamples }) {
-                fetchFastBundle(into: dir)
-            }
+            fetchMissingBundles(into: dir)
         }
 
-        /// Once per launch, in the background. A failed fetch only means the
-        /// 15 s window stays in use; the next launch tries again.
-        private func fetchFastBundle(into dir: URL) {
-            let bundle = ShortWindowEngine.fastBundle
-            Task.detached(priority: .utility) { [weak self] in
-                do {
-                    let url = try await bundle.fetch(into: dir)
-                    await self?.adopt(url)
-                } catch {
-                    asrLogger.error("Fast model download failed: \(error.localizedDescription, privacy: .public)")
+        func loadedWindowSamples() -> [Int] {
+            variants.map(\.windowSamples)
+        }
+
+        /// Once per launch, in the background, one task per missing published
+        /// bundle. A failed fetch leaves the next larger window in use; the
+        /// next launch tries again. The 5 s bundle still downloads when a
+        /// longer short window is already installed, and the other way around.
+        private func fetchMissingBundles(into dir: URL) {
+            let present = Set(variants.map { $0.url.lastPathComponent })
+            for bundle in ShortWindowEngine.bundlesToFetch(presentNames: present) {
+                Task.detached(priority: .utility) { [weak self] in
+                    do {
+                        let url = try await bundle.fetch(into: dir)
+                        await self?.adopt(url)
+                    } catch {
+                        asrLogger.error(
+                            "Encoder window download failed (\(bundle.name, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                    }
                 }
             }
         }
@@ -233,7 +338,7 @@ extension ShortWindowEngine {
         /// that runs while `MLModel.load` is suspended must never pick a
         /// window whose encoder isn't there yet.
         private func adopt(_ url: URL) async {
-            guard let variant = Self.discoverVariants(in: url.deletingLastPathComponent())
+            guard let variant = ShortWindowEngine.discoverVariants(in: url.deletingLastPathComponent())
                 .first(where: { $0.url.lastPathComponent == url.lastPathComponent }),
                 encoders[variant.windowSamples] == nil
             else { return }
@@ -251,51 +356,14 @@ extension ShortWindowEngine {
             _ = try? transcribeWindow([Float](repeating: 0, count: 16_000), variant: variant)
             variants.append(variant)
             variants.sort { $0.windowSamples < $1.windowSamples }
-            asrLogger.info("Fast model ready: \(variant.url.lastPathComponent, privacy: .public)")
-        }
-
-        /// Every usable encoder bundle in the cache: the stock 15 s offline
-        /// encoder (int8 preferred, fp16 accepted) plus any
-        /// `parakeet_unified_encoder_w{ms}[_int8]` short-window exports,
-        /// shortest first.
-        private static func discoverVariants(in dir: URL) -> [WindowVariant] {
-            let fm = FileManager.default
-            var found: [WindowVariant] = []
-            for suffix in ["_int8.mlmodelc", ".mlmodelc"] {
-                let int8 = suffix == "_int8.mlmodelc"
-                let name = "parakeet_unified_encoder\(suffix)"
-                let url = dir.appendingPathComponent(name)
-                if fm.fileExists(atPath: url.path) {
-                    found.append(WindowVariant(
-                        windowSamples: maxWindowSamples, url: url, int8: int8))
-                    break
-                }
-            }
-            let entries = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
-            var shorts: [WindowVariant] = []
-            for entry in entries where entry.hasSuffix(".mlmodelc") {
-                guard let range = entry.range(
-                    of: #"parakeet_unified_encoder_w(\d+)(?:_int8)?\.mlmodelc"#,
-                    options: .regularExpression), range == entry.startIndex..<entry.endIndex,
-                    let ms = Int(entry.dropFirst("parakeet_unified_encoder_w".count)
-                        .prefix(while: \.isNumber))
-                else { continue }
-                shorts.append(WindowVariant(
-                    windowSamples: ms * 16,
-                    url: dir.appendingPathComponent(entry),
-                    int8: entry.contains("_int8")))
-            }
-            // int8 wins when a window exists in both precisions.
-            var byWindow: [Int: WindowVariant] = [:]
-            for v in shorts {
-                if let existing = byWindow[v.windowSamples], existing.int8 { continue }
-                byWindow[v.windowSamples] = v
-            }
-            return byWindow.values.sorted { $0.windowSamples < $1.windowSamples } + found
+            asrLogger.info("Encoder window ready: \(variant.url.lastPathComponent, privacy: .public)")
         }
 
         private func variant(for samples: Int) -> WindowVariant? {
-            variants.first { $0.windowSamples >= samples }
+            guard let n = ShortWindowEngine.fittingWindowSamples(
+                samples, windows: variants.map(\.windowSamples))
+            else { return nil }
+            return variants.first { $0.windowSamples == n }
         }
 
         /// Key press: every take starts short, so wake the smallest window.
@@ -303,9 +371,7 @@ extension ShortWindowEngine {
             warmIfStale(variants.first)
         }
 
-        /// While recording: wake the window a release decode of `samples`
-        /// would use, so crossing into the 15 s window doesn't pay its wake-up
-        /// at release.
+        /// While recording: wake the window a release of `samples` would use.
         func prewarm(forSamples samples: Int) {
             warmIfStale(variant(for: samples))
         }

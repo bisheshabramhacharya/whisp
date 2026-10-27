@@ -42,11 +42,12 @@ func runIdleCurve(engineName: String, file: String, rounds: Int) async throws {
 }
 
 /// --switch-test A B: does alternating between encoder windows cost extra?
-/// A should fit the smallest window, B only the 15 s one.
+/// A should fit the 5 s window. B should need a larger one: 10 s when that
+/// bundle is installed, otherwise 15 s.
 @MainActor
 func runSwitchTest(engineName: String, files: [String], rounds: Int, gapSeconds: Double) async throws {
     guard files.count >= 2 else {
-        print("--switch-test needs two files: a short one and a 5-15 s one")
+        print("--switch-test needs two files: one under 5 s, and one longer than 5 s")
         return
     }
     let inner = ASREngine.make(named: engineName)

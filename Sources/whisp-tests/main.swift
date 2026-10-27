@@ -1272,6 +1272,82 @@ do {
     expect(leftovers.joined(separator: ","), "", "no staging dirs left behind")
     try? fm.removeItem(at: work)
 }
+// MARK: - Encoder windows (5 s, 10 s, stock 15 s)
+
+do {
+    let w5 = ShortWindowEngine.fastWindowSeconds * 16_000
+    let w10 = ShortWindowEngine.middleWindowSeconds * 16_000
+    let w15 = ShortWindowEngine.maxWindowSamples
+    let windows = [w15, w5, w10]  // unsorted: the picker sorts
+
+    expect(ShortWindowEngine.middleBundle.name, "parakeet_unified_encoder_w10000_int8.mlmodelc",
+           "10s bundle name")
+    expect(String(w10), "160000", "10s window is 160000 samples")
+    expect(ShortWindowEngine.fittingWindowSamples(w5, windows: windows).map(String.init) ?? "nil",
+           String(w5), "5.0s audio uses the 5s window")
+    expect(ShortWindowEngine.fittingWindowSamples(w5 + 1, windows: windows).map(String.init) ?? "nil",
+           String(w10), "just over 5s uses the 10s window")
+    expect(ShortWindowEngine.fittingWindowSamples(7 * 16_000, windows: windows).map(String.init) ?? "nil",
+           String(w10), "7s audio uses the 10s window")
+    expect(ShortWindowEngine.fittingWindowSamples(w10, windows: windows).map(String.init) ?? "nil",
+           String(w10), "exactly 10s uses the 10s window")
+    expect(ShortWindowEngine.fittingWindowSamples(w10 + 1, windows: windows).map(String.init) ?? "nil",
+           String(w15), "just over 10s uses the 15s window")
+    expect(ShortWindowEngine.fittingWindowSamples(w15 + 1, windows: windows).map(String.init) ?? "nil",
+           "nil", "over 15s fits no single window")
+    expect(ShortWindowEngine.fittingWindowSamples(3 * 16_000, windows: [w15, w5]).map(String.init) ?? "nil",
+           String(w5), "without a 10s bundle, short audio still uses 5s")
+    expect(ShortWindowEngine.fittingWindowSamples(7 * 16_000, windows: [w15, w5]).map(String.init) ?? "nil",
+           String(w15), "without a 10s bundle, a 7s tail still uses 15s")
+
+    let unpublished = RemoteBundle(
+        name: ShortWindowEngine.middleBundle.name, url: ShortWindowEngine.middleBundle.url, sha256: "")
+    let published = RemoteBundle(
+        name: ShortWindowEngine.middleBundle.name, url: ShortWindowEngine.middleBundle.url,
+        sha256: String(repeating: "ab", count: 32))
+    expect(ShortWindowEngine.bundlesToFetch([unpublished], presentNames: []).isEmpty.description,
+           "true", "empty checksum is not downloaded")
+    expect(ShortWindowEngine.bundlesToFetch([published], presentNames: []).map(\.name).joined(separator: ","),
+           published.name, "published bundle is fetched when missing")
+    expect(ShortWindowEngine.bundlesToFetch([published], presentNames: [published.name]).isEmpty.description,
+           "true", "bundle already on disk is not fetched again")
+    expect(
+        ShortWindowEngine.bundlesToFetch(
+            [ShortWindowEngine.fastBundle, published],
+            presentNames: [ShortWindowEngine.fastBundle.name]
+        ).map(\.name).joined(separator: ","),
+        published.name, "a longer window still downloads when the 5s one is installed")
+
+    let missing = ShortWindowEngine.bundlesToFetch(presentNames: [])
+    expect(missing.contains { $0.name == ShortWindowEngine.fastBundle.name } ? "yes" : "no",
+           "yes", "5s bundle is fetched when missing")
+    let middleFetched = missing.contains { $0.name == ShortWindowEngine.middleBundle.name }
+    expect(middleFetched == !ShortWindowEngine.middleBundle.sha256.isEmpty ? "match" : "mismatch",
+           "match", "10s bundle is fetched only once its checksum is published")
+
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("whisp-windows-\(UUID().uuidString)")
+    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: dir) }
+    for name in [
+        "parakeet_unified_encoder_int8.mlmodelc",
+        "parakeet_unified_encoder_w5000_int8.mlmodelc",
+        "parakeet_unified_encoder_w10000.mlmodelc",
+        "parakeet_unified_encoder_w10000_int8.mlmodelc",
+        "parakeet_unified_encoder_w2000_int8.mlmodelc",
+        "notes.mlmodelc",
+    ] {
+        try fm.createDirectory(at: dir.appendingPathComponent(name), withIntermediateDirectories: true)
+    }
+    let found = ShortWindowEngine.discoverVariants(in: dir)
+    let desc = found.map {
+        "\($0.windowSamples):\($0.int8 ? "int8" : "fp"):\($0.url.lastPathComponent)"
+    }.joined(separator: ",")
+    expect(desc,
+           "32000:int8:parakeet_unified_encoder_w2000_int8.mlmodelc,80000:int8:parakeet_unified_encoder_w5000_int8.mlmodelc,160000:int8:parakeet_unified_encoder_w10000_int8.mlmodelc,240000:int8:parakeet_unified_encoder_int8.mlmodelc",
+           "discover prefers int8 and sorts shortest first")
+}
+
 expect(ASREngine.defaultName, "short", "default engine is the short-window one")
 expect(String(describing: type(of: ASREngine.make(named: "typo"))), "ShortWindowEngine", "unknown engine name falls back")
 

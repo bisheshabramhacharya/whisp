@@ -125,7 +125,8 @@ swift run -c release whisp-tests                       # 270/270
 * Multi-function CoreML bundle (w2000+w5000 sharing one weight blob): merges
   and compiles, but multifunction mil forces the `<ios18>` target — whisp is
   macOS 14 → unusable. Also `linear_quantize_weights` rejects multifunction
-  models.
+  models. The 10 s window shipped later is a second int8 bundle for that
+  reason (`ShortWindowEngine.middleBundle`), not a shared weight file.
 * 4-bit palettization (`per_grouped_channel`): requires iOS18 — same dead end.
 * Weight sharing across window bundles: `weight.bin` layouts differ per window
   (window-dependent consts baked at trace time) — can't share one blob.

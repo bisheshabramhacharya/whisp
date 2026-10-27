@@ -222,8 +222,9 @@ uv run --no-sync python convert-short-window.py --windows 5 --validate --install
   `parakeet_unified_encoder_w{ms}[_int8].mlmodelc` in
   `~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/`
   (same cache FluidAudio uses). `--install` copies the int8 bundles there
-  automatically. Pick the smallest window ≥ input; absent bundles → stock 15 s
-  encoder; >15 s input → `UnifiedAsrManager` chunked path.
+  automatically. Pick the smallest window ≥ input; a missing shorter bundle
+  falls through to the next one, and with none installed that is the stock
+  15 s encoder. Audio longer than every loaded window is split across them.
 - `whisp-bench` needs no flag: `--compare parakeet,short` / `--engine short`.
   For the app: `defaults write com.bishesha.whisp asrEngine short`.
 
@@ -232,7 +233,12 @@ encoder (full attention masks only by `mel_length`, so outputs match up to
 quantization noise). Note: a clip longer than the window is skipped — the
 generated `say` clip is ~3.3 s, covering w5000.
 
+The app pins two windows: 5 s (`ShortWindowEngine.fastBundle`, published) and
+10 s (`middleBundle`, used when the bundle is installed; downloaded only after
+its checksum is published). See `RELEASE.md`.
+
 Notes: bundle size is weight-dominated — one int8 window ≈ 560 MB regardless of
-window length; multifunction bundles would dedup weights but require
-iOS18/macOS 15 (whisp targets macOS 14). See `RELEASE.md` / `docs/speed/log-b-short-window.md`
-"M1 check instructions" for the exact m1-check commands.
+window length. A multi-function bundle would share that weight file, but it
+only loads on macOS 15 and `linear_quantize_weights` rejects multi-function
+models, so the 10 s window is a second int8 bundle. See `RELEASE.md` and
+`docs/speed/log-b-short-window.md`.

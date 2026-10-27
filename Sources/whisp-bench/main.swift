@@ -160,8 +160,9 @@ func printUsage() {
                        shows how much slower a cold decode is (--engine as for --live)
           --pauses     per file, how many 100 ms ticks would start a decode-ahead, and
                        the noise floor vs speech level that decides it
-          --switch-test SHORT MID  alternate a clip that fits the smallest encoder window
-                       with a 5-15 s one; compares encoder time right after a window
+          --switch-test SHORT LONG  alternate a clip that fits the 5 s encoder
+                       with one longer than 5 s (10 s window if that bundle is installed,
+                       otherwise 15 s); compares encoder time right after a window
                        switch vs repeating the same window (--runs rounds)
           If <file>.txt exists next to an audio file it is scored as the WER reference.
         """)

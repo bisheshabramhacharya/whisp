@@ -223,7 +223,8 @@ def main() -> None:
         "--windows",
         type=str,
         default="2,5",
-        help="comma-separated window sizes in seconds (default 2,5)",
+        help="comma-separated window sizes in seconds (default 2,5). "
+        "The app pins 5, and 10 once that bundle is installed.",
     )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument(
