@@ -79,11 +79,14 @@ public final class PersonalDictionary: @unchecked Sendable {
     }
 
     /// Adds a "`from` -> `to`" replacement to the dictionary file (created if missing),
-    /// joining an existing entry with the same `to`. Throws — without writing — when the
-    /// file exists but isn't valid JSON, so a half-edited dictionary is never clobbered.
-    public static func addReplacement(from: String, to: String, fileURL: URL) throws {
+    /// joining an existing entry with the same `to`. Returns true when the file
+    /// changed. A duplicate `from` for that `to` returns false and does not rewrite
+    /// the file. Throws — without writing — when the file exists but isn't valid
+    /// JSON, so a half-edited dictionary is never clobbered.
+    @discardableResult
+    public static func addReplacement(from: String, to: String, fileURL: URL) throws -> Bool {
         let from = trim(from), to = trim(to)
-        guard !from.isEmpty, !to.isEmpty else { return }
+        guard !from.isEmpty, !to.isEmpty else { return false }
         var root: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: fileURL.path) {
             let data = try Data(contentsOf: fileURL)
@@ -95,7 +98,7 @@ public final class PersonalDictionary: @unchecked Sendable {
         var replacements = root["replacements"] as? [[String: Any]] ?? []
         if let i = replacements.firstIndex(where: { ($0["to"] as? String) == to }) {
             var sources = replacements[i]["from"] as? [String] ?? (replacements[i]["from"] as? String).map { [$0] } ?? []
-            guard !sources.contains(where: { $0.caseInsensitiveCompare(from) == .orderedSame }) else { return }
+            guard !sources.contains(where: { $0.caseInsensitiveCompare(from) == .orderedSame }) else { return false }
             sources.append(from)
             replacements[i]["from"] = sources
         } else {
@@ -105,19 +108,23 @@ public final class PersonalDictionary: @unchecked Sendable {
         let data = try JSONSerialization.data(
             withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try data.write(to: fileURL, options: .atomic)
+        return true
     }
 
     /// Adds `term` to `terms` (created if missing), deduplicated
-    /// case-insensitively. Same never-clobber guarantee as `addReplacement`.
-    public static func addTerm(_ term: String, fileURL: URL) throws {
+    /// case-insensitively. Returns true when the file changed. Same
+    /// never-clobber guarantee as `addReplacement`.
+    @discardableResult
+    public static func addTerm(_ term: String, fileURL: URL) throws -> Bool {
         let term = trim(term)
-        guard !term.isEmpty else { return }
+        guard !term.isEmpty else { return false }
         var root = try readRoot(fileURL)
         var terms = root["terms"] as? [String] ?? []
-        guard !terms.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return }
+        guard !terms.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return false }
         terms.append(term)
         root["terms"] = terms
         try write(root, to: fileURL)
+        return true
     }
 
     /// Removes `term` from `terms` (case-insensitive). Missing file or term is

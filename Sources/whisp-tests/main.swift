@@ -917,8 +917,9 @@ if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
 
 // MARK: - Auto-learn
 
-// The learner's "real word" oracle is a set here; "Pychy" is the only unknown
-// (model-junk) word in the fixtures.
+// The learner's "real word" oracle is a set here. "Pychy" is unknown model
+// junk. Names like Priya, Filip, and Ellem are left out on purpose: the spell
+// checker doesn't know them, so they exercise the unknown-word gate.
 let knownWords: Set<String> = [
     "soul", "use", "the", "model", "open", "now", "we", "sell", "on", "vinted",
     "meet", "tuesday", "monday", "should", "ship", "it", "send", "to", "him",
@@ -941,6 +942,11 @@ checkLearn("I use the soul model.", "I use the Sol model.",
            [.pending(from: "soul", to: "Sol", kind: .replacement)], "soul→Sol: pending")
 checkLearn("Open Pychy now.", "Open pi CLI now.",
            [.replacement(from: "Pychy", to: "pi CLI")], "junk from learns right away")
+checkLearn("Meet Priya today.", "Meet Anil today.",
+           [.pending(from: "Priya", to: "Anil", kind: .replacement)],
+           "priya→anil waits for a second sighting")
+checkLearn("Meet priya today.", "Meet Priya today.",
+           [.term("Priya")], "casing an unknown name still learns")
 checkLearn("We sell on vinted.", "We sell on Vinted.",
            [.pending(from: "vinted", to: "Vinted", kind: .term)], "case-only pending")
 checkLearn("Meet on Tuesday.", "Meet on Monday.", [], "Tuesday→Monday never")
@@ -965,6 +971,28 @@ checkLearn("I use the Sol model.", "I use the soul model.",
 checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
             .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
+
+// Review edge cases for the mishearing gate (PR #52).
+// "gonna" and "2nd" are unknown to this oracle and fail the gate, so they
+// wait for a second sighting instead of being dropped.
+checkLearn("Meet Priya today.", "Meet today.", [], "deleting an unknown name learns nothing")
+checkLearn("We gonna ship it.", "We will ship it.",
+           [.pending(from: "gonna", to: "will", kind: .replacement)],
+           "rewording slang is not a mishearing")
+checkLearn("Use 2nd copy.", "Use 3rd copy.",
+           [.pending(from: "2nd", to: "3rd", kind: .replacement)],
+           "digit-led words with no Soundex key do not match")
+checkLearn("Open Pychy.", "Open pi CLI. Thanks", [.replacement(from: "Pychy", to: "pi CLI")],
+           "gate still passes the trailing-cut fix")
+checkLearn("Email Filip today.", "Email Phillip today.",
+           [.pending(from: "Filip", to: "Phillip", kind: .replacement)],
+           "Filip→Phillip first sighting is pending")
+checkLearn("Email Katie today.", "Email Caty today.",
+           [.pending(from: "Katie", to: "Caty", kind: .replacement)],
+           "Katie→Caty first sighting is pending")
+checkLearn("Email Ellem today.", "Email LLM today.",
+           [.pending(from: "Ellem", to: "LLM", kind: .replacement)],
+           "Ellem→LLM first sighting is pending")
 
 // Long takes: one fix in the middle of ~3000 words learns just that fix, and
 // the diff stays cheap because only the changed middle is compared.
@@ -1016,6 +1044,8 @@ try """
 
 let watcher = EditWatcher(learner: learner, dictionaryFile: dictFile,
                           pendingFile: pendFile, isEnabled: { true })
+var saveNotices: [String] = []
+watcher.onDictionarySaved = { saveNotices.append($0) }
 
 func dictHas(_ needle: String) -> Bool {
     (try? String(contentsOf: dictFile, encoding: .utf8).contains(needle)) ?? false
@@ -1027,6 +1057,7 @@ watcher.apply(learner.decide(pasted: "I use the soul model.",
 expect(dictHas("Sol").description, "false", "pending writes nothing to dictionary")
 expect((try? String(contentsOf: pendFile, encoding: .utf8))?
         .contains("soul") == true ? "pending" : "empty", "pending", "fix counted in pending file")
+expect(String(saveNotices.count), "0", "pending sighting shows no save alert")
 
 // 2nd sighting: promoted into dictionary.json.
 watcher.apply(learner.decide(pasted: "I use the soul model.",
@@ -1035,29 +1066,70 @@ expect(dictHas("soul").description, "true", "second sighting writes the rule")
 expect(dictHas("Sol").description, "true", "rule maps to Sol")
 expect(watcher.lastSummary?.contains("soul → Sol") ?? false ? "shown" : "hidden",
        "shown", "menu shows Learned: soul → Sol")
+expect(saveNotices.last ?? "", "saved to dictionary: soul → Sol", "alert follows the dictionary write")
 
 // Junk fix writes immediately.
 watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(dictHas("Pychy").description, "true", "junk fix writes at once")
 expect(dictHas("pi CLI").description, "true", "junk fix target saved")
+expect(saveNotices.last ?? "", "saved to dictionary: Pychy → pi CLI", "junk fix alerts after the write")
+
+// The same fix again changes nothing, so it does not announce another save.
+let noticesAfterPychy = saveNotices.count
+watcher.apply(learner.decide(pasted: "Open Pychy now.",
+                                   current: "Open pi CLI now.", existingRules: []))
+expect(String(saveNotices.count), String(noticesAfterPychy), "duplicate rule is not announced again")
+
+// A different person is not saved the first time: pending only, no alert.
+watcher.apply(learner.decide(pasted: "Meet Priya today.",
+                                   current: "Meet Anil today.", existingRules: []))
+expect(dictHas("Priya").description, "false", "priya→anil is not written the first time")
+expect(dictHas("Anil").description, "false", "anil is not written the first time")
+expect(String(saveNotices.count), String(noticesAfterPychy), "priya→anil shows no save alert")
 
 // Undo of the learned batch restores the pre-learn state.
 watcher.undoLast()
 expect(dictHas("Pychy").description, "false", "undo removes the junk fix")
+expect(String(saveNotices.count), String(noticesAfterPychy), "undo shows no save alert")
 
 // Undo: owner corrects a pasted Sol back to soul — the from is removed.
 watcher.apply(learner.decide(pasted: "I use the Sol model.",
                                    current: "I use the soul model.",
                                    existingRules: PersonalDictionary.loadPairs(fileURL: dictFile)))
 expect(dictHas("soul").description, "false", "undone rule loses its from")
+expect(String(saveNotices.count), String(noticesAfterPychy), "unlearning shows no save alert")
 
-// Malformed dictionary.json: no write, no crash.
+// Casing an unknown name is a real dictionary write, so it does announce.
+watcher.apply(learner.decide(pasted: "Meet priya today.",
+                                   current: "Meet Priya today.", existingRules: []))
+expect(dictHas("Priya").description, "true", "unknown-name casing is saved")
+expect(saveNotices.last ?? "", "saved to dictionary: Priya", "term save alerts after the write")
+
+// Fixes the gate can't see are pending once, then written the second time.
+@MainActor
+func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: String, _ label: String) {
+    let before = saveNotices.count
+    watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
+    expect(dictHas(from).description, "false", "\(label) first sighting not saved")
+    expect(String(saveNotices.count), String(before), "\(label) first sighting shows no alert")
+    watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
+    expect(dictHas(from).description, "true", "\(label) second sighting saved")
+    expect(dictHas(to).description, "true", "\(label) target saved")
+    expect(saveNotices.last ?? "", "saved to dictionary: \(from) → \(to)", "\(label) alerts after the second write")
+}
+learnTwice("Email Filip today.", "Email Phillip today.", "Filip", "Phillip", "Filip→Phillip")
+learnTwice("Email Katie today.", "Email Caty today.", "Katie", "Caty", "Katie→Caty")
+learnTwice("Email Ellem today.", "Email LLM today.", "Ellem", "LLM", "Ellem→LLM")
+
+// Malformed dictionary.json: no write, no crash, no alert.
+let noticesBeforeFailure = saveNotices.count
 try "not json at all {{{".write(to: dictFile, atomically: true, encoding: .utf8)
 watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect((try? String(contentsOf: dictFile, encoding: .utf8)) ?? "", "not json at all {{{",
        "malformed dictionary never clobbered")
+expect(String(saveNotices.count), String(noticesBeforeFailure), "failed write shows no save alert")
 
 // MARK: - A3 Text+UI
 

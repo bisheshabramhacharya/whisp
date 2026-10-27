@@ -189,7 +189,14 @@ public final class CorrectionLearner {
         let kind: Kind = caseOnly ? .term : .replacement
         let known = fromWords.allSatisfy(isKnownWord)
         if !known {
-            // The model produced junk ("Pychy") — learn the fix right away.
+            // Close to the correction ("Pychy" → "pi CLI"): save it now.
+            // Anything else waits for a second sighting. One swap of "Priya"
+            // for "Anil" is not saved, but a repeated mishearing the gate
+            // misses ("Filip" → "Phillip" — Soundex keeps the first letter,
+            // so F and Ph never match) still lands.
+            guard caseOnly || Self.plausibleMishearing(from, to) else {
+                return .pending(from: from, to: to, kind: kind)
+            }
             return caseOnly ? .term(to) : .replacement(from: from, to: to)
         }
         // Real word: only learn a fix that plausibly sounds/looks the same,
@@ -242,6 +249,11 @@ public final class CorrectionLearner {
 
     // MARK: - Sounds-alike
 
+    /// Fraction of the longer phrase that may differ and still be the same
+    /// utterance. 0.35 keeps "soul"~"Sol" (0.25) and drops "Tuesday"~"Monday"
+    /// (0.57).
+    static let maxEditRatio = 0.35
+
     /// True when the two strings share a Soundex key or are within a small
     /// normalized edit distance — enough to tell "soul"~"Sol" from
     /// "Tuesday"~"Monday".
@@ -249,7 +261,19 @@ public final class CorrectionLearner {
         if soundex(a) == soundex(b) { return true }
         let al = Array(letters(a)), bl = Array(letters(b))
         guard let maxLen = max(al.count, bl.count).nonzero else { return true }
-        return Double(levenshtein(al, bl)) / Double(maxLen) <= 0.35
+        return Double(levenshtein(al, bl)) / Double(maxLen) <= maxEditRatio
+    }
+
+    /// Unknown-word gate. `soundsAlike` alone rejects the mashed mishearing
+    /// "pychy" → "pi cli" (Soundex P200 vs P240, raw edit 0.60). Letting vowel
+    /// letters, including y, stand in for each other leaves one consonant
+    /// (0.20). "priya" → "anil" stays at 0.80 and is not a mishearing.
+    static func plausibleMishearing(_ a: String, _ b: String) -> Bool {
+        let key = soundex(a)
+        if !key.isEmpty, key == soundex(b) { return true }
+        let al = Array(letters(a)), bl = Array(letters(b))
+        guard let maxLen = max(al.count, bl.count).nonzero else { return true }
+        return Double(levenshtein(al, bl, vowelsMatch: true)) / Double(maxLen) <= maxEditRatio
     }
 
     /// Classic American Soundex: first letter + 3 digits.
@@ -272,16 +296,25 @@ public final class CorrectionLearner {
         return String((out + "000").prefix(4))
     }
 
-    static func levenshtein(_ a: [Character], _ b: [Character]) -> Int {
+    static func levenshtein(_ a: [Character], _ b: [Character], vowelsMatch: Bool = false) -> Int {
         var prev = Array(0...b.count)
         for (i, ca) in a.enumerated() {
             var cur = [i + 1]
             for (j, cb) in b.enumerated() {
-                cur.append(min(prev[j] + (ca == cb ? 0 : 1), prev[j + 1] + 1, cur[j] + 1))
+                let same = ca == cb || (vowelsMatch && isVowel(ca) && isVowel(cb))
+                cur.append(min(prev[j] + (same ? 0 : 1), prev[j + 1] + 1, cur[j] + 1))
             }
             prev = cur
         }
         return prev[b.count]
+    }
+
+    /// y counts: "pi" shows up inside "pychy" as y.
+    private static func isVowel(_ c: Character) -> Bool {
+        switch c {
+        case "a", "e", "i", "o", "u", "y": return true
+        default: return false
+        }
     }
 }
 

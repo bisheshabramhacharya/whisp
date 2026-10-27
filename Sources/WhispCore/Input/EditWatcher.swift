@@ -47,6 +47,10 @@ public final class EditWatcher: CorrectionWatching {
     public private(set) var lastSummary: String?
     /// The decisions that produced `lastSummary`, so Undo can reverse them.
     private var lastApplied: [CorrectionLearner.Decision] = []
+    /// "saved to dictionary: pychy → pi CLI". Called only after dictionary.json
+    /// gained that correction. Pending sightings, duplicates, removals, and
+    /// failed writes do not call it.
+    public var onDictionarySaved: ((String) -> Void)?
 
     public init(learner: CorrectionLearner, dictionaryFile: URL, pendingFile: URL,
                 isEnabled: @escaping () -> Bool) {
@@ -130,17 +134,23 @@ public final class EditWatcher: CorrectionWatching {
     public func apply(_ decisions: [CorrectionLearner.Decision]) {
         let pending = self.pending
         var learned: [String] = []
+        var saved: [String] = []
         var applied: [CorrectionLearner.Decision] = []
         for decision in decisions {
             do {
                 switch decision {
                 case .term(let term):
-                    try PersonalDictionary.addTerm(term, fileURL: dictionaryFile)
+                    if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
+                        saved.append(term)
+                    }
                     learned.append(term)
                     applied.append(decision)
                 case .replacement(let from, let to):
-                    try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
-                    learned.append("\(from) → \(to)")
+                    let phrase = "\(from) → \(to)"
+                    if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
+                        saved.append(phrase)
+                    }
+                    learned.append(phrase)
                     applied.append(decision)
                 case .pending(let from, let to, let kind):
                     let count = pending.record(from: from, to: to, kind: kind)
@@ -150,11 +160,16 @@ public final class EditWatcher: CorrectionWatching {
                         kind == .term ? .term(to) : .replacement(from: from, to: to)
                     switch promoted {
                     case .term(let term):
-                        try PersonalDictionary.addTerm(term, fileURL: dictionaryFile)
+                        if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
+                            saved.append(term)
+                        }
                         learned.append(term)
-                    case .replacement:
-                        try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
-                        learned.append("\(from) → \(to)")
+                    case .replacement(let from, let to):
+                        let phrase = "\(from) → \(to)"
+                        if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
+                            saved.append(phrase)
+                        }
+                        learned.append(phrase)
                     default: break
                     }
                     applied.append(promoted)
@@ -173,6 +188,11 @@ public final class EditWatcher: CorrectionWatching {
             lastSummary = "Learned: " + learned.joined(separator: ", ")
             lastApplied = applied
         }
+        // After the writes have returned. `saved` holds only entries whose
+        // dictionary call reported a real change.
+        if !saved.isEmpty {
+            onDictionarySaved?("saved to dictionary: " + saved.joined(separator: ", "))
+        }
     }
 
     /// Reverses the most recent learned write (menu → Undo).
@@ -186,7 +206,7 @@ public final class EditWatcher: CorrectionWatching {
             case .replacement(let from, let to):
                 try? PersonalDictionary.removeReplacement(from: from, to: to, fileURL: dictionaryFile)
             case .removed(let from, let to):
-                try? PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
+                _ = try? PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
             case .pending(let from, let to, _):
                 pending.remove(from: from, to: to)
             }
