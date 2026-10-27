@@ -329,6 +329,63 @@ Expect(Lower(Spacing.NeedsSpace('(')), "false", "after (");
 Expect(Lower(Spacing.NeedsSpace('/')), "false", "after /");
 Expect(Lower(Spacing.NeedsSpace('“')), "false", "after an opening curly quote");
 
+// The leading-space character is published before the slower caret reads.
+// A budget expiry during those reads must not drop it. The timer is a gate
+// the test opens, so this does not wait on the wall clock.
+{
+    var enteredTail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseTail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var budget = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var lookup = CaretLookup.Start(TimeSpan.FromMilliseconds(250), deliver =>
+    {
+        deliver('d');
+        enteredTail.SetResult();
+        releaseTail.Task.GetAwaiter().GetResult();
+        return 1;
+    }, _ => budget.Task);
+    await enteredTail.Task;
+    budget.SetResult();
+    var preceding = await lookup.Preceding;
+    var completed = await lookup.Completed;
+    var snapshot = await lookup.Snapshot;
+    releaseTail.SetResult();
+    Expect(preceding?.ToString() ?? "null", "d", "preceding survives a tail read that misses the budget");
+    Expect(Lower(preceding is char c && Spacing.NeedsSpace(c)), "true", "that character still decides the leading space");
+    Expect(Lower(completed), "false", "tail read past the budget is dropped");
+    Expect(snapshot.ToString(), "0", "timed-out snapshot is empty");
+}
+{
+    var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var budget = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var lookup = CaretLookup.Start(TimeSpan.FromMilliseconds(250), deliver =>
+    {
+        started.SetResult();
+        release.Task.GetAwaiter().GetResult();
+        deliver('d');
+        return 1;
+    }, _ => budget.Task);
+    await started.Task;
+    budget.SetResult();
+    var preceding = await lookup.Preceding;
+    var completed = await lookup.Completed;
+    release.SetResult();
+    Expect(preceding?.ToString() ?? "null", "null", "preceding not ready when the budget ends stays unset");
+    Expect(Lower(completed), "false", "read still running at the budget does not count");
+}
+{
+    var budget = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var done = await CaretLookup.Run(TimeSpan.FromMilliseconds(250), deliver =>
+    {
+        deliver('\n');
+        return 1;
+    }, _ => budget.Task);
+    Expect(done.Preceding == '\n' ? "start" : done.Preceding?.ToString() ?? "null", "start", "caret at the start is delivered");
+    Expect(Lower(done.Preceding is char c && Spacing.NeedsSpace(c)), "false", "start of field still needs no leading space");
+    Expect(Lower(done.Completed), "true", "a fast read keeps the snapshot");
+    Expect(done.Snapshot.ToString(), "1", "snapshot from a fast read is kept");
+}
+
 // HotkeyStateMachine
 
 string Run(params (HotkeyInput Input, double At)[] inputs)

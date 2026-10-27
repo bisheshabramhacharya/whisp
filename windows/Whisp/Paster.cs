@@ -1,5 +1,6 @@
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
+using Whisp.Core.Input;
 using Whisp.Core.Text;
 
 namespace Whisp;
@@ -69,10 +70,9 @@ internal sealed class Paster
     public PasteTarget Target()
     {
         var window = Native.GetForegroundWindow();
-        var lookup = Task.Run(ReadCaret);
-        var caret = Task.WhenAny(lookup, Task.Delay(LookupTimeout)).ContinueWith(_ =>
-            lookup.IsCompletedSuccessfully ? lookup.Result : default(CaretSnapshot));
-        var preceding = caret.ContinueWith(t => t.IsCompletedSuccessfully ? t.Result.Preceding : (char?)null);
+        // Preceding is published before the extra UI Automation reads, so those
+        // reads missing the 250 ms budget cannot drop the leading space.
+        var lookup = CaretLookup.Start(LookupTimeout, ReadCaret);
         string app;
         try
         {
@@ -88,8 +88,8 @@ internal sealed class Paster
         {
             Window = window,
             AppName = app,
-            Preceding = preceding,
-            Caret = caret,
+            Preceding = lookup.Preceding,
+            Caret = lookup.Snapshot,
         };
     }
 
@@ -97,8 +97,11 @@ internal sealed class Paster
     public async Task<PasteResult> PasteAsync(string text, PasteTarget target)
     {
         if (text.Length == 0) return PasteResult.Pasted;
+        // The delivered character, not the snapshot: a timed-out tail read leaves
+        // the snapshot empty and would otherwise drop the leading space.
+        var preceding = await target.Preceding;
         var caret = await target.Caret;
-        if (char.IsLetterOrDigit(text[0]) && caret.Preceding is char previous && Spacing.NeedsSpace(previous))
+        if (char.IsLetterOrDigit(text[0]) && preceding is char previous && Spacing.NeedsSpace(previous))
             text = " " + text;
 
         if (Native.GetForegroundWindow() != target.Window)
@@ -332,16 +335,26 @@ internal sealed class Paster
     /// The character before the caret, plus the text a later read uses to prove the paste.
     /// Preceding-character rules match the previous implementation: failure → null (paste as-is),
     /// caret at the start → '\n' (no leading space).
-    private static CaretSnapshot ReadCaret()
+    /// <paramref name="deliverPreceding"/> is called as soon as that character is known,
+    /// before the selection and tail reads, which share the lookup budget.
+    private static CaretSnapshot ReadCaret(Action<char?> deliverPreceding)
     {
         try
         {
             var focused = AutomationElement.FocusedElement;
-            if (focused == null) return default;
+            if (focused == null)
+            {
+                deliverPreceding(null);
+                return default;
+            }
             if (focused.TryGetCurrentPattern(TextPattern.Pattern, out var pattern) && pattern is TextPattern text)
             {
                 var selection = text.GetSelection();
-                if (selection.Length == 0) return default;
+                if (selection.Length == 0)
+                {
+                    deliverPreceding(null);
+                    return default;
+                }
                 var range = selection[0].Clone();
                 range.MoveEndpointByRange(TextPatternRangeEndpoint.End, range, TextPatternRangeEndpoint.Start);
                 char? preceding;
@@ -352,15 +365,27 @@ internal sealed class Paster
                     var before = range.GetText(1);
                     preceding = before.Length > 0 ? before[^1] : null;
                 }
+                deliverPreceding(preceding);
 
-                var selectedRaw = selection[0].GetText(SelectedCap);
-                var block = selectedRaw.Length >= SelectedCap;
-                string? selected = !block && selectedRaw.Length > 0 ? selectedRaw : null;
+                // These reads are not needed for the leading space. If they hang
+                // or throw, the character above is already delivered.
+                var block = false;
+                string? selected = null;
+                string? tail = null;
+                try
+                {
+                    var selectedRaw = selection[0].GetText(SelectedCap);
+                    block = selectedRaw.Length >= SelectedCap;
+                    selected = !block && selectedRaw.Length > 0 ? selectedRaw : null;
 
-                var tailRange = selection[0].Clone();
-                tailRange.MoveEndpointByRange(TextPatternRangeEndpoint.End, tailRange, TextPatternRangeEndpoint.Start);
-                tailRange.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, -80);
-                var tail = tailRange.GetText(80);
+                    var tailRange = selection[0].Clone();
+                    tailRange.MoveEndpointByRange(TextPatternRangeEndpoint.End, tailRange, TextPatternRangeEndpoint.Start);
+                    tailRange.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, -80);
+                    tail = tailRange.GetText(80);
+                }
+                catch (Exception)
+                {
+                }
 
                 return new CaretSnapshot
                 {
@@ -374,11 +399,15 @@ internal sealed class Paster
             {
                 // No caret position here: only an empty field is certain to need no space.
                 // Tail stays null, so the restore waits out the full delay.
-                return new CaretSnapshot { Preceding = v.Current.Value.Length == 0 ? '\n' : null };
+                var preceding = v.Current.Value.Length == 0 ? '\n' : (char?)null;
+                deliverPreceding(preceding);
+                return new CaretSnapshot { Preceding = preceding };
             }
+            deliverPreceding(null);
         }
         catch (Exception)
         {
+            deliverPreceding(null);
         }
         return default;
     }

@@ -404,8 +404,10 @@ internal sealed class DictationController
         var outcome = PasteResult.Pasted;
         if (cleaned.Trim().Length > 0)
         {
-            // Paste waits for the caret lookup; Esc during that wait must still stop the paste.
-            await target.Preceding;
+            // Wait out the whole caret lookup. The character before the cursor is
+            // saved before the extra reads, so a timeout there still keeps the
+            // leading space. Esc during this wait must still stop the paste.
+            await target.Caret;
             if (id <= _cancelledThrough) return;
             outcome = await _paster.PasteAsync(cleaned, target);
         }
