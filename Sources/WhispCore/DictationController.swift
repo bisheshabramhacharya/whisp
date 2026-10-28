@@ -589,18 +589,25 @@ public final class DictationController: ObservableObject {
     /// Writes history and the WAV off the main thread, in order.
     private func persist(_ entry: HistoryEntry, samples: [Float]?) {
         let history = history, recordings = recordings, logger = logger
-        persistQueue.async {
+        persistQueue.async { [weak self] in
+            var failed = false
             do {
                 try history.append(entry)
             } catch {
+                failed = true
                 logger.error("history append failed: \(error.localizedDescription, privacy: .public)")
             }
-            guard let samples else { return }
-            do {
-                try recordings.save(samples: samples, id: entry.id)
-            } catch {
-                logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
+            if let samples {
+                do {
+                    try recordings.save(samples: samples, id: entry.id)
+                } catch {
+                    failed = true
+                    logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
+                }
             }
+            // A full disk loses the entry silently otherwise — say it in the menu.
+            guard failed else { return }
+            Task { @MainActor in self?.statusMessage = Self.persistFailedMessage }
         }
     }
 
@@ -608,6 +615,10 @@ public final class DictationController: ObservableObject {
     public func flushPersistence() {
         persistQueue.sync {}
     }
+
+    /// Status text when a history/WAV write fails (disk full, permissions).
+    public static let persistFailedMessage =
+        "Couldn't save that take — check disk space and file permissions"
 
     private static func ms(since start: DispatchTime) -> Int {
         Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
