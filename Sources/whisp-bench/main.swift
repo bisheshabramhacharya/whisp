@@ -242,9 +242,10 @@ func peakRSSBytes() -> UInt64 {
     return UInt64(usage.ru_maxrss)  // bytes on macOS
 }
 
-/// Kernel ledger of dirty memory charged to this process (`task_vm_info.phys_footprint`),
-/// the same number Activity Monitor shows as Memory. `ps` RSS does not include
-/// Core ML encoder weights: with the 5 s and 15 s encoders loaded it read 72 MB.
+/// Process `phys_footprint` (`task_vm_info`). Core ML / ANE encoder weights are
+/// not in this number: with the 5 s and 15 s int8 encoders loaded (about 1.1 GB)
+/// it read 74 MB, and `footprint -p` agreed. The system-wide cost is the
+/// `vm_stat` delta printed around load.
 func physicalFootprint() -> UInt64 {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
@@ -258,8 +259,8 @@ func physicalFootprint() -> UInt64 {
 }
 
 /// `phys_footprint` line from `/usr/bin/footprint -p <pid>`, or nil if the tool
-/// is missing. Same ledger as `physicalFootprint()`, printed by the system tool
-/// so a bench log can be checked against it.
+/// is missing. Same per-process ledger as `physicalFootprint()`: it also
+/// excludes ANE encoder weights.
 func footprintToolPhys() -> String? {
     let tool = "/usr/bin/footprint"
     guard FileManager.default.isExecutableFile(atPath: tool) else { return nil }
@@ -285,6 +286,73 @@ func footprintToolPhys() -> String? {
           let text = try? String(contentsOf: out, encoding: .utf8) else { return nil }
     return text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         .first { $0.hasPrefix("phys_footprint:") && !$0.contains("peak") }
+}
+
+/// One `vm_stat` sample. Page counts are system-wide, so a before/after pair
+/// around model load can see Neural Engine memory that the process footprint
+/// does not.
+struct SystemMemorySample {
+    var pageBytes: UInt64
+    var freePages: UInt64
+    var wiredPages: UInt64
+    var anonymousPages: UInt64
+    var compressorPages: UInt64
+}
+
+func parseVmStat(_ text: String) -> SystemMemorySample? {
+    var pageBytes: UInt64 = 0
+    if let start = text.range(of: "page size of ") {
+        let digits = text[start.upperBound...].prefix { $0.isNumber }
+        pageBytes = UInt64(digits) ?? 0
+    }
+    guard pageBytes > 0 else { return nil }
+    func field(_ label: String) -> UInt64? {
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix(label) else { continue }
+            let digits = line.drop { !$0.isNumber }.prefix { $0.isNumber }
+            return UInt64(digits)
+        }
+        return nil
+    }
+    guard let free = field("Pages free:"),
+          let wired = field("Pages wired down:"),
+          let anonymous = field("Anonymous pages:"),
+          let compressor = field("Pages occupied by compressor:")
+    else { return nil }
+    return SystemMemorySample(
+        pageBytes: pageBytes, freePages: free, wiredPages: wired,
+        anonymousPages: anonymous, compressorPages: compressor)
+}
+
+func sampleSystemMemory() -> SystemMemorySample? {
+    let tool = "/usr/bin/vm_stat"
+    guard FileManager.default.isExecutableFile(atPath: tool) else { return nil }
+    let pipe = Pipe()
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: tool)
+    task.standardOutput = pipe
+    task.standardError = FileHandle.nullDevice
+    do { try task.run() } catch { return nil }
+    task.waitUntilExit()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    guard task.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return nil }
+    return parseVmStat(text)
+}
+
+func systemMemoryDeltaLine(_ before: SystemMemorySample, _ after: SystemMemorySample) -> String {
+    let page = before.pageBytes
+    func mb(_ pages: UInt64) -> Double { Double(pages) * Double(page) / 1_048_576 }
+    func part(_ name: String, _ start: UInt64, _ end: UInt64) -> String {
+        let delta = Double(Int64(end) - Int64(start)) * Double(page) / 1_048_576
+        return String(format: "%@ %.0f→%.0f MB (%+.0f)", name, mb(start), mb(end), delta)
+    }
+    return "system memory (vm_stat): " + [
+        part("free", before.freePages, after.freePages),
+        part("wired", before.wiredPages, after.wiredPages),
+        part("anonymous", before.anonymousPages, after.anonymousPages),
+        part("compressor", before.compressorPages, after.compressorPages),
+    ].joined(separator: "; ")
 }
 
 func formatMB(_ bytes: UInt64) -> String {

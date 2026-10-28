@@ -209,6 +209,8 @@ uv sync        # python 3.10 + torch + coremltools + deps (one-time, ~2 GB)
 uv pip install --no-deps --force-reinstall \
   "nemo_toolkit @ git+https://github.com/NVIDIA-NeMo/NeMo.git@95f92737cfb8ee0123bb328b07a2d24c6d859aff"
 uv run --no-sync python convert-short-window.py --windows 5 --validate --install
+# Linux, where coremlcompiler is absent: int8 .mlpackage only, no compile
+uv run --no-sync python convert-short-window.py --windows 10 --export-only
 ```
 
 - **Inputs**: none committed. The `.nemo` checkpoint auto-downloads from HF

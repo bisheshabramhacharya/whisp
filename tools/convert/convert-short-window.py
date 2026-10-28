@@ -12,7 +12,8 @@ frames while paying O(window) (attention O(window^2)) cost instead of the full
 Exports each requested window as:
   parakeet_unified_encoder_w{MS}.mlpackage        (fp16)
   parakeet_unified_encoder_w{MS}_int8.mlpackage   (per-channel int8)
-and compiles .mlmodelc bundles next to them with coremlcompiler.
+and, unless --export-only, compiles .mlmodelc bundles next to them with
+coremlcompiler (macOS only).
 
 Inputs: only the .nemo checkpoint (auto-downloaded from HF when missing) — no
 binary assets are committed; --validate synthesizes speech with `say` when
@@ -26,6 +27,10 @@ CoreML encoder (valid frames only — must be ~identical).
 Usage:
     uv run --no-sync python convert-short-window.py \
         --windows 2,5 --output-dir ./build/short_window --validate --install
+
+    # Linux (no coremlcompiler): stop after the int8 .mlpackage
+    uv run --no-sync python convert-short-window.py \
+        --windows 10 --export-only
 """
 from __future__ import annotations
 
@@ -107,7 +112,7 @@ def quantize_int8(src: Path, dst: Path) -> Path:
     return dst
 
 
-def export_window(asr_model, window_s: float, out_dir: Path) -> dict:
+def export_window(asr_model, window_s: float, out_dir: Path, compile: bool = True) -> dict:
     """Trace the full-attention encoder on a `window_s`-second mel input."""
     samples = int(window_s * SAMPLE_RATE)
     audio = torch.zeros(1, samples, dtype=torch.float32)
@@ -157,8 +162,9 @@ def export_window(asr_model, window_s: float, out_dir: Path) -> dict:
     quantize_int8(pkg, int8_pkg)
     print(f"saved {int8_pkg}")
 
-    compile_package(pkg, out_dir)
-    compile_package(int8_pkg, out_dir)
+    if compile:
+        compile_package(pkg, out_dir)
+        compile_package(int8_pkg, out_dir)
     return {
         "window_seconds": window_s,
         "mel_shape": list(_tensor_shape(mel_ref)),
@@ -226,6 +232,12 @@ def main() -> None:
         help="comma-separated window sizes in seconds (default 2,5). "
         "The app pins 5, and 10 once that bundle is installed.",
     )
+    parser.add_argument(
+        "--export-only",
+        action="store_true",
+        help="trace and int8-quantize the .mlpackage files, then stop. "
+        "Skips coremlcompiler, --validate, and --install (those need macOS).",
+    )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument(
         "--audio-file",
@@ -255,7 +267,8 @@ def main() -> None:
 
     results = []
     for w in windows:
-        results.append(export_window(asr_model, w, args.output_dir))
+        results.append(export_window(
+            asr_model, w, args.output_dir, compile=not args.export_only))
 
     meta = {
         "model_id": MODEL_ID,
@@ -264,7 +277,10 @@ def main() -> None:
     }
     (args.output_dir / "short_windows.json").write_text(json.dumps(meta, indent=2))
 
-    if args.install:
+    if args.export_only and (args.install or args.validate):
+        print("--export-only: skipping --validate and --install (macOS-only)")
+
+    if args.install and not args.export_only:
         MODEL_CACHE.mkdir(parents=True, exist_ok=True)
         for r in results:
             ms = int(round(r["window_seconds"] * 1000))
@@ -276,7 +292,7 @@ def main() -> None:
             subprocess.run(["cp", "-R", str(src), str(dst)], check=True)
             print(f"installed {dst}")
 
-    if args.validate:
+    if args.validate and not args.export_only:
         from sample_audio import ensure_audio
 
         audio = args.audio_file or ensure_audio()

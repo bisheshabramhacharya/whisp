@@ -142,9 +142,14 @@ final class WindowHistogram: @unchecked Sendable {
     }
 }
 
-/// `phys_footprint` after `prepare` (not `ps` RSS), plus which short-window
-/// encoders loaded. Returns a histogram filled in as decodes run.
-func reportEncoderLoad(_ name: String, _ engine: Transcribing) async -> WindowHistogram? {
+/// Process `phys_footprint` after `prepare`, the system-wide `vm_stat` change
+/// since `memoryBefore`, and which short-window encoders loaded. The process
+/// number excludes ANE encoder weights. Returns a histogram filled in as
+/// decodes run.
+func reportEncoderLoad(
+    _ name: String, _ engine: Transcribing, memoryBefore: SystemMemorySample? = nil
+) async -> WindowHistogram? {
+    let memoryAfter = memoryBefore == nil ? nil : sampleSystemMemory()
     var windows = ""
     var histogram: WindowHistogram?
     if let short = engine as? ShortWindowEngine {
@@ -162,11 +167,16 @@ func reportEncoderLoad(_ name: String, _ engine: Transcribing) async -> WindowHi
         await short.observeDecodes { hist.add(window: $0.windowSamples, input: $0.inputSamples) }
         histogram = hist
     }
-    // phys_footprint, not ps RSS. RSS stayed at 72 MB with the 5 s and 15 s
-    // encoders loaded and does not include those weights.
-    print("\(name) loaded\(windows)  phys_footprint \(formatMB(physicalFootprint()))")
+    // Process-only. With ~1.1 GB of int8 encoders loaded this read 74 MB, and
+    // footprint(1) agreed: the weights are outside this process.
+    print("\(name) loaded\(windows)  phys_footprint \(formatMB(physicalFootprint())) (process only; excludes ANE encoder weights)")
     if let tool = footprintToolPhys() {
-        print("  footprint(1) \(tool)")
+        print("  footprint(1) \(tool) (process only; excludes ANE encoder weights)")
+    }
+    if let before = memoryBefore, let after = memoryAfter {
+        print("  \(systemMemoryDeltaLine(before, after))")
+    } else {
+        print("  system memory: vm_stat unavailable")
     }
     return histogram
 }
@@ -187,8 +197,9 @@ func runReplay(
     micDropMs: Double, show: Bool
 ) async throws {
     let engine = try CompareRunner.makeEngine(named: engineName)
+    let memoryBefore = sampleSystemMemory()
     try await engine.prepare()
-    let histogram = await reportEncoderLoad(engineName, engine)
+    let histogram = await reportEncoderLoad(engineName, engine, memoryBefore: memoryBefore)
 
     let replayer = ReleaseReplayer(
         transcriber: engine, micDropSamples: Int(micDropMs * 16))
@@ -238,8 +249,9 @@ func runCompare(
     var histograms: [WindowHistogram?] = []
     for name in names {
         let engine = try CompareRunner.makeEngine(named: name)
+        let memoryBefore = sampleSystemMemory()
         try await engine.prepare()
-        histograms.append(await reportEncoderLoad(name, engine))
+        histograms.append(await reportEncoderLoad(name, engine, memoryBefore: memoryBefore))
         engines.append((name, engine))
     }
 

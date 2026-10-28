@@ -53,10 +53,14 @@ It is a second int8 bundle, not one shared weight file. A multi-function
 Core ML model only loads on macOS 15, and this app is macOS 14. The int8
 quantizer also rejects multi-function models, and the constants baked at
 trace time differ per window, so two bundles cannot share `weight.bin`.
-One int8 window is about 560 MB on disk. Latency, and how much
-`phys_footprint` grows after the 10 s encoder loads, are pending a Mac run.
-`ps` RSS does not include the Core ML encoders (it read 72 MB with the 5 s
-and 15 s encoders loaded), so it is not the number to compare.
+One int8 window is about 560 MB on disk. Latency is pending a Mac run.
+Per-process `phys_footprint` (and `footprint -p`) does not include the Core ML
+encoders: with the 5 s and 15 s int8 encoders loaded, about 1.1 GB of weights,
+both read 74 MB. That memory sits outside the whisp process, most likely in
+the Neural Engine daemon, so no per-process number can see it. The bench
+prints a system-wide `vm_stat` delta around model load (free, wired,
+anonymous, compressor). Compare that delta with the 10 s bundle installed and
+with it moved aside.
 
 The zip is not published yet, and `ShortWindowEngine.middleBundle.sha256`
 is empty, so the app does not download the 10 s window. Follow-up: build
@@ -80,10 +84,11 @@ uv pip install --no-deps --force-reinstall \
 uv run --no-sync python convert-short-window.py --windows 10 --validate --install
 cd ../..
 
-# "short loaded windows" must include 10s. Read phys_footprint (task_vm_info),
-# not `ps` RSS. Run once with the bundle and once with it moved aside, and
-# keep the second launch of each — the first also compiles the model.
-# The difference is pending that Mac run.
+# "short loaded windows" must include 10s. phys_footprint is process-only and
+# excludes the encoders (74 MB with the 5 s and 15 s bundles loaded). Read the
+# "system memory (vm_stat)" line. Run once with the bundle and once with it
+# moved aside, and keep the second launch of each — the first also compiles
+# the model. The difference between those deltas is pending that Mac run.
 .build/release/whisp-bench --replay --engine short --offsets 0 <one wav>
 
 # Identical text. Use files whose speech is 5–10 s. agree must be 1.0000, and
