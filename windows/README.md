@@ -163,6 +163,13 @@ $env:WHISP_SRC = (Get-Location); ./windows/install.ps1 # install from this check
 folders; `WHISP_TEST_MIC=a.wav;b.wav` replays WAVs instead of the microphone
 (one per dictation) for end-to-end tests.
 
+The Mac build traces the Core ML encoder at a fixed length, so a long tail
+uses a 5 s or 10 s window instead of always paying for 15 s. This build's
+ONNX encoder already takes the audio's own length. In
+[Choosing the model](#choosing-the-model), a clip under 6 seconds takes about
+0.26 s and a 6–15 s clip about 0.48 s on that desktop, so those extra Mac
+bundles are not ported.
+
 ```
 windows/WhispCore    text cleanup, dictionary, hotkey state machine, segmenter, storage, Mac import
                      (line-for-line ports of Sources/WhispCore; no Windows APIs, so it's testable anywhere)

@@ -94,6 +94,101 @@ func runProfile(engineName: String, runs: Int, files: [LoadedFile], show: Bool) 
     if skipped > 0 { print("  (\(skipped) files skipped: >15 s, multi-window)") }
 }
 
+// MARK: - Load report
+
+/// Counts which encoder window each short-engine decode actually used.
+final class WindowHistogram: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stats: [Int: (count: Int, minIn: Int, maxIn: Int)] = [:]
+    private var missedMiddle = 0
+    /// Set when the 10 s bundle was actually loaded. The missing-bundle warning
+    /// is printed once at load; this flag keeps a second warning from firing
+    /// for the same fact after the decodes.
+    var middleLoaded = false
+
+    func add(window: Int, input: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        if var row = stats[window] {
+            row.count += 1
+            row.minIn = min(row.minIn, input)
+            row.maxIn = max(row.maxIn, input)
+            stats[window] = row
+        } else {
+            stats[window] = (1, input, input)
+        }
+        let fast = ShortWindowEngine.fastWindowSeconds * 16_000
+        let middle = ShortWindowEngine.middleWindowSeconds * 16_000
+        if input > fast && input <= middle && window > middle { missedMiddle += 1 }
+    }
+
+    var line: String {
+        lock.lock()
+        defer { lock.unlock() }
+        if stats.isEmpty { return "none" }
+        return stats.keys.sorted().map { key in
+            let row = stats[key]!
+            return String(
+                format: "%.0fs×%d (input %.1f–%.1fs)",
+                Double(key) / 16_000, row.count,
+                Double(row.minIn) / 16_000, Double(row.maxIn) / 16_000)
+        }.joined(separator: "  ")
+    }
+
+    var missedMiddleCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return missedMiddle
+    }
+}
+
+/// Process `phys_footprint` after `prepare`, the system-wide `vm_stat` change
+/// since `memoryBefore`, and which short-window encoders loaded. The process
+/// number excludes ANE encoder weights. Returns a histogram filled in as
+/// decodes run.
+func reportEncoderLoad(
+    _ name: String, _ engine: Transcribing, memoryBefore: SystemMemorySample? = nil
+) async -> WindowHistogram? {
+    let memoryAfter = memoryBefore == nil ? nil : sampleSystemMemory()
+    var windows = ""
+    var histogram: WindowHistogram?
+    if let short = engine as? ShortWindowEngine {
+        let loaded = await short.loadedWindowSamples()
+        let labels = loaded.map { String(format: "%.0fs", Double($0) / 16_000) }
+        windows = " windows " + (labels.isEmpty ? "none" : labels.joined(separator: "+"))
+        let hist = WindowHistogram()
+        hist.middleLoaded = loaded.contains(ShortWindowEngine.middleWindowSeconds * 16_000)
+        if !hist.middleLoaded {
+            let fast = ShortWindowEngine.fastWindowSeconds
+            let middle = ShortWindowEngine.middleWindowSeconds
+            print("  warning: \(ShortWindowEngine.middleBundle.name) is not loaded, so audio from \(fast)s to \(middle)s still uses the 15s encoder.")
+            print("  build it with: tools/convert/convert-short-window.py --windows \(middle) --install")
+        }
+        await short.observeDecodes { hist.add(window: $0.windowSamples, input: $0.inputSamples) }
+        histogram = hist
+    }
+    // Process-only. With ~1.1 GB of int8 encoders loaded this read 74 MB, and
+    // footprint(1) agreed: the weights are outside this process.
+    print("\(name) loaded\(windows)  phys_footprint \(formatMB(physicalFootprint())) (process only; excludes ANE encoder weights)")
+    if let tool = footprintToolPhys() {
+        print("  footprint(1) \(tool) (process only; excludes ANE encoder weights)")
+    }
+    if let before = memoryBefore, let after = memoryAfter {
+        print("  \(systemMemoryDeltaLine(before, after))")
+    } else {
+        print("  system memory: vm_stat unavailable")
+    }
+    return histogram
+}
+
+func reportWindowUse(_ histogram: WindowHistogram?) {
+    guard let histogram else { return }
+    print("encoder decodes: \(histogram.line)")
+    if histogram.missedMiddleCount > 0, histogram.middleLoaded {
+        print("  warning: \(histogram.missedMiddleCount) decodes of 5–10s audio used a window larger than 10s. The 10s bundle was loaded and was not the one that ran.")
+    }
+}
+
 // MARK: - --replay
 
 /// Release replay over all files with aggregate output.
@@ -102,7 +197,9 @@ func runReplay(
     micDropMs: Double, show: Bool
 ) async throws {
     let engine = try CompareRunner.makeEngine(named: engineName)
+    let memoryBefore = sampleSystemMemory()
     try await engine.prepare()
+    let histogram = await reportEncoderLoad(engineName, engine, memoryBefore: memoryBefore)
 
     let replayer = ReleaseReplayer(
         transcriber: engine, micDropSamples: Int(micDropMs * 16))
@@ -138,6 +235,7 @@ func runReplay(
     print(String(format: "Release replay over %d files (engine %@, mic-drop %.0f ms):",
                  files.count, engineName, micDropMs))
     for line in aggregate.lines() { print(line) }
+    reportWindowUse(histogram)
 }
 
 // MARK: - --compare
@@ -148,9 +246,12 @@ func runCompare(
     files: [LoadedFile], show: Bool
 ) async throws {
     var engines: [(name: String, t: Transcribing)] = []
+    var histograms: [WindowHistogram?] = []
     for name in names {
         let engine = try CompareRunner.makeEngine(named: name)
+        let memoryBefore = sampleSystemMemory()
         try await engine.prepare()
+        histograms.append(await reportEncoderLoad(name, engine, memoryBefore: memoryBefore))
         engines.append((name, engine))
     }
 
@@ -171,5 +272,12 @@ func runCompare(
             format: "  %@ stages: mel %.1f | enc %.1f | joint %.1f (%d) | dec %.1f (%d) | total %.1f",
             s.name, p.melMs, p.encoderMs, p.jointMs, p.jointCalls, p.decoderMs,
             p.decoderCalls, p.totalMs))
+    }
+    for (name, histogram) in zip(names, histograms) {
+        guard let histogram else { continue }
+        print("\(name) encoder decodes: \(histogram.line)")
+        if histogram.missedMiddleCount > 0, histogram.middleLoaded {
+            print("  warning: \(name) ran \(histogram.missedMiddleCount) decodes of 5–10s audio on a window larger than 10s. The 10s bundle was loaded and was not the one that ran.")
+        }
     }
 }
