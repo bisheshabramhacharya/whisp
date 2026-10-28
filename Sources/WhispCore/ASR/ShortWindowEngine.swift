@@ -49,10 +49,22 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
     /// Same weights traced at 10 s. A separate int8 bundle, not a multi-function
     /// model: those only load on macOS 15 (this app is macOS 14), the int8
     /// quantizer rejects them, and each window's traced constants differ so
-    /// two bundles cannot share one weight file. `sha256` stays empty until
-    /// the zip is published (`tools/convert/RELEASE.md`). An empty checksum is
-    /// not downloaded — a missing asset must not fail every launch — but a
-    /// bundle placed in the model cache by `--install` is used immediately.
+    /// two bundles cannot share one weight file.
+    ///
+    /// `sha256` is intentionally empty. No release asset exists yet, and an
+    /// invented checksum would make every launch reject the download. The app
+    /// does not fetch this bundle, so people who only install Whisp do not get
+    /// the 10 s window until a follow-up: build it with
+    /// `tools/convert/convert-short-window.py --windows 10`, publish
+    /// `parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on the `models-v2`
+    /// release (`tools/convert/RELEASE.md`), then paste that zip's real
+    /// SHA-256 into `sha256` below.
+    ///
+    /// A bundle that is already on disk is used with no checksum and no
+    /// download. `convert-short-window.py --install` copies it into
+    /// `~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b/`,
+    /// the directory this engine scans. `WHISP_MODEL_DIR` points a bench run
+    /// at another folder of the same files.
     public static let middleBundle = RemoteBundle(
         name: "parakeet_unified_encoder_w\(middleWindowSeconds * 1000)_int8.mlmodelc",
         url: URL(string: "https://github.com/bisheshabramhacharya/whisp/releases/download/models-v2/parakeet_unified_encoder_w\(middleWindowSeconds * 1000)_int8.mlmodelc.zip")!,
@@ -348,7 +360,8 @@ extension ShortWindowEngine {
                 encoders[variant.windowSamples] = try await MLModel.load(
                     contentsOf: variant.url, configuration: encConfig)
             } catch {
-                asrLogger.error("Fast model failed to load: \(error.localizedDescription, privacy: .public)")
+                asrLogger.error(
+                    "Encoder window failed to load (\(url.lastPathComponent, privacy: .public)): \(error.localizedDescription, privacy: .public)")
                 return
             }
             mels[variant.windowSamples] = UnifiedMel(

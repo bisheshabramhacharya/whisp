@@ -35,7 +35,7 @@ paid for 15 s of encoder work.
 | Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
 
-## 10 s window (not measured here)
+## 10 s window
 
 About a third of releases still waited over 100 ms because the speech after
 the last pause was longer than 5 s, so it went to the 15 s encoder. Room
@@ -53,13 +53,19 @@ It is a second int8 bundle, not one shared weight file. A multi-function
 Core ML model only loads on macOS 15, and this app is macOS 14. The int8
 quantizer also rejects multi-function models, and the constants baked at
 trace time differ per window, so two bundles cannot share `weight.bin`.
-One int8 window is about 560 MB on disk. How much resident memory grows
-after load has not been measured.
+One int8 window is about 560 MB on disk. Latency, and how much
+`phys_footprint` grows after the 10 s encoder loads, are pending a Mac run.
+`ps` RSS does not include the Core ML encoders (it read 72 MB with the 5 s
+and 15 s encoders loaded), so it is not the number to compare.
 
-The zip is not published yet. Until its SHA-256 is filled in on
-`ShortWindowEngine.middleBundle`, the app does not try to download it.
-Build it locally with `tools/convert` (`--windows 10 --install`). No speed
-number for the 10 s window is claimed here: this environment cannot run Core ML.
+The zip is not published yet, and `ShortWindowEngine.middleBundle.sha256`
+is empty, so the app does not download the 10 s window. Follow-up: build
+the bundle, publish `parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on
+`models-v2`, and paste that zip's SHA-256 into `middleBundle` (see
+`tools/convert/RELEASE.md`). Until then a locally built bundle is used with
+no checksum: `--install` copies it into the FluidAudio model cache, which is
+the directory the engine scans, and `WHISP_MODEL_DIR` points the bench at
+another folder of the same files.
 
 ## Reproduce
 
@@ -74,10 +80,10 @@ uv pip install --no-deps --force-reinstall \
 uv run --no-sync python convert-short-window.py --windows 10 --validate --install
 cd ../..
 
-# The "short loaded windows" line must include 10s. "resident" is phys_footprint
-# after prepare. Run it once without the bundle (move the .mlmodelc aside) and
-# once with it; the difference is the 10 s encoder's resident cost. Use the
-# second launch — the first also pays to compile the model.
+# "short loaded windows" must include 10s. Read phys_footprint (task_vm_info),
+# not `ps` RSS. Run once with the bundle and once with it moved aside, and
+# keep the second launch of each — the first also compiles the model.
+# The difference is pending that Mac run.
 .build/release/whisp-bench --replay --engine short --offsets 0 <one wav>
 
 # Identical text. Use files whose speech is 5–10 s. agree must be 1.0000, and
@@ -86,7 +92,7 @@ cd ../..
 .build/release/whisp-bench --compare parakeet,short --runs 2 --idle 0 <5–10 s wavs>
 
 # p95 wait at release, same files, bundle installed vs moved aside. Last-word
-# ok must match. Read the numbers off the machine; they are not known yet.
+# ok must match. The p95 numbers are pending that Mac run.
 .build/release/whisp-bench --replay --engine short <wavs>
 
 # real time, through the app's own dictation code, next to what the app measured:

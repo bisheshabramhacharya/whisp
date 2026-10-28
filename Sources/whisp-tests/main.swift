@@ -1319,11 +1319,13 @@ do {
         published.name, "a longer window still downloads when the 5s one is installed")
 
     let missing = ShortWindowEngine.bundlesToFetch(presentNames: [])
-    expect(missing.contains { $0.name == ShortWindowEngine.fastBundle.name } ? "yes" : "no",
-           "yes", "5s bundle is fetched when missing")
-    let middleFetched = missing.contains { $0.name == ShortWindowEngine.middleBundle.name }
-    expect(middleFetched == !ShortWindowEngine.middleBundle.sha256.isEmpty ? "match" : "mismatch",
-           "match", "10s bundle is fetched only once its checksum is published")
+    // The 10 s checksum is empty on purpose: there is no published zip, and a
+    // made-up hash must not land here. When models-v2 is published, replace ""
+    // with that zip's SHA-256 and expect both bundle names below.
+    expect(ShortWindowEngine.middleBundle.sha256, "",
+           "10s checksum stays empty until the models-v2 zip is published")
+    expect(missing.map(\.name).joined(separator: ","), ShortWindowEngine.fastBundle.name,
+           "while the 10s checksum is empty, only the 5s bundle is downloaded")
 
     let fm = FileManager.default
     let dir = fm.temporaryDirectory.appendingPathComponent("whisp-windows-\(UUID().uuidString)")

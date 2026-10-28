@@ -242,6 +242,9 @@ func peakRSSBytes() -> UInt64 {
     return UInt64(usage.ru_maxrss)  // bytes on macOS
 }
 
+/// Kernel ledger of dirty memory charged to this process (`task_vm_info.phys_footprint`),
+/// the same number Activity Monitor shows as Memory. `ps` RSS does not include
+/// Core ML encoder weights: with the 5 s and 15 s encoders loaded it read 72 MB.
 func physicalFootprint() -> UInt64 {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
@@ -252,6 +255,36 @@ func physicalFootprint() -> UInt64 {
         }
     }
     return result == KERN_SUCCESS ? info.phys_footprint : 0
+}
+
+/// `phys_footprint` line from `/usr/bin/footprint -p <pid>`, or nil if the tool
+/// is missing. Same ledger as `physicalFootprint()`, printed by the system tool
+/// so a bench log can be checked against it.
+func footprintToolPhys() -> String? {
+    let tool = "/usr/bin/footprint"
+    guard FileManager.default.isExecutableFile(atPath: tool) else { return nil }
+    let out = FileManager.default.temporaryDirectory
+        .appendingPathComponent("whisp-footprint-\(ProcessInfo.processInfo.processIdentifier).txt")
+    guard FileManager.default.createFile(atPath: out.path, contents: nil),
+          let handle = try? FileHandle(forWritingTo: out) else { return nil }
+    defer { try? FileManager.default.removeItem(at: out) }
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: tool)
+    task.arguments = ["-p", String(ProcessInfo.processInfo.processIdentifier)]
+    task.standardOutput = handle
+    task.standardError = FileHandle.nullDevice
+    do {
+        try task.run()
+    } catch {
+        try? handle.close()
+        return nil
+    }
+    task.waitUntilExit()
+    try? handle.close()
+    guard task.terminationStatus == 0,
+          let text = try? String(contentsOf: out, encoding: .utf8) else { return nil }
+    return text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        .first { $0.hasPrefix("phys_footprint:") && !$0.contains("peak") }
 }
 
 func formatMB(_ bytes: UInt64) -> String {

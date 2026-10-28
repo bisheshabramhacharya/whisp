@@ -101,6 +101,10 @@ final class WindowHistogram: @unchecked Sendable {
     private let lock = NSLock()
     private var stats: [Int: (count: Int, minIn: Int, maxIn: Int)] = [:]
     private var missedMiddle = 0
+    /// Set when the 10 s bundle was actually loaded. The missing-bundle warning
+    /// is printed once at load; this flag keeps a second warning from firing
+    /// for the same fact after the decodes.
+    var middleLoaded = false
 
     func add(window: Int, input: Int) {
         lock.lock()
@@ -138,7 +142,7 @@ final class WindowHistogram: @unchecked Sendable {
     }
 }
 
-/// Resident memory (`phys_footprint`) after `prepare`, plus which short-window
+/// `phys_footprint` after `prepare` (not `ps` RSS), plus which short-window
 /// encoders loaded. Returns a histogram filled in as decodes run.
 func reportEncoderLoad(_ name: String, _ engine: Transcribing) async -> WindowHistogram? {
     var windows = ""
@@ -147,25 +151,31 @@ func reportEncoderLoad(_ name: String, _ engine: Transcribing) async -> WindowHi
         let loaded = await short.loadedWindowSamples()
         let labels = loaded.map { String(format: "%.0fs", Double($0) / 16_000) }
         windows = " windows " + (labels.isEmpty ? "none" : labels.joined(separator: "+"))
-        if !loaded.contains(ShortWindowEngine.middleWindowSeconds * 16_000) {
+        let hist = WindowHistogram()
+        hist.middleLoaded = loaded.contains(ShortWindowEngine.middleWindowSeconds * 16_000)
+        if !hist.middleLoaded {
             let fast = ShortWindowEngine.fastWindowSeconds
             let middle = ShortWindowEngine.middleWindowSeconds
             print("  warning: \(ShortWindowEngine.middleBundle.name) is not loaded, so audio from \(fast)s to \(middle)s still uses the 15s encoder.")
             print("  build it with: tools/convert/convert-short-window.py --windows \(middle) --install")
         }
-        let hist = WindowHistogram()
         await short.observeDecodes { hist.add(window: $0.windowSamples, input: $0.inputSamples) }
         histogram = hist
     }
-    print("\(name) loaded\(windows)  resident \(formatMB(physicalFootprint()))")
+    // phys_footprint, not ps RSS. RSS stayed at 72 MB with the 5 s and 15 s
+    // encoders loaded and does not include those weights.
+    print("\(name) loaded\(windows)  phys_footprint \(formatMB(physicalFootprint()))")
+    if let tool = footprintToolPhys() {
+        print("  footprint(1) \(tool)")
+    }
     return histogram
 }
 
 func reportWindowUse(_ histogram: WindowHistogram?) {
     guard let histogram else { return }
     print("encoder decodes: \(histogram.line)")
-    if histogram.missedMiddleCount > 0 {
-        print("  warning: \(histogram.missedMiddleCount) decodes of 5–10s audio used a window larger than 10s. The 10s bundle was not the one that ran.")
+    if histogram.missedMiddleCount > 0, histogram.middleLoaded {
+        print("  warning: \(histogram.missedMiddleCount) decodes of 5–10s audio used a window larger than 10s. The 10s bundle was loaded and was not the one that ran.")
     }
 }
 
@@ -254,8 +264,8 @@ func runCompare(
     for (name, histogram) in zip(names, histograms) {
         guard let histogram else { continue }
         print("\(name) encoder decodes: \(histogram.line)")
-        if histogram.missedMiddleCount > 0 {
-            print("  warning: \(name) ran \(histogram.missedMiddleCount) decodes of 5–10s audio on a window larger than 10s. The 10s bundle was not the one that ran.")
+        if histogram.missedMiddleCount > 0, histogram.middleLoaded {
+            print("  warning: \(name) ran \(histogram.missedMiddleCount) decodes of 5–10s audio on a window larger than 10s. The 10s bundle was loaded and was not the one that ran.")
         }
     }
 }

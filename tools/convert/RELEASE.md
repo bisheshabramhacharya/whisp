@@ -43,9 +43,19 @@ where `ShortWindowEngine` finds it; the app then skips the download.
 
 ## Publishing the 10 s bundle
 
-Leave `fastBundle` on `models-v1`. Publish the 10 s zip on `models-v2`, then
-paste the checksum into `ShortWindowEngine.middleBundle`. Until that string
-is non-empty, the app will not request the URL.
+`middleBundle.sha256` is empty on purpose. There is no zip to hash yet, and
+the app will not request the URL until the real checksum is filled in.
+People who only install Whisp keep using the 15 s encoder for 5–10 s tails
+until this follow-up lands. Do not invent a checksum.
+
+1. Build the bundle (`--windows 10` above). `--install` is enough to use it
+   locally: the engine scans that cache directory and does not checksum a
+   file that is already there. `WHISP_MODEL_DIR` does the same for a bench
+   pointed at another folder.
+2. Publish the zip on `models-v2` (leave the 5 s bundle on `models-v1`).
+3. Paste the zip's SHA-256 into `ShortWindowEngine.middleBundle.sha256`.
+
+Until step 3, the app does not download the bundle.
 
 ```bash
 cd build/short_window
