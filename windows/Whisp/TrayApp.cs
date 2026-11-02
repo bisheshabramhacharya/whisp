@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Win32;
 using Whisp.Core;
+using Whisp.Core.Input;
 using Whisp.Core.Text;
 
 namespace Whisp;
@@ -122,7 +123,7 @@ internal sealed class TrayApp : ApplicationContext
         }
     }
 
-    private string HotkeyName => _settings.Hotkey == PushToTalkKey.RightCtrl ? "Right Ctrl" : "Right Alt";
+    private string HotkeyName => _settings.Hotkey.DisplayName;
 
     private string StatusLine()
     {
@@ -214,13 +215,21 @@ internal sealed class TrayApp : ApplicationContext
         _menu.Items.Add(pill);
 
         var key = new ToolStripMenuItem("Push-to-Talk Key");
-        foreach (var (label, value) in new[] { ("Right Alt", PushToTalkKey.RightAlt), ("Right Ctrl", PushToTalkKey.RightCtrl) })
+        var presets = new[] { HotkeyBinding.RightAlt, HotkeyBinding.RightCtrl, HotkeyBinding.MiddleMouse };
+        foreach (var value in presets)
         {
-            key.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => _settings.Hotkey = value)
+            key.DropDownItems.Add(new ToolStripMenuItem(value.DisplayName, null, (_, _) => _settings.Hotkey = value)
             {
                 Checked = _settings.Hotkey == value,
             });
         }
+        key.DropDownItems.Add(new ToolStripSeparator());
+        var custom = !presets.Contains(_settings.Hotkey);
+        key.DropDownItems.Add(new ToolStripMenuItem(custom ? $"Other: {_settings.Hotkey.DisplayName}…" : "Other Key or Button…",
+            null, (_, _) => PickHotkey())
+        {
+            Checked = custom,
+        });
         _menu.Items.Add(key);
 
         var model = new ToolStripMenuItem("Speech Model");
@@ -279,6 +288,12 @@ internal sealed class TrayApp : ApplicationContext
         {
             Log.Write($"paste last failed: {e.Message}");
         }
+    }
+
+    private void PickHotkey()
+    {
+        using var dialog = new HotkeyPickerDialog(_hotkey, _settings.Hotkey);
+        if (dialog.ShowDialog() == DialogResult.OK && dialog.Picked is { } picked) _settings.Hotkey = picked;
     }
 
     private void FixWord()

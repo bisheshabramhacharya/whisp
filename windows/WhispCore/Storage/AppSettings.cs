@@ -1,14 +1,7 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using Whisp.Core.Input;
 
 namespace Whisp.Core;
-
-/// Push-to-talk key choices. Right Alt is the Windows counterpart of the Mac's Right Option.
-public enum PushToTalkKey
-{
-    RightAlt,
-    RightCtrl,
-}
 
 /// <summary>
 /// Menu settings, persisted as settings.json in the data folder. Same names and
@@ -25,8 +18,8 @@ public sealed class AppSettings
         /// Keep WAVs of every dictation next to history.jsonl.
         public bool KeepRecordings { get; set; } = true;
         public bool LaunchAtLogin { get; set; }
-        [JsonConverter(typeof(JsonStringEnumConverter))]
-        public PushToTalkKey Hotkey { get; set; } = PushToTalkKey.RightAlt;
+        /// Push-to-talk key or mouse button. Right Alt is the counterpart of the Mac's Right Option.
+        public HotkeyBinding Hotkey { get; set; } = HotkeyBinding.RightAlt;
         /// Recording pill size multiplier (1.0 = 180×50 px at 100% scaling).
         public double PillScale { get; set; } = 0.75;
         /// Where the user dragged the pill (top-left, virtual-screen pixels); null = bottom-center.
@@ -91,7 +84,7 @@ public sealed class AppSettings
     public bool AutoMute { get => _model.AutoMute; set => Set(_model.AutoMute, value, v => _model.AutoMute = v); }
     public bool KeepRecordings { get => _model.KeepRecordings; set => Set(_model.KeepRecordings, value, v => _model.KeepRecordings = v); }
     public bool LaunchAtLogin { get => _model.LaunchAtLogin; set => Set(_model.LaunchAtLogin, value, v => _model.LaunchAtLogin = v); }
-    public PushToTalkKey Hotkey { get => _model.Hotkey; set => Set(_model.Hotkey, value, v => _model.Hotkey = v); }
+    public HotkeyBinding Hotkey { get => _model.Hotkey; set => Set(_model.Hotkey, value, v => _model.Hotkey = v); }
     public double PillScale { get => _model.PillScale; set => Set(_model.PillScale, value, v => _model.PillScale = v); }
     public bool AlwaysShowPill { get => _model.AlwaysShowPill; set => Set(_model.AlwaysShowPill, value, v => _model.AlwaysShowPill = v); }
     public bool OnboardingCompleted { get => _model.OnboardingCompleted; set => Set(_model.OnboardingCompleted, value, v => _model.OnboardingCompleted = v); }

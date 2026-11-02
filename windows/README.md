@@ -53,7 +53,7 @@ remove them too.
 | Tray icon → **Fix a Misheard Word…** | Teach Whisp a word it got wrong |
 | Tray icon → **History** | Click any past dictation to copy it |
 | Tray icon → **Recording Pill** | Tiny, Small or Large, always shown or only while talking |
-| Tray icon → **Push-to-Talk Key** | Right Alt or Right Ctrl |
+| Tray icon → **Push-to-Talk Key** | Right Alt, Right Ctrl, the middle mouse button, or **Other Key or Button…** to pick any key or a side mouse button |
 | Tray icon → **Speech Model** | Parakeet (default) or Cohere Transcribe — see [Choosing the model](#choosing-the-model) |
 
 Whisp lives in the system tray, by the clock (click the **^** if it's hidden;
@@ -62,6 +62,10 @@ Alt is **AltGr** (German, French, Polish, …), pick **Right Ctrl** instead.
 
 Right Alt still works in shortcuts: pressing another key in the first second of
 a hold cancels the dictation and lets the shortcut through.
+
+Any other key or mouse button you pick only talks: while it is the push-to-talk
+key, it no longer does its usual thing (a middle click won't open links in a new
+tab). Esc, left click and right click can't be picked.
 
 ## Bring your Mac's words, history and settings
 

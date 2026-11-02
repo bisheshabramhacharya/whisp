@@ -449,6 +449,31 @@ Expect(Run((Down, 0), (Up, 0.1), (Down, 0.3), (Up, 0.4), (Char, 2), (Char, 2.1),
     File.Delete(path);
 }
 
+// Push-to-talk key: any key or the middle / side mouse buttons
+
+{
+    var path = NewTempPath("hotkey") + ".json";
+    File.WriteAllText(path, """{ "hotkey": "RightCtrl", "sounds": false }""");
+    Expect(new AppSettings(path).Hotkey.DisplayName, "Right Ctrl", "older settings.json key names still load");
+    var settings = new AppSettings(path);
+    settings.Hotkey = HotkeyBinding.MiddleMouse;
+    Expect(new AppSettings(path).Hotkey.ToString(), "Mouse:Middle", "middle mouse button survives relaunch");
+    settings.Hotkey = HotkeyBinding.Key(0x7C);
+    Expect(new AppSettings(path).Hotkey.DisplayName, "F13", "any key survives relaunch");
+    File.WriteAllText(path, """{ "hotkey": "Key:27", "sounds": false }""");
+    var escape = new AppSettings(path);
+    Expect($"{escape.Hotkey} {Lower(escape.Sounds)}", "RightAlt false", "Esc can't be the key; other settings are kept");
+    File.WriteAllText(path, """{ "hotkey": 5, "sounds": false }""");
+    Expect(new AppSettings(path).Hotkey.ToString(), "RightAlt", "a garbled key falls back to Right Alt");
+    File.Delete(path);
+}
+Expect(HotkeyBinding.Parse("mouse:back")?.DisplayName ?? "none", "Mouse Back button", "side buttons parse");
+Expect(HotkeyBinding.Parse("Mouse:Left")?.ToString() ?? "none", "none", "left click can't be the key");
+Expect($"{Lower(HotkeyBinding.RightAlt.IsModifier)} {Lower(HotkeyBinding.Key(0x7C).IsModifier)} {Lower(HotkeyBinding.MiddleMouse.IsModifier)}",
+    "true false false", "only modifiers keep chord detection");
+Expect($"{Lower(HotkeyBinding.Key(0x5B).MasksRelease)} {Lower(HotkeyBinding.RightCtrl.MasksRelease)}", "true false",
+    "Windows key release is masked so Start stays shut");
+
 // History: Mac lines read as-is, and lines written here match the Mac's format
 
 {
