@@ -663,49 +663,25 @@ public final class DictationController: ObservableObject {
     private func persist(_ entry: HistoryEntry, samples: [Float]?) {
         let history = history, recordings = recordings, logger = logger
         persistQueue.async { [weak self] in
-            // A full disk loses the entry silently otherwise — say it in the menu.
-            guard !Self.writeTake(entry, samples: samples, history: history,
-                                  recordings: recordings, logger: logger) else { return }
-            Task { @MainActor in self?.statusMessage = Self.persistFailedMessage }
-        }
-    }
-
-    /// The same write as `persist`, awaited: crash recovery runs at launch and
-    /// has to know whether a take actually landed before it picks the message
-    /// it leaves behind.
-    private func writeNow(_ entry: HistoryEntry, samples: [Float]?) async -> Bool {
-        let history = history, recordings = recordings, logger = logger
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            persistQueue.async {
-                continuation.resume(returning: Self.writeTake(
-                    entry, samples: samples, history: history,
-                    recordings: recordings, logger: logger))
-            }
-        }
-    }
-
-    /// One take's history line, then its WAV when the take is kept.
-    /// False means part of it was written nowhere.
-    private nonisolated static func writeTake(
-        _ entry: HistoryEntry, samples: [Float]?,
-        history: HistoryStore, recordings: RecordingArchive, logger: Logger
-    ) -> Bool {
-        var failed = false
-        do {
-            try history.append(entry)
-        } catch {
-            failed = true
-            logger.error("history append failed: \(error.localizedDescription, privacy: .public)")
-        }
-        if let samples {
+            var failed = false
             do {
-                try recordings.save(samples: samples, id: entry.id)
+                try history.append(entry)
             } catch {
                 failed = true
-                logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
+                logger.error("history append failed: \(error.localizedDescription, privacy: .public)")
             }
+            if let samples {
+                do {
+                    try recordings.save(samples: samples, id: entry.id)
+                } catch {
+                    failed = true
+                    logger.error("recording archive failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            // A full disk loses the entry silently otherwise — say it in the menu.
+            guard failed else { return }
+            Task { @MainActor in self?.statusMessage = Self.persistFailedMessage }
         }
-        return !failed
     }
 
     /// Blocks until queued history/WAV writes are on disk (app termination, tests).
@@ -736,7 +712,7 @@ public final class DictationController: ObservableObject {
         let leftovers = pendingTakes.list()
         guard !leftovers.isEmpty else { return }
         logger.notice("Recovering \(leftovers.count) unfinished take(s)")
-        var recovered = 0, copied = false, writeFailed = false
+        var recovered = 0, copied = false
         for url in leftovers {
             defer { pendingTakes.remove(url) }
             guard let samples = pendingTakes.load(url), !samples.isEmpty else {
@@ -762,8 +738,7 @@ public final class DictationController: ObservableObject {
                 latencyMs: 0
             )
             lastResult = entry
-            let saved = await writeNow(entry, samples: settings.keepRecordings ? samples : nil)
-            if !saved { writeFailed = true }
+            persist(entry, samples: settings.keepRecordings ? samples : nil)
             // Many takes, one clipboard: each recovered take overwrites it, so
             // ⌘V lands the most recent one — and only when the clipboard isn't
             // already holding the user's own copy.
@@ -774,14 +749,7 @@ public final class DictationController: ObservableObject {
             recovered += 1
         }
         guard recovered > 0 else { return }
-        // Precedence, not order of assignment: a take this pass could not write
-        // down outranks the recovered/copied text, so the person is never told
-        // the take was saved when part of it went nowhere.
-        if writeFailed {
-            statusMessage = Self.persistFailedMessage
-        } else {
-            statusMessage = copied ? Self.recoveryCopiedMessage : Self.recoverySavedMessage
-        }
+        statusMessage = copied ? Self.recoveryCopiedMessage : Self.recoverySavedMessage
         if settings.sounds { sounds.playError() }
     }
 
