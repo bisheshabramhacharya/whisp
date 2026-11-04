@@ -677,6 +677,28 @@ func crashRecoveryTests() async {
     expect(pendTakes.list().count.description, "0", "empty leftover deleted")
     expect(history.loadLast(10).count.description, before.description, "empty take adds no history")
     expect(copied.description, "[]", "empty take copies nothing")
+
+    // A write failure inside the pass outranks the "recovered" text: a take that
+    // reached the clipboard but could not be written down must not be reported
+    // as saved. Same read-only history file as the full-disk test, so the
+    // persist inside the loop fails; a second leftover drops out, which is what
+    // leaves the recovered text as the other candidate for the menu.
+    transcriber.text = nil
+    copied = []
+    controller.clipboardOccupied = { false }
+    try! FileManager.default.setAttributes([.posixPermissions: 0o444],
+                                           ofItemAtPath: history.fileURL.path)
+    try! pendTakes.save(samples: [Float](repeating: 0.1, count: 16_000),
+                        to: pendTakes.fileURL(takeID: "clip-6-eeee"))
+    try! "garbage".write(to: pendDir.appendingPathComponent("clip-7-ffff.wav"),
+                         atomically: true, encoding: .utf8)
+    await controller.recoverPendingTakes()
+    controller.flushPersistence()
+    expect(copied.description, "[\"Clip 1.\"]", "a take that can't be saved still reaches the clipboard")
+    expect(controller.statusMessage ?? "nil", DictationController.persistFailedMessage,
+           "a failed write outranks the recovered text")
+    try! FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                           ofItemAtPath: history.fileURL.path)
 }
 await crashRecoveryTests()
 
