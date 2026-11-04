@@ -42,6 +42,18 @@ the last pause was longer than 5 s, so it went to the 15 s encoder. Room
 noise keeps the segmenter from finding those pauses, and cutting more often
 dropped the last word, so the segmenter is unchanged.
 
+On the VM (`short`, 330 files, release at +0 ms) those leftovers fall into two
+buckets: 5–10 s (11.8% of releases) waits p50 164 / p95 177 ms and 10–15 s
+(7.3%) 179 / 201 ms, both paying the 15 s encoder's flat cost. The 10 s window
+takes the first bucket to **130 / 161 ms** with transcripts identical to the
+15 s window, and the second to 168 / 175 ms. VM numbers only — the M1 verdict
+is `scripts/speed/m1-check.sh`. A piecewise alternative that decoded two
+overlapped 5 s pieces also measured faster on the 5–10 s bucket (164 → 150 ms
+VM) but was not shipped, so there is no `split` engine to pass to `--engine`
+(see [log-e](log-e-split-and-w10000.md)); 10–15 s has no cheaper option at the
+same weights either, because two pieces on any window cost more than one 15 s
+pass.
+
 `ShortWindowEngine` now also uses a 10 s encoder
 (`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
 the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
@@ -62,14 +74,19 @@ prints a system-wide `vm_stat` delta around model load (free, wired,
 anonymous, compressor). Compare that delta with the 10 s bundle installed and
 with it moved aside.
 
-The zip is not published yet, and `ShortWindowEngine.middleBundle.sha256`
-is empty, so the app does not download the 10 s window. Follow-up: build
-the bundle, publish `parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on
-`models-v2`, and paste that zip's SHA-256 into `middleBundle` (see
-`tools/convert/RELEASE.md`). Until then a locally built bundle is used with
-no checksum: `--install` copies it into the FluidAudio model cache, which is
-the directory the engine scans, and `WHISP_MODEL_DIR` points the bench at
-another folder of the same files.
+The zip is not published yet, so `ShortWindowEngine.middleBundle.sha256` is
+empty and the app does not download the 10 s window; a bundle already on disk
+is used without a checksum. Follow-up: publish
+`parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on `models-v2` and paste
+its SHA-256 into `middleBundle` (see `tools/convert/RELEASE.md`). The number
+recorded for the drafted zip is
+`ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50` — re-hash
+it if the bundle is rebuilt, and do not paste a number you have not verified.
+Once that checksum lands the bundle is fetched on launch like the 5 s one, so
+the download is gated on publishing, not opt-in. Until then `--install` copies
+a locally built bundle into the FluidAudio model cache, which is the directory
+the engine scans, and `WHISP_MODEL_DIR` points the bench at another folder of
+the same files.
 
 ## Reproduce
 
@@ -108,4 +125,5 @@ scripts/speed/m1-check.sh <folder of wavs> parakeet,short
 
 Detailed logs: [log.md](log.md), [short window](log-b-short-window.md),
 [streaming](log-c-streaming.md), [decoder and pipeline](log-d-decoder.md),
+[split + 10 s window](log-e-split-and-w10000.md),
 and the [full report](vm-report.md).
