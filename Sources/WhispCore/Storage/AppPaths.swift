@@ -40,6 +40,12 @@ public enum AppPaths {
         root.appendingPathComponent("corrections-pending.json")
     }
 
+    /// root/pending/ — WAVs of takes still being transcribed; a leftover here at
+    /// launch is a take a crash lost mid-flight, recovered on the next start.
+    public static var pendingDir: URL {
+        root.appendingPathComponent("pending", isDirectory: true)
+    }
+
     /// Creates root + recordings dir if missing, and locks the whole data dir
     /// down to the current user: transcripts and voice recordings are private,
     /// but `~/Library/Application Support` is world-readable by default.
@@ -48,8 +54,10 @@ public enum AppPaths {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         try fm.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: pendingDir, withIntermediateDirectories: true)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recordingsDir.path)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: pendingDir.path)
         for file in [historyFile, dictionaryFile] where fm.fileExists(atPath: file.path) {
             makeUserOnly(file)
         }
