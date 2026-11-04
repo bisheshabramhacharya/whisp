@@ -128,13 +128,22 @@ public enum SpeechSegmenter {
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
     public static func isNearSilent(_ samples: [Float], rmsThreshold: Float = 0.004) -> Bool {
         guard !samples.isEmpty else { return true }
+        let (rms, peak) = levels(samples)
+        return rms < rmsThreshold && peak < 0.05
+    }
+
+    /// Whole-buffer RMS and peak magnitude: the two numbers the silence gate
+    /// judges on, reported on their own so a take that decoded to nothing can
+    /// say which side of the gate it was on.
+    public static func levels(_ samples: [Float]) -> (rms: Float, peak: Float) {
+        guard !samples.isEmpty else { return (0, 0) }
         var rms: Float = 0
         var peak: Float = 0
         samples.withUnsafeBufferPointer { buf in
             vDSP_rmsqv(buf.baseAddress!, 1, &rms, vDSP_Length(buf.count))
             vDSP_maxmgv(buf.baseAddress!, 1, &peak, vDSP_Length(buf.count))
         }
-        return rms < rmsThreshold && peak < 0.05
+        return (rms, peak)
     }
 
     /// Replays the live loop offline (bench/tests): every `tick` samples, look for a cut

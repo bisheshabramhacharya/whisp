@@ -523,6 +523,93 @@ func pipelineTests() async {
 }
 await pipelineTests()
 
+// MARK: - A silent take names itself
+
+/// "" for the take's own decode, "Rescued text." for the retry.
+final class SilentThenRescued: Transcribing {
+    var calls: [Int] = []
+    func prepare() async throws {}
+    func transcribe(_ samples: [Float]) async throws -> String {
+        calls.append(samples.count)
+        return calls.count == 1 ? "" : "Rescued text."
+    }
+}
+
+/// Drives one take through a controller on temp files and waits for it to land.
+@MainActor
+func dictateSilentTake(
+    _ samples: [Float], transcriber: Transcribing, dir: URL
+) async -> (controller: DictationController, paster: FakePaster, history: HistoryStore) {
+    let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster()
+    let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+    settings.autoMute = false
+    settings.keepRecordings = false
+    let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+    let controller = DictationController(
+        transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+        cleaner: FillerCleaner(), muter: NoMuter(), sounds: CountingSounds(), settings: settings,
+        history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("rec")))
+    try! controller.startHotkey()
+    recorder.next = samples
+    hotkey.onEvent?(.start)
+    hotkey.onEvent?(.stop)
+    for _ in 0..<400 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+    controller.flushPersistence()
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    return (controller, paster, history)
+}
+
+@MainActor
+func silentTakeTests() async {
+    func tempDir() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("whisp-silent-\(UUID().uuidString)")
+    }
+
+    // An audible take that decodes to nothing gets one retry of the clip as
+    // captured, and the rescued text is what pastes and what lands in history.
+    do {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcriber = SilentThenRescued()
+        let (controller, paster, history) = await dictateSilentTake(tone(3), transcriber: transcriber, dir: dir)
+        expect(transcriber.calls.description, "[48000, 48000]",
+               "audible silent take retries the clip as captured, once")
+        expect(paster.pasted.description, "[\"Rescued text.\"]", "rescued text is what pastes")
+        expect(history.loadLast(1).first?.raw ?? "?", "Rescued text.", "rescued text lands in history")
+        expect((controller.statusMessage == nil).description, "true",
+               "rescued take does not claim it heard no speech")
+    }
+
+    // Dead air is a muted or missing input, not a lost take: no retry is spent,
+    // and the menu still says what happened.
+    do {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcriber = SilentThenRescued()
+        let (controller, paster, history) = await dictateSilentTake(
+            [Float](repeating: 0, count: 3 * 16_000), transcriber: transcriber, dir: dir)
+        expect(transcriber.calls.count.description, "1", "dead air pays no retry")
+        expect(paster.pasted.description, "[]", "dead air pastes nothing")
+        expect(controller.statusMessage ?? "",
+               "Didn't hear any speech — check the microphone input", "dead air still explains itself")
+        expect(history.loadLast(1).first?.raw ?? "?", "", "dead air is still recorded")
+    }
+
+    // Past the cap the retry is refused, and refused out loud: the log carries
+    // the duration and level that would justify raising the cap later.
+    do {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcriber = SilentThenRescued()
+        let (controller, paster, _) = await dictateSilentTake(tone(31), transcriber: transcriber, dir: dir)
+        expect(transcriber.calls.count.description, "1", "over the 30 s cap: no retry")
+        expect(paster.pasted.description, "[]", "over-cap silent take pastes nothing")
+        expect((controller.statusMessage?.contains("speech") ?? false).description, "true",
+               "over-cap silent take still reports itself")
+    }
+}
+await silentTakeTests()
+
 // MARK: - 10-minute cap
 
 // The hard cap ends the take like a key-up: everything said still pastes and
