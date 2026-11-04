@@ -24,12 +24,10 @@
 set -euo pipefail
 
 WAVDIR="${1:-}"
-ENGINES="${2:-parakeet,short,split}"
+ENGINES="${2:-parakeet,short}"
 if [ -z "$WAVDIR" ] || [ ! -d "$WAVDIR" ]; then
   echo "usage: $0 /path/to/wav-folder [engine,list]" >&2
-  echo "  engines default to parakeet,short,split — e.g. parakeet,short,streaming,par2,profiled" >&2
-  echo "  ('split' needs a checkout that ships the piecewise engine; older trees:" >&2
-  echo "   pass parakeet,short explicitly)" >&2
+  echo "  engines default to parakeet,short — e.g. parakeet,short,streaming,par2,profiled" >&2
   exit 1
 fi
 
