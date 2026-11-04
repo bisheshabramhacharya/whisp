@@ -59,6 +59,9 @@ public final class DictationController: ObservableObject {
     /// Status text when Secure Event Input turns a paste into a copy — the
     /// user pastes it themselves with ⌘V. Shared with the design previews.
     public static let secureInputMessage = "Secure typing is on — text copied, press ⌘V to paste"
+    /// Status text when sleep/lock/user-switch turned a paste into a copy.
+    /// Shared with the design previews.
+    public static let sessionInterruptMessage = "Mac slept or locked — text copied, press ⌘V to paste"
     /// Whether the global hotkey monitor is currently running.
     @Published public private(set) var isHotkeyRunning = false
     @Published public private(set) var isHandsFree = false
@@ -114,6 +117,9 @@ public final class DictationController: ObservableObject {
     /// drops the paste of every id up to `cancelledThrough`.
     private var lastClipID = 0
     private var cancelledThrough = 0
+    /// Clips enqueued before a sleep/lock/user-switch copy to the clipboard
+    /// instead of pasting — the session they were aimed at is gone.
+    private var copyOnlyThrough = 0
     /// History/WAV writes happen here, in order, so they never hold up the next paste.
     private let persistQueue = DispatchQueue(label: "com.bishesha.whisp.persist", qos: .utility)
     /// Tail of the serial transcribe->clean->paste pipeline.
@@ -218,6 +224,22 @@ public final class DictationController: ObservableObject {
                 self.modelStatus = "Model failed: \(error.localizedDescription)"
                 self.logger.error("Model prepare failed: \(error.localizedDescription, privacy: .public)")
             }
+        }
+    }
+
+    /// The Mac is about to sleep, lock, or switch users. Stops capture like a
+    /// key-up so whatever was said still transcribes and lands in history — but
+    /// queued takes copy to the clipboard instead of pasting, since the app they
+    /// were aimed at is gone. Held-key state is reset too: the key-up can be
+    /// lost across a suspend, and a key still physically down would look stuck.
+    public func systemSuspending() {
+        logger.notice("Session suspending (sleep/lock/switch)")
+        if isRecording { stopCapture() }
+        copyOnlyThrough = lastClipID
+        hotkey.reset()
+        if pendingTranscriptions > 0 {
+            statusMessage = Self.sessionInterruptMessage
+            if settings.sounds { sounds.playError() }
         }
     }
 
@@ -602,7 +624,9 @@ public final class DictationController: ObservableObject {
             // paste() waits for this lookup; Esc during that wait must still stop the paste.
             _ = await target.precedingCharacter.value
             guard id > cancelledThrough else { return }
-            outcome = await paster.paste(cleaned, into: target)
+            outcome = id <= copyOnlyThrough
+                ? paster.copy(cleaned)
+                : await paster.paste(cleaned, into: target)
         }
         let pasteMs = Self.ms(since: pasteStart)
         let latencyMs = Self.ms(since: releasedAt)
@@ -611,6 +635,9 @@ public final class DictationController: ObservableObject {
             if settings.sounds { sounds.playError() }
         } else if outcome == .copiedSecureInput {
             statusMessage = Self.secureInputMessage
+            if settings.sounds { sounds.playError() }
+        } else if outcome == .copiedSessionInterrupt {
+            statusMessage = Self.sessionInterruptMessage
             if settings.sounds { sounds.playError() }
         }
 
