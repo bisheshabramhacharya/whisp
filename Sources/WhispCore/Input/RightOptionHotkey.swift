@@ -31,6 +31,24 @@ public final class RightOptionHotkey: HotkeyMonitoring {
     private var isOurKeyDown = false
     private var previousFlags: UInt64 = 0
 
+    /// Physical state of the monitored key for the missed-key-up watchdog —
+    /// injectable for tests. Device-bit first, generic modifier mask as the
+    /// fallback; a key that can't be read physically reads as down (watchdog
+    /// stays inert rather than firing false releases).
+    public var isRightOptionDown: () -> Bool
+    private lazy var keyUpWatchdog: KeyUpWatchdog = {
+        let watchdog = KeyUpWatchdog(isKeyDown: { [weak self] in self?.isRightOptionDown() ?? true })
+        watchdog.onMissedRelease = { [weak self] in
+            guard let self else { return }
+            // The real key-up event was lost: clear the bookkeeping a real
+            // release would have cleared, then run the release through the
+            // state machine so a hold finishes like any other.
+            self.isOurKeyDown = false
+            self.emit(self.machine.handle(.keyUp, now: ProcessInfo.processInfo.systemUptime))
+        }
+        return watchdog
+    }()
+
     /// Union of every modifier bit in CGEventFlags — device-independent masks
     /// (maskShift…maskSecondaryFn) AND the per-side device bits (NX_DEVICE*KEYMASK).
     /// The device bits matter: pressing Left Option while Right Option is held does
@@ -49,6 +67,16 @@ public final class RightOptionHotkey: HotkeyMonitoring {
     /// 62/59 = R/L Control, 56/60 = L/R Shift, 63 = Fn/Globe.
     public init(keyCode: UInt16 = 61) {
         self.keyCode = keyCode
+        self.isRightOptionDown = {
+            let flags = CGEventSource.flagsState(.combinedSessionState)
+            if let bit = Self.deviceBit(for: keyCode) {
+                return flags.rawValue & bit != 0
+            }
+            if let mask = Self.genericMask(for: keyCode) {
+                return flags.contains(mask)
+            }
+            return true
+        }
     }
 
     deinit { stop() }
@@ -101,6 +129,7 @@ public final class RightOptionHotkey: HotkeyMonitoring {
         machine = HotkeyStateMachine()
         isOurKeyDown = false
         previousFlags = 0
+        keyUpWatchdog.disarm()
     }
 
     // MARK: - Event plumbing
@@ -167,6 +196,13 @@ public final class RightOptionHotkey: HotkeyMonitoring {
 
         default:
             break
+        }
+        // While the machine expects the key held, the watchdog confirms it
+        // still is; hands-free never arms it.
+        if machine.keyExpectedDown {
+            keyUpWatchdog.arm()
+        } else {
+            keyUpWatchdog.disarm()
         }
     }
 

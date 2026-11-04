@@ -58,6 +58,15 @@ public struct HotkeyStateMachine {
         }
     }
 
+    /// Whether the physical key is expected to be down in this state — what the
+    /// missed-key-up watchdog polls. Holds only; hands-free is explicitly out.
+    public var keyExpectedDown: Bool {
+        switch state {
+        case .holding, .secondHold: return true
+        case .idle, .handsFree, .ignoringRelease: return false
+        }
+    }
+
     // Tunables (public so tests/UIs can inspect or adjust).
     public var holdThreshold: TimeInterval
     public var doubleTapWindow: TimeInterval
