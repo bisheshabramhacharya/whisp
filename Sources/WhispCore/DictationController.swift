@@ -56,6 +56,9 @@ public final class DictationController: ObservableObject {
     @Published public private(set) var statusMessage: String?
     /// Status text when the maximum take length ends a recording on its own.
     public static let capMessage = "Hit the 10-minute recording cap — everything you said still pastes"
+    /// Status text when Secure Event Input turns a paste into a copy — the
+    /// user pastes it themselves with ⌘V. Shared with the design previews.
+    public static let secureInputMessage = "Secure typing is on — text copied, press ⌘V to paste"
     /// Whether the global hotkey monitor is currently running.
     @Published public private(set) var isHotkeyRunning = false
     @Published public private(set) var isHandsFree = false
@@ -605,6 +608,9 @@ public final class DictationController: ObservableObject {
         let latencyMs = Self.ms(since: releasedAt)
         if outcome == .copiedAppChanged {
             statusMessage = "You switched windows while transcribing — text copied, press ⌘V to paste"
+            if settings.sounds { sounds.playError() }
+        } else if outcome == .copiedSecureInput {
+            statusMessage = Self.secureInputMessage
             if settings.sounds { sounds.playError() }
         }
 
