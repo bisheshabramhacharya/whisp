@@ -165,15 +165,16 @@ silence gate offered, and it is refused for the same reason.
 `ShortWindowEngine` now also uses a 10 s encoder
 (`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
 the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
-full-attention pass, so the text matches the 15 s model; splitting it into
-5 s pieces would not. The window is prewarmed the same way: while you talk,
+full-attention pass, which the VM run measured as transcript-identical to the
+15 s model; the M1 replay above found the one take where it is not. The window is prewarmed the same way: while you talk,
 the engine wakes the size a release of the audio so far would use.
 
 It is a second int8 bundle, not one shared weight file. A multi-function
 Core ML model only loads on macOS 15, and this app is macOS 14. The int8
 quantizer also rejects multi-function models, and the constants baked at
 trace time differ per window, so two bundles cannot share `weight.bin`.
-One int8 window is about 560 MB on disk. Latency is pending a Mac run.
+One int8 window is about 560 MB on disk, and the M1 measurement above is the
+latency answer: 223 to 158 ms p50 on the 5 to 10 s bucket.
 Per-process `phys_footprint` (and `footprint -p`) does not include the Core ML
 encoders: with the 5 s and 15 s int8 encoders loaded, about 1.1 GB of weights,
 both read 74 MB. That memory sits outside the whisp process, most likely in
