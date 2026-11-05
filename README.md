@@ -30,9 +30,12 @@ it's free, it's open source, and your voice never leaves your Mac.
   talk*, so a two-minute brain dump pastes almost as fast as a one-liner.
 - 🔒 **Private.** The speech model runs on your Mac's Neural Engine. After a
   one-time download it works with Wi-Fi off. No account, no telemetry.
-- 🧹 **Cleans up, never rewrites.** Drops "um", "uh", stutters ("the the") and
-  false starts ("go to the, go to desktop" → "go to desktop"). Everything else
-  is exactly what you said.
+- 🧹 **Cleans up, then writes it plainly.** Drops "um", "uh", stutters ("the
+  the") and false starts ("go to the, go to desktop" → "go to desktop"), then
+  writes the same words the way you would type them: "twenty five dollars" → $25,
+  "src slash main dot swift" → src/main.swift, and every sentence gets its full
+  stop and its question mark. It never rephrases and never drops a word that
+  carries meaning.
 - 📖 **Learns your words.** Fix a word after Whisp types it, and it gets it
   right next time. Names, jargon, that coworker whose name nobody spells right.
 - 🙌 **Hands-free mode.** Double-tap the key and talk as long as you like. A
@@ -335,7 +338,7 @@ The executable signature, which permissions bind to, is valid.
 <summary><b>Project layout</b></summary>
 
 ```
-Sources/WhispCore    speech model, mic, hotkey, paste, storage, text cleanup
+Sources/WhispCore    speech model, mic, hotkey, paste, storage, text cleanup + formatting
 Sources/Whisp        menu-bar app (status bar, recording pill, onboarding)
 Sources/whisp-bench  benchmark CLI
 Sources/whisp-tests  test runner
@@ -343,6 +346,7 @@ Resources/           Info.plist, app icon
 scripts/             build-app.sh, icon generation; speed/ has test-set tools
 tools/convert/       rebuilds the Core ML models (incl. the 5 s encoder) from NVIDIA's checkpoint
 docs/speed/          speed measurements, including the dead ends
+docs/formatting.md   what the text steps do, and where they stop
 ```
 </details>
 

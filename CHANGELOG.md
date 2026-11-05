@@ -5,6 +5,9 @@
 ### Added
 - **10 s encoder window.** Speech that runs past 5 s without a pause was still encoded at the stock 15 s size. When `parakeet_unified_encoder_w10000_int8.mlmodelc` is in the model cache, that audio uses the 10 s window instead, same text path as the 15 s model. The checksum is empty until the zip is published: build it with `tools/convert` (`--windows 10 --install`) to use a local copy, then publish the zip and paste its real SHA-256 into `ShortWindowEngine.middleBundle`. Pause detection is unchanged.
 
+### Changed
+- **Dictated text comes out written.** After cleanup, a new fixed-rule step writes the same words the way you would type them: "twenty five dollars" becomes $25, "twenty five percent" becomes 25%, "at five thirty" becomes at 5:30, "src slash main dot swift" becomes src/main.swift, and each sentence gets its closing stop and, when it opens like a question, a question mark. No model and no network: 1.4 ms for a five minute take, printed in the log as `format=`. Numbers under twenty stay words ("five minutes"), a bare hour stays a word ("meet me at five"), and a separator word doing grammar ("we slash prices") is left alone. `docs/formatting.md` lists every rule and every place it gives up.
+
 ## 0.4.0 — 2026-09-30
 
 ### Added
