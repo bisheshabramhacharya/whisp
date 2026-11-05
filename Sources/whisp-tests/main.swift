@@ -236,6 +236,21 @@ let packUntouched: [String] = [
     "the .gitignore file is fine.",
     "the AGENTS.md file has the rules.",
     "the package.json already has it.",
+    // Nothing inside a path, a URL, an email, a branch name or an identifier.
+    "open src/api/handler.ts and tell me what it says.",
+    "check https://api.example.com/v1 before you deploy.",
+    "send the invite to bob@api.com today.",
+    "the branch is feat/api-cleanup on origin.",
+    "rename api_key_for_user in the env file.",
+    // Ordinary English that only looks like a product name.
+    "we moved with swift action.",
+    "the calls came in swift succession.",
+    "coat it with rust protection.",
+    "read Jason the letter when it lands.",
+    "write Jason a note about it.",
+    "I need to go code for a while.",
+    "the wind surf was rough yesterday.",
+    "the local host of the party left early.",
 ]
 for input in packUntouched {
     expect(cleaner.clean(input), input, "pack leaves alone: \"\(input)\"")
@@ -2141,10 +2156,28 @@ func medianMs(_ texts: [String], _ iterations: Int) -> Double {
     }
     return samples.sorted()[samples.count / 2]
 }
+// The longest real dictation on this machine is 8,815 characters, and 23 of 2,445
+// are over 2,880, so the budget has to hold at the long end too. Two long texts:
+// one shaped like his real dictation (ordinary talk with a coding word every few
+// sentences, which is what the budget is measured on), and one that is nothing but
+// coding words, printed for the worst case and not asserted.
+let longestLength = 8_815
+func repeated(_ sentence: String, to length: Int) -> String {
+    var text = ""
+    while text.count < length { text += sentence }
+    return String(text.prefix(length))
+}
+let longestDictation = repeated("so I think we should ship it today and see what happens with the rest of the batch and then we can look at the numbers from last week and tell me what you think about the whole thing ", to: longestLength)
+let codingHeavy = repeated("so I told claude code to fix the agents dot md file and check the jason config on local host again ", to: longestLength)
+let longestMs = medianMs([longestDictation], 20)
+let codingHeavyMs = medianMs([codingHeavy], 20)
 let plainMs = medianMs(plainDictations, 200)
 let codingMs = medianMs(codingDictations, 200)
-print(String(format: "formatting step: %.3f ms ordinary, %.3f ms coding (budget 5 ms)", plainMs, codingMs))
-if Swift.max(plainMs, codingMs) > 5 { failures += 1; print("FAIL formatting step over the 5 ms budget") }
+print(String(format: "formatting step: %.3f ms ordinary, %.3f ms coding, %.3f ms at %d chars (budget 5 ms)",
+             plainMs, codingMs, longestMs, longestDictation.count))
+print(String(format: "  worst case at %d chars of nothing but coding words: %.3f ms (printed, not asserted)",
+             codingHeavy.count, codingHeavyMs))
+if Swift.max(plainMs, codingMs, longestMs) > 5 { failures += 1; print("FAIL formatting step over the 5 ms budget") }
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
 let t0 = Date()

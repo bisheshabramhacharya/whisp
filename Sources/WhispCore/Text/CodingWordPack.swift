@@ -6,16 +6,18 @@ import Foundation
 /// Fixed spelling rules only. Each entry says what the speech model writes and what
 /// gets typed. Two shapes earn an entry:
 ///
-/// - a spoken form that is not English at all ("n p m", "git hub", "local host",
-///   "agents dot md"), replaced wherever it appears;
+/// - a spoken form that is not English at all and cannot stand inside a path, an
+///   address or an identifier ("n p m", "git hub", "agents dot md"), replaced
+///   wherever it stands as a word of its own;
 /// - an English word that is also a product or language name ("cursor", "linear",
-///   "python", "rust", "go"), replaced only next to a word that makes the product
-///   sense the only reading ("open cursor", "the linear issue", "written in go"), so
-///   "move the cursor to the end" and "a linear function" stay untouched.
+///   "python", "swift"), replaced only next to a word that makes the product sense
+///   the only reading: "open cursor", "the linear issue", "written in swift".
 ///
-/// A rule never matches across a file extension that is already spelled out
-/// ("README.md" never becomes "README.md.md") and never before an apostrophe
-/// ("Jason's" is a person, not JSON).
+/// A rule never fires inside a larger token: not in a path ("src/api"), a URL, an
+/// email ("bob@api.com"), a branch name ("feat/api-cleanup") or an identifier
+/// ("api_key"). It never fires in front of a file extension that is already spelled
+/// out, so "README.md" never becomes "README.md.md", and never before an apostrophe,
+/// so "Jason's" stays a person.
 ///
 /// The user's own dictionary.json is applied after this pack, so one hand-written
 /// rule always wins over a built-in one.
@@ -29,8 +31,8 @@ public final class CodingWordPack: @unchecked Sendable {
         let regex: NSRegularExpression
         let template: String
         /// Every one of these words must be in the text for the rule to be able to
-        /// match, which keeps a dictation with no coding words off the regexes.
-        let gate: Set<String>
+        /// match, so a dictation with no coding words never reaches a regex.
+        let gate: Set<Int>
     }
 
     private struct Entry {
@@ -48,10 +50,9 @@ public final class CodingWordPack: @unchecked Sendable {
     }
 
     private init() {
-        // Bare words and product names first, file names last: the more specific rule
-        // gets the last word, so "docker compose dot yaml" becomes "Docker compose dot
-        // yaml" first and "docker-compose.yml" after it. Inside a group, longest first,
-        // so "claude md" wins over "claude" and "chat g p t" over "gpt".
+        // Bare words and product names first, file names last, so the more specific
+        // rule has the last word. Inside a group, longest spoken form first:
+        // "claude md" wins over "claude", "chat g p t" over "gpt".
         let groups: [[Entry]] = [Self.tools, Self.vocabulary, Self.contextual, Self.fileNames]
         rules = groups
             .flatMap { group in
@@ -62,17 +63,21 @@ public final class CodingWordPack: @unchecked Sendable {
             .flatMap(Self.rules)
     }
 
-    /// Applies every rule whose words are present. Pure, allocation-light, and
-    /// skipped almost entirely for a sentence with no coding vocabulary in it.
+    /// Runs only the rules whose words are in the text, in place on one mutable
+    /// string, so a dictation with no coding words costs one pass over its words and
+    /// nothing else.
     public func apply(_ text: String) -> String {
         guard !text.isEmpty else { return text }
-        let present = Set(Self.words(in: text))
-        var result = text
-        for rule in rules where rule.gate.isSubset(of: present) {
-            result = rule.regex.stringByReplacingMatches(
-                in: result, range: NSRange(result.startIndex..., in: result), withTemplate: rule.template)
+        let present = Self.hashes(in: text)
+        let active = rules.filter { $0.gate.isSubset(of: present) }
+        guard !active.isEmpty else { return text }
+        let result = NSMutableString(string: text)
+        for rule in active {
+            rule.regex.replaceMatches(
+                in: result, range: NSRange(location: 0, length: result.length),
+                withTemplate: rule.template)
         }
-        return result
+        return result as String
     }
 
     // MARK: - Tables
@@ -114,7 +119,7 @@ public final class CodingWordPack: @unchecked Sendable {
                         "update", "open", "edit", "rewrite", "check"]),
     ]
 
-    /// AI coding tools and harnesses.
+    /// AI coding tools.
     private static let tools: [Entry] = [
         Entry("github", "GitHub"),
         Entry("git hub", "GitHub"),
@@ -132,7 +137,6 @@ public final class CodingWordPack: @unchecked Sendable {
         Entry("co-pilot", "Copilot"),
         Entry("co pilot", "Copilot"),
         Entry("windsurf", "Windsurf"),
-        Entry("wind surf", "Windsurf"),
         Entry("aider", "Aider"),
         Entry("vs code", "VS Code"),
         Entry("vscode", "VS Code"),
@@ -145,7 +149,6 @@ public final class CodingWordPack: @unchecked Sendable {
         Entry("npm", "npm"),
         Entry("p n p m", "pnpm"),
         Entry("pnpm", "pnpm"),
-        Entry("local host", "localhost"),
         Entry("localhost", "localhost"),
         Entry("pr", "PR"),
         Entry("json", "JSON"),
@@ -200,8 +203,12 @@ public final class CodingWordPack: @unchecked Sendable {
         Entry("golang", "Go"),
     ]
 
-    /// Words that are also ordinary English. A leader is the word just before
-    /// ("open cursor"), a follower the word just after ("the linear issue").
+    /// Words that are also ordinary English. A leader is the word just before the
+    /// term, a follower the word just after. Only neighbours that cannot appear
+    /// around the English sense are listed: no "in", "with" or "using" for the
+    /// languages, because "in swift succession" and "with rust protection" are
+    /// ordinary sentences, and no bare verb for Jason, because "read Jason the
+    /// letter" is a person.
     private static let contextual: [Entry] = [
         Entry("cursor", "Cursor",
               leaders: ["in", "on", "open", "launch", "use", "using", "with", "via", "into", "inside", "through"],
@@ -226,76 +233,82 @@ public final class CodingWordPack: @unchecked Sendable {
         Entry("linear", "Linear",
               followers: ["issue", "issues", "ticket", "tickets", "board", "app",
                           "project", "projects", "cycle", "roadmap", "workspace"]),
-        // "Jason" is a person's name, so JSON only ever comes from a follower that
-        // makes the file/format sense the only reading.
+        // "Jason" is a person's name, so JSON only ever comes from a cue that puts
+        // "the" between the verb and the name: "the jason file", "parse the jason".
         Entry("jason", "JSON",
-              leaders: ["parse", "read", "write", "load", "validate", "dump",
-                        "parse the", "read the", "write the", "load the", "validate the", "dump the"],
+              leaders: ["parse the", "read the", "write the", "load the", "validate the", "dump the"],
               followers: ["file", "files", "format", "config", "object", "objects",
                           "response", "body", "payload", "string", "array", "key", "keys",
                           "value", "values", "schema", "parse", "endpoint", "api", "data",
                           "output", "blob", "column", "columns", "parser", "serialization",
                           "valid", "invalid"]),
         Entry("python", "Python",
-              leaders: ["in", "using", "with", "written in"],
+              leaders: ["written in"],
               followers: ["code", "script", "scripts", "file", "files", "function", "package",
                           "project", "version", "interpreter", "module", "library", "repl",
                           "shell", "virtualenv", "3", "2"]),
         Entry("rust", "Rust",
-              leaders: ["in", "using", "with", "written in"],
+              leaders: ["written in"],
               followers: ["code", "compiler", "project", "cargo", "crates", "toolchain", "edition"]),
         Entry("swift", "Swift",
-              leaders: ["in", "using", "with", "written in"],
+              leaders: ["written in"],
               followers: ["code", "package", "project", "compiler", "concurrency", "6", "5"]),
+        // No "code" follower: "go code for a while" is ordinary English.
         Entry("go", "Go",
-              leaders: ["in", "using", "written in"],
-              followers: ["module", "modules", "code", "program", "programs", "source",
-                          "toolchain", "routine", "routines"]),
+              leaders: ["written in"],
+              followers: ["module", "modules", "program", "programs", "source", "toolchain",
+                          "routine", "routines"]),
+        // "the local host of the party" is ordinary English, "on local host" is not.
+        Entry("local host", "localhost",
+              leaders: ["on", "at", "to", "via", "through", "reach"]),
     ]
 
     // MARK: - Building
 
     /// An entry with both leaders and followers gets two rules, one per direction:
-    /// "open cursor" and "the linear issue" are different shapes of the same word.
+    /// "open cursor" and "the cursor app" are different shapes of the same word.
     private static func rules(_ entry: Entry) -> [Rule] {
-        let term = phrasePattern(entry.spoken)
+        let term = pattern(entry.spoken)
         let written = NSRegularExpression.escapedTemplate(for: entry.written)
-        let gate = Set(words(in: entry.spoken))
+        let gate = Set(words(in: entry.spoken).map(hash))
         var out: [Rule] = []
         if !entry.leaders.isEmpty {
-            let regex = pattern(
-                #"(?<![\p{L}\p{N}.])("# + Self.alternation(entry.leaders) + #")\s+"# + term + tail)
-            if let regex { out.append(Rule(regex: regex, template: "$1 " + written, gate: gate)) }
+            let leaders = alternation(entry.leaders)
+            if let regex = compile(head + "(" + leaders + #")\s+"# + term + tail) {
+                out.append(Rule(regex: regex, template: "$1 " + written, gate: gate))
+            }
         }
         if !entry.followers.isEmpty {
-            let regex = pattern(
-                head + term + #"\s+("# + Self.alternation(entry.followers) + ")" + tail)
-            if let regex { out.append(Rule(regex: regex, template: written + " $1", gate: gate)) }
+            let followers = alternation(entry.followers)
+            if let regex = compile(head + term + #"\s+("# + followers + ")" + tail) {
+                out.append(Rule(regex: regex, template: written + " $1", gate: gate))
+            }
         }
-        if out.isEmpty, let regex = pattern(head + term + tail) {
+        if out.isEmpty, let regex = compile(head + term + tail) {
             out.append(Rule(regex: regex, template: written, gate: gate))
         }
         return out
     }
 
-    /// Whole word, not straight after a dot (already-typed ".gitignore"), not before
-    /// an apostrophe ("Jason's", "Cursor's"), and not in front of a file extension
-    /// that is already there.
-    private static let head = #"(?<![\p{L}\p{N}.])"#
-    private static let tail = #"(?![\p{L}\p{N}'’])(?!\s*(?:\.|dot)\s*(?:md|json|yml|yaml|env|toml|gitignore)\b)"#
-
-    private static func pattern(_ body: String) -> NSRegularExpression? {
+    private static func compile(_ body: String) -> NSRegularExpression? {
         try? NSRegularExpression(pattern: body, options: [.caseInsensitive])
     }
 
-    /// Longest alternative first, so "written in" is tried before "in" and
-    /// "docs" before "doc".
+    /// A word of its own: not glued to a letter, digit, underscore, dot, slash, at
+    /// sign, hyphen or colon on either side, so paths, URLs, emails, branch names
+    /// and identifiers are never rewritten from the inside.
+    private static let head = #"(?<![\p{L}\p{N}._/@:-])"#
+    private static let tail =
+        #"(?![\p{L}\p{N}'’_/@:-])(?!\s*(?:\.|dot)\s*(?:md|json|yml|yaml|env|toml|gitignore)\b)"#
+
+    /// Longest alternative first, so "written in" is tried before "in" and "docs"
+    /// before "doc".
     private static func alternation(_ words: [String]) -> String {
-        words.sorted { $0.count > $1.count }.map(phrasePattern).joined(separator: "|")
+        words.sorted { $0.count > $1.count }.map(pattern).joined(separator: "|")
     }
 
     /// "agents dot md" -> `agents\s+dot\s+md`, "package.json" -> `package\.json`.
-    private static func phrasePattern(_ phrase: String) -> String {
+    private static func pattern(_ phrase: String) -> String {
         phrase.split(whereSeparator: \.isWhitespace)
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
             .joined(separator: #"\s+"#)
@@ -305,5 +318,37 @@ public final class CodingWordPack: @unchecked Sendable {
     /// pipeline uses, so a gate matches exactly the words a rule can match.
     private static func words(in phrase: String) -> [String] {
         phrase.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    /// The same word split, hashed instead of kept, so a rule can ask "is my word
+    /// here?" without building 1,500 strings on a long dictation. A hash collision
+    /// only makes a rule run and then not match.
+    private static func hashes(in text: String) -> Set<Int> {
+        var out = Set<Int>()
+        var hash = 5381
+        var inWord = false
+        for byte in text.utf8 {
+            let b = lowercased(byte)
+            if (b >= 97 && b <= 122) || (b >= 48 && b <= 57) {
+                hash = (hash &* 33) &+ Int(b)
+                inWord = true
+            } else if inWord {
+                out.insert(hash)
+                hash = 5381
+                inWord = false
+            }
+        }
+        if inWord { out.insert(hash) }
+        return out
+    }
+
+    private static func hash(_ word: String) -> Int {
+        var hash = 5381
+        for byte in word.utf8 { hash = (hash &* 33) &+ Int(lowercased(byte)) }
+        return hash
+    }
+
+    private static func lowercased(_ byte: UInt8) -> UInt8 {
+        byte >= 65 && byte <= 90 ? byte &+ 32 : byte
     }
 }
