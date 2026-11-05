@@ -116,12 +116,21 @@ and require the same words every time. Main holds 19 of 20 phases; anything that
 adds cuts has to do at least as well.
 
 - Committing every second with text-level seam repair (drop the words the two
-  decodes repeat, or repair a cut word from its stub): 5 distinct transcripts out
-  of 10 phases on one take, worst case 6 words lost and 3 gained.
+  decodes repeat, or repair a cut word from its stub): on the take the design was
+  built against, its 10 phase shifts produce 4 different transcripts where main
+  produces 1. Against main's own text for the same phase it loses no word and
+  carries up to 14 extra: the repair guesses wrong and doubles words, which is the
+  failure that killed it.
 - Committing only in a quiet 100 ms window, with the tail allowed to grow to 4 s
-  before forcing a cut: 16 of 20 phases identical. The four that differ swap one
-  word twice and drop the word "yeah" twice. Release decode p50 54 to 61 ms, which
-  is the number that made it worth trying.
+  before forcing a cut: 17 of the 20 phase shifts match main's text. Take 1 gives 2
+  different transcripts across its 10 phases with no word lost and 2 extra; take 2
+  gives 3, losing 1 to 2 words and carrying 2 to 3 extra. Release decode p50 54 to
+  61 ms, which is the number that made it worth trying.
+
+Reproduce either one with `whisp-bench --live --json --engine short --gap 1` on
+`~/.capy/work/stall/sweep/unbroken-{1,2}.wav` and their `-p1` to `-p9` 100 ms
+shifts, then compare each phase with main's row for the same phase; the rows from
+both runs are kept on this machine in `~/.capy/work/stall/sweep{,2,-main}.jsonl`.
 
 The cause is not the join. A cut inside speech hands each half of a word to a
 different decode, and the model reads the two halves differently depending on the
@@ -136,21 +145,24 @@ that was measured first is the one `design-tail-under-2s.md` proposes.
 
 - **Commit at the quietest point inside a 1 s bound, 0.6 s of audio re-decoded
   behind each cut, repeated words dropped at the join.** This is the design
-  note's cadence, built as written, and it is the 5 distinct transcripts out of
-  10 phases with a worst case of 6 words lost and 3 gained. The note's plan is
-  therefore dead as written, not an untested proposal.
+  note's cadence, built as written, and it is the one that doubles words: 4
+  different transcripts across 10 phase shifts where main gives 1, and up to 14
+  extra words against main's text. The note's plan is therefore dead as written,
+  not an untested proposal.
 - **Cut only where a quiet 100 ms window exists, allowing the tail to grow to a
   4 s cap before forcing a cut, overlap and join unchanged.** 16 of 20 phases
   identical, and the four that differ include two dropped words. It inherits the
   same failure, less often, because the cut still lands inside speech whenever
   the cap is reached.
-- **The shape nobody built:** cut only at a real pause and let the tail be as
-  long as it is. That is what ships today, and it is the 19 of 20.
+- **The shape nobody built:** cut only at a real pause, with the two bounds that
+  ship inside a long stretch of speech, the forced cut at 14 s and the 60 s pending
+  limit from #61, and otherwise let the tail be as long as it is. That is what
+  ships today, and it is the 19 of 20.
 
-The count against main is 4 differing runs of 20 against 1 of 20, which on its own
+The count against main is 3 differing runs of 20 against 1 of 20, which on its own
 is p about 0.34 and proves nothing. The argument does not rest on it: it rests on
-the class of failure, two runs that dropped a word against one substitution on
-main, and a dropped word is the outcome this effort refuses. It also separates two
+the class of failure, runs that dropped a word against one substitution on main,
+and a dropped word is the outcome this effort refuses. It also separates two
 questions that look alike: waiting for a pause and eating a long tail costs 160 ms
 and no words, while cutting on a cadence to keep the tail short is a different
 trade, and on this model it is the one that loses words.
