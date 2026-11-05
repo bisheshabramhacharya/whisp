@@ -478,7 +478,7 @@ public final class DictationController: ObservableObject {
         // from `pending`, which starts exactly at the span.
         let left = min(SpeechSegmenter.leftContextSamples, spanStart)
         let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
-        let windowStart = spanStart - left
+        let windowStart = SpeechSegmenter.aligned(spanStart - left)
         let window = Array(recorder.samples(from: windowStart).prefix(left + cut + right))
         chunks.committed = spanEnd
         chunks.inFlight = Task { [transcriber] in

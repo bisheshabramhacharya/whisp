@@ -162,7 +162,8 @@ public final class ShortWindowEngine: Transcribing, TimedTranscribing, StatusRep
             return TimedTranscript(text: "", words: [])
         }
         let bounds = SpeechSegmenter.trimSpeechBounds(samples)
-        let speech = bounds.map { Array(samples[$0.start..<$0.end]) } ?? samples
+        let start = bounds.map { SpeechSegmenter.aligned($0.start) } ?? 0
+        let speech = bounds.map { Array(samples[start..<$0.end]) } ?? samples
         var input = speech.isEmpty ? samples : speech
         let minSamples = Int(0.3 * 16_000)
         if input.count < minSamples {
@@ -173,7 +174,7 @@ public final class ShortWindowEngine: Transcribing, TimedTranscribing, StatusRep
         return TimedTranscript(
             text: ParakeetTranscriber.removingUnknownTokens(decoded.text),
             words: decoded.tokens.isEmpty ? [] : ParakeetTranscriber.words(from: decoded.tokens),
-            audioStart: Double(bounds?.start ?? 0) / 16_000)
+            audioStart: bounds == nil ? 0 : Double(start) / 16_000)
     }
 
     @MainActor

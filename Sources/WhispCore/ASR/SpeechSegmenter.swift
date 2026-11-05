@@ -89,7 +89,7 @@ public enum SpeechSegmenter {
         releaseOverlap: Int, transcriber: TimedTranscribing
     ) async throws -> String {
         var texts = pieces.map(\.text).filter { !$0.isEmpty }
-        let windowStart = max(0, committed - releaseOverlap)
+        let windowStart = aligned(max(0, committed - releaseOverlap))
         let tail = Array(samples[windowStart...])
         guard !tail.isEmpty else { return join(texts) }
         let decoded = try await transcriber.transcribeTimed(tail)
@@ -196,6 +196,16 @@ public enum SpeechSegmenter {
     /// hand the encoder a window wider than it takes: left context, span and right
     /// context stay inside the 15 s window. The rest of the backlog commits next tick.
     public static let commitLimitSamples = 10 * 16_000
+    /// One encoder frame is 80 ms and the mel grid is anchored at the first sample of
+    /// the buffer it is given. Windows and trims that start on this boundary keep a
+    /// word's start time identical in every window that hears it, instead of moving it
+    /// by up to a frame.
+    public static let encoderFrameSamples = 1_280
+
+    /// Rounds a sample index down to the encoder frame grid.
+    public static func aligned(_ sample: Int) -> Int {
+        sample - sample % encoderFrameSamples
+    }
 
     /// Where to commit when the audio pending since the last commit is older than
     /// `heldBackSamples`: the quietest 100 ms of the window the bound allows, which

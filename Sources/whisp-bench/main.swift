@@ -35,6 +35,9 @@ struct Options {
     var idleCurve = false
     var pauses = false
     var switchTest = false
+    /// Report how far a word's start time moves when the same audio is decoded in
+    /// a window that begins at a different point. Ownership at a seam rests on it.
+    var timingCheck = false
     /// One `{...}` JSON line per file/per dictation, for scripts/speed/scoreboard.sh.
     var json = false
 }
@@ -100,6 +103,8 @@ func parseArgs() -> Options {
             opts.show = true
         case "--live":
             opts.live = true
+        case "--timing-check":
+            opts.timingCheck = true
         case "--idle-curve":
             opts.idleCurve = true
         case "--pauses":
@@ -401,6 +406,61 @@ func wordEditDistance(_ ref: [String], _ hyp: [String]) -> Int {
     return prev[m]
 }
 
+// MARK: - Word time stability
+
+/// Decodes one file in windows that begin at different points and reports how far
+/// each word's start moves. The partition hands a word to the piece whose span
+/// contains its start, so a start that wanders with the window edge would move words
+/// across seams. Twenty milliseconds is the budget.
+func runTimingCheck(engineName: String, paths: [String]) async throws {
+    let inner = ASREngine.make(named: engineName)
+    guard let timed = inner as? TimedTranscribing else {
+        print("engine \(engineName) does not report word times")
+        exit(2)
+    }
+    try await timed.prepare()
+    let offsets = [0, 1_280, 2_560, 3_840, 5_120]
+    for path in paths {
+        guard let samples = try? loadSamples16kMono(path: path) else { continue }
+        var runs: [[String: TimeInterval]] = []
+        for offset in offsets {
+            let slice = Array(samples[min(offset, samples.count)...])
+            let decoded = try await timed.transcribeTimed(slice)
+            let shift = Double(min(offset, samples.count)) / 16_000 + decoded.audioStart
+            var words: [String: TimeInterval] = [:]
+            for word in decoded.words {
+                let key = word.text.lowercased()
+                if words[key] == nil { words[key] = word.start + shift }
+            }
+            runs.append(words)
+        }
+        var worst: (word: String, ms: Double) = ("", 0)
+        var compared = 0
+        let base = runs[0]
+        for other in runs.dropFirst() {
+            for (word, start) in base {
+                guard let otherStart = other[word] else { continue }
+                compared += 1
+                let delta = abs(otherStart - start) * 1000
+                if delta > worst.ms { worst = (word, delta) }
+            }
+        }
+        var deltas: [Double] = []
+        for other in runs.dropFirst() {
+            for (word, start) in runs[0] {
+                if let otherStart = other[word] { deltas.append(abs(otherStart - start) * 1000) }
+            }
+        }
+        deltas.sort()
+        let moved = deltas.filter { $0 > 1 }.count
+        let verdict = worst.ms <= 20 ? "in budget"
+            : "\(moved)/\(deltas.count) words moved one frame or more (an encoder frame is 80 ms)"
+        print(String(format: "  %@ %d words compared over %d window offsets, worst move %.1f ms (%@) %@",
+                     (path as NSString).lastPathComponent, compared, offsets.count, worst.ms,
+                     worst.word, verdict))
+    }
+}
+
 // MARK: - Chunked replay
 
 var chunkedTotals = (files: 0, fullMs: 0.0, tailMs: 0.0, diffWords: 0, words: 0)
@@ -567,6 +627,16 @@ if opts.switchTest {
                                 gapSeconds: opts.gap > 0 ? opts.gap : 0.3)
     } catch {
         print("switch test failed: \(error.localizedDescription)")
+        exit(2)
+    }
+    exit(0)
+}
+if opts.timingCheck {
+    do {
+        try await runTimingCheck(
+            engineName: opts.engineSet ? opts.engine : ASREngine.defaultName, paths: opts.files)
+    } catch {
+        print("timing check failed: \(error.localizedDescription)")
         exit(2)
     }
     exit(0)

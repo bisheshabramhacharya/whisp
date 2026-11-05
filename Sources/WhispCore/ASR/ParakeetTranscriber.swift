@@ -141,8 +141,9 @@ public final class ParakeetTranscriber: TimedTranscribing, StatusReporting {
         else { return TimedTranscript(text: "", words: []) }
 
         let bounds = SpeechSegmenter.trimSpeechBounds(samples)
-        let speech = bounds.map { Array(samples[$0.start..<$0.end]) } ?? samples
-        let audioStart = Double(bounds?.start ?? 0) / 16_000
+        let start = bounds.map { SpeechSegmenter.aligned($0.start) } ?? 0
+        let speech = bounds.map { Array(samples[start..<$0.end]) } ?? samples
+        let audioStart = bounds == nil ? 0 : Double(start) / 16_000
 
         let minSamples = Int(0.3 * 16_000)
         var input = speech
