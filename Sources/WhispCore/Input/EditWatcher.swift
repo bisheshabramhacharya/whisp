@@ -47,10 +47,31 @@ public final class EditWatcher: CorrectionWatching {
     public private(set) var lastSummary: String?
     /// The decisions that produced `lastSummary`, so Undo can reverse them.
     private var lastApplied: [CorrectionLearner.Decision] = []
-    /// "saved to dictionary: pychy → pi CLI". Called only after dictionary.json
-    /// gained that correction. Pending sightings, duplicates, removals, and
-    /// failed writes do not call it.
-    public var onDictionarySaved: ((String) -> Void)?
+    /// One correction that reached dictionary.json.
+    public struct LearnedEntry: Equatable, Sendable {
+        public let from: String
+        public let to: String
+        /// A casing entry in `terms` rather than a rule in `replacements`.
+        public let isTerm: Bool
+
+        public init(from: String, to: String, isTerm: Bool) {
+            self.from = from
+            self.to = to
+            self.isTerm = isTerm
+        }
+    }
+
+    /// Everything one take taught, plus the way back out of it.
+    public struct LearnedBatch {
+        public let entries: [LearnedEntry]
+        /// Removes exactly these entries. Held by the confirmation card, which
+        /// offers Undo for a few seconds.
+        public let undo: @MainActor () -> Void
+    }
+
+    /// Called only after dictionary.json gained a correction. Pending
+    /// sightings, duplicates, removals, and failed writes do not call it.
+    public var onDictionarySaved: ((LearnedBatch) -> Void)?
 
     public init(learner: CorrectionLearner, dictionaryFile: URL, pendingFile: URL,
                 isEnabled: @escaping () -> Bool) {
@@ -134,21 +155,21 @@ public final class EditWatcher: CorrectionWatching {
     public func apply(_ decisions: [CorrectionLearner.Decision]) {
         let pending = self.pending
         var learned: [String] = []
-        var saved: [String] = []
+        var saved: [LearnedEntry] = []
         var applied: [CorrectionLearner.Decision] = []
         for decision in decisions {
             do {
                 switch decision {
                 case .term(let term):
                     if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
-                        saved.append(term)
+                        saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                     }
                     learned.append(term)
                     applied.append(decision)
                 case .replacement(let from, let to):
                     let phrase = "\(from) → \(to)"
                     if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
-                        saved.append(phrase)
+                        saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                     }
                     learned.append(phrase)
                     applied.append(decision)
@@ -161,13 +182,13 @@ public final class EditWatcher: CorrectionWatching {
                     switch promoted {
                     case .term(let term):
                         if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
-                            saved.append(term)
+                            saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                         }
                         learned.append(term)
                     case .replacement(let from, let to):
                         let phrase = "\(from) → \(to)"
                         if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
-                            saved.append(phrase)
+                            saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                         }
                         learned.append(phrase)
                     default: break
@@ -191,10 +212,28 @@ public final class EditWatcher: CorrectionWatching {
         // After the writes have returned. `saved` holds only entries whose
         // dictionary call reported a real change.
         if !saved.isEmpty {
-            onDictionarySaved?("saved to dictionary: " + saved.joined(separator: ", "))
+            let entries = saved
+            onDictionarySaved?(LearnedBatch(entries: entries) { [weak self] in
+                self?.undo(entries)
+            })
+            let shown = entries.map { "\($0.from) → \($0.to)" }.joined(separator: ", ")
             // Learned pairs only, never the take: this is the one line to look
             // for when "it never learns anything" comes up again.
-            logger.notice("learn: saved \(saved.joined(separator: ", "), privacy: .public)")
+            logger.notice("learn: saved \(shown, privacy: .public)")
+        }
+    }
+
+    /// Reverses exactly the entries a confirmation card announced, so Undo on
+    /// the card can never eat a later dictation's lesson.
+    @MainActor
+    public func undo(_ entries: [LearnedEntry]) {
+        for entry in entries {
+            if entry.isTerm {
+                try? PersonalDictionary.removeTerm(entry.to, fileURL: dictionaryFile)
+            } else {
+                try? PersonalDictionary.removeReplacement(from: entry.from, to: entry.to,
+                                                          fileURL: dictionaryFile)
+            }
         }
     }
 
