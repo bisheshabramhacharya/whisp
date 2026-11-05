@@ -10,7 +10,9 @@ import Foundation
 ///   "I want to, I want to go", but not a repeated run of numbers ("1 2 1 2 5"),
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
-/// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
+/// colon ("at 5.30" -> "at 5:30"), applies the built-in coding word pack
+/// (`CodingWordPack`), and finally the personal dictionary, so a hand-written rule
+/// always wins.
 ///
 /// Sendable: `clean` is pure rules over the argument; `dictionary` is itself
 /// `Sendable` and is only read.
@@ -29,7 +31,8 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
         removeStutters(&tokens)
         removeRestarts(&tokens)
         let text = Self.fixClockTimes(tokens.map(\.text).joined(separator: " "))
-        return dictionary?.apply(text) ?? text
+        let packed = CodingWordPack.shared.apply(text)
+        return dictionary?.apply(packed) ?? packed
     }
 
     /// Parakeet writes "five thirty" as "5.30". Use a colon when the context says it's a
@@ -83,6 +86,8 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
         "moo", "woof", "meow", "vroom", "bam", "pow", "dee", "dum", "poo", "wee",
         "si", "oui", "ja", "da", "ma", "pa", "oink", "buzz", "hiss", "tweet",
         "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
+        // "dot dot dot" is an ellipsis someone said out loud, and a dot in a path.
+        "dot",
     ]
 
     /// Codes and counts ("4", "404", "3.14"), which people repeat on purpose.
@@ -238,7 +243,7 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
 // MARK: - Token
 
 /// A whitespace-delimited word split into leading punctuation, core, and trailing punctuation.
-private struct Token {
+struct Token {
     var leading: String
     var core: String {
         didSet { word = core.lowercased() }
