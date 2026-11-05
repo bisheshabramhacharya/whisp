@@ -19,13 +19,13 @@ guard let locale = Locale(identifier: "en-US") as Locale? else { exit(2) }
 func transcribe(_ url: URL) async throws -> String {
     let transcriber = SpeechTranscriber(
         locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
-    switch await AssetInventory.status(forModules: [transcriber]) {
-    case .installed:
-        break
-    case .unsupported:
-        throw AppleSTTError.unsupported
-    default:
-        throw AppleSTTError.notInstalled
+    // The on-device models are a system asset, not part of the OS image, so a
+    // fresh Mac has to fetch them once. No prompt and no GUI: it is a download.
+    if await AssetInventory.status(forModules: [transcriber]) != .installed {
+        guard let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
+            throw AppleSTTError.notInstalled
+        }
+        try await request.downloadAndInstall()
     }
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     let audio = try AVAudioFile(forReading: url)

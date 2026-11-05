@@ -412,7 +412,7 @@ def cmd_init(args):
             "reference": int(args["cap_reference"]),
         },
         "casual_set": args.get("casual_set") or "",
-        # BIS-20: the agreed reference set, built by scripts/speed/reference.py.
+        # BIS-20: the reference set, built by scripts/speed/reference.py.
         # Opt-in, and never part of the last-word gate.
         "reference_set": args.get("reference_set") or "",
         # Wall clock from the shell's first line, so run_seconds covers the
@@ -843,8 +843,8 @@ def render(state, out=sys.stdout):
     print("accuracy", file=out)
     rows = []
     if state.get("reference_set"):
-        rows.append(("reference set, agreed", accuracy.get("reference"),
-                     "   [two models agree]"))
+        rows.append(("reference set, whisper", accuracy.get("reference"),
+                     "   [ref errs ~1 word in 8]"))
     if state.get("casual_set"):
         rows.append(("casual set, real refs", accuracy.get("casual"), ""))
     for corpus, label, note in (

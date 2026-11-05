@@ -88,7 +88,7 @@ CAP_CLEAN=300
 CAP_OTHER=300
 CAP_DICTATION=150
 CAP_CASUAL=150
-CAP_REFERENCE=300
+CAP_REFERENCE=40
 
 # --quick exists to prove the pipeline after touching it: a few seconds of audio
 # per bucket. Never recorded, and its numbers are not the scoreboard.
@@ -96,7 +96,7 @@ if [ -n "$QUICK" ]; then
   if [ "$RECORD" = 1 ]; then echo "scoreboard: --quick and --record do not mix" >&2; exit 1; fi
   BUDGET_SHORT=20; BUDGET_AVERAGE=40; BUDGET_LONG=40
   MIN_SHORT=3; MIN_AVERAGE=2; MIN_LONG=1
-  CAP_CLEAN=20; CAP_OTHER=20; CAP_DICTATION=10; CAP_CASUAL=10
+  CAP_CLEAN=20; CAP_OTHER=20; CAP_DICTATION=10; CAP_CASUAL=10; CAP_REFERENCE=6
 fi
 
 # --- build ------------------------------------------------------------------

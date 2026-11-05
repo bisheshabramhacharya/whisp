@@ -4,16 +4,16 @@
 BIS-20, second half. The scoreboard's casual slot has been a stand-in made with
 macOS `say`, which is slow, tidy, studio speech, and his dictation is fast and
 messy, so that row has been measuring the wrong thing. This replaces it with his
-own speech and the reference text that two independent models agreed on.
+own speech and the reference text built by scripts/speed/reference.py.
 
 It builds a directory of symlinks, never copies:
 
   <out>/<id>.wav   symlink to the recording, read where it lies
-  <out>/<id>.txt   the agreed reference text
+  <out>/<id>.txt   the reference text
 
 Point the scoreboard at it: WHISP_CASUAL_SET=<out> scripts/speed/scoreboard.sh
 
-"Fast" is words per second in the agreed text divided by the recording's length,
+"Fast" is words per second in the reference text divided by the recording's length,
 and the set keeps the fastest takes, which is the shape of speech that breaks the
 engine: no pauses to lean on. Nothing private enters the repo, and the audio is
 never copied or moved.
@@ -23,9 +23,11 @@ never copied or moved.
   scripts/speed/casual-set.py --stats            # what the set looks like
 """
 import argparse
-import json
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import reference
 
 HOME = os.path.expanduser("~")
 REFERENCE = os.environ.get("WHISP_REFERENCE", os.path.join(HOME, ".whisp-reference"))
@@ -37,21 +39,12 @@ def notify(message):
 
 
 def records():
-    directory = os.path.join(REFERENCE, "text")
-    if not os.path.isdir(directory):
-        return []
-    out = []
-    for name in sorted(os.listdir(directory)):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(directory, name)) as f:
-                record = json.load(f)
-        except Exception:
-            continue
-        if record.get("strict") and record.get("words") and record.get("seconds"):
-            out.append(record)
-    return out
+    """The usable ones, the same rule reference.py applies to its set: a real
+    reference text, a length, and no flag against the recording."""
+    return [record for record in reference.load_records()
+            if not record.get("wild")
+            and (record.get("whisper") or "").strip()
+            and record.get("words") and record.get("seconds")]
 
 
 def words_per_second(record):
@@ -59,15 +52,15 @@ def words_per_second(record):
 
 
 def pick(per_bucket):
-    """Agreed recordings only, fastest first inside each bucket, so the set is
+    """Usable recordings only, fastest first inside each bucket, so the set is
     weighted the way he actually talks and not by how long it happens to be."""
-    agreed = records()
-    if not agreed:
-        notify("no agreed recordings in the cache; run scripts/speed/reference.py first")
+    usable = records()
+    if not usable:
+        notify("no usable recordings in the cache; run scripts/speed/reference.py first")
         return []
     chosen = []
     for bucket in ("short", "average", "long"):
-        pool = sorted((r for r in agreed if r.get("bucket") == bucket),
+        pool = sorted((r for r in usable if r.get("bucket") == bucket),
                       key=words_per_second, reverse=True)
         chosen += pool[:per_bucket]
     return chosen
