@@ -23,6 +23,51 @@ paid for 15 s of encoder work.
 | Cleaner + dictionary warmed at launch | first dictation no longer pays 46–67 ms | same code, earlier |
 | FluidAudio 0.15.7 → 0.17.4 | same speed | identical on 40 recordings |
 | Wake the encoder size the release will need, while you talk | real-time replay of the last 40 dictations: p50 147 → 92 ms, p90 350 → 176, worst 504 → 221 | same decode, earlier wake-up |
+| A quiet take may not stay uncut past a minute (see [quiet takes](#quiet-takes-a-quiet-take-may-not-stay-uncut-past-a-minute)) | long bucket worst 9329 → 977 ms; 9 1/2 min take 6124 → 984 ms; pieces cut 2 → 10 | WER identical on all three sets, owner recordings 100% same-or-better, 0 new dropped last words |
+
+## Quiet takes: a quiet take may not stay uncut past a minute
+
+The scoreboard's first real run found the worst number in the product: the long
+bucket (5+ minute takes) p50 167 ms but a worst case of 9329 ms. It is one
+9 1/2 minute recording, which reproduces at 6124 ms through the app's own
+dictation path (`--live`) and shows 6429 ms in the app's own history.
+
+That recording sits under the segmenter's absolute near-silence test the whole
+way (RMS 0.0027, peak 0.011, apart from one click). `nextCut` refuses a cut when
+the audio before it fails that test, and it has to: a quiet chunk sent to the
+transcriber alone comes back empty, so the segmenter keeps it attached to what
+follows. On a take recorded quietly from start to finish nothing ever gets
+committed: the live loop stopped after the first 28 s, the release had 536 s
+left, and it decoded that in 15 s windows. 6103 ms of decode in one release, the
+9329 ms in the scoreboard, and the app's own log agrees — `transcribe=9328ms`,
+`chunks=2`, no decode at all for the 43 s before the key came up.
+
+The guard is unchanged for a short span and gives way once `pendingCutLimit`
+(a minute) of audio is pending. Cutting as soon as the audio goes quiet was
+measured and rejected: it took the long bucket to 151 ms, but it changed text on
+three real recordings and one 35.9 s take went from 74 words to 68 against the
+baseline build (two `--live` passes each, alternating, clean machine). Losing a
+minute of audio to the release is recoverable at 1 s; losing words is not.
+
+| | before | after |
+|---|---|---|
+| scoreboard long bucket (5+ min, n=3) | p50 167, p95 9329, worst 9329 ms | p50 190, p95 977, worst 977 ms |
+| 9 1/2 min take, release to paste (`--live`) | 6124 ms (app: 6429 ms) | 984 ms |
+| pieces cut during that take | 2 | 10 |
+| audio one release decodes | 536 s in 15 s windows | at most 60 s |
+| decode inside that release | 6103 ms | 976 ms |
+
+The scoreboard's whole table after the change, same sample as the recorded
+baseline: short p50 90 / p95 220 / worst 250 ms (was 88 / 461 / 795), average
+p50 100 / 246 / 246 (was 100 / 247 / 247), long as above. Accuracy is unchanged:
+WER 1.70 test-clean, 3.19 test-other, 4.55 dictation (the same 150 clips), owner
+recordings 100.0% same-or-better, last word kept 100.0%, 0 new dropped last
+words, `whisp-tests` 497/497.
+
+Next lever, not in this change: the release tail is gated as one buffer, so a
+single click anywhere in it (peak above 0.05) makes the whole tail decode window
+by window. Gating each window of a split tail instead would take the remaining
+977 ms to milliseconds, and would also make a starved take cheap again.
 
 ## Measured dead ends
 
@@ -33,6 +78,7 @@ paid for 15 s of encoder work.
 | Second decode lane (`par2`) | helps p95 only when a release races a decode; +600 MB | opt-in only |
 | Speculating after 150 ms pauses | dropped a quiet last word on the edge set | not used |
 | Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
+| Cut as soon as the audio looks quiet (first version of the fix above) | long bucket worst 9329 → 151 ms, but 3 of 78 owner recordings changed text and one 35.9 s take went 74 → 68 words vs baseline | reverted: the guard gives way only past a minute of pending audio |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
 
 ## 10 s window
