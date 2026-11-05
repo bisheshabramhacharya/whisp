@@ -7,11 +7,17 @@ numbers in `log.md` are not comparable.
 ## How the split was measured
 
 `whisp-bench --stages --engine short --runs N <clips>` decodes through the app's
-own `ShortWindowEngine` and prints, per clip, the median of: mel, encoder,
+own `ShortWindowEngine` and prints, per clip, the median over the measured runs
+(the first run of each file is paid as warm-up and dropped) of: mel, encoder,
 RNNT total, and the RNNT split into joint decisions and decoder steps with the
-number of Core ML calls each one made. `ShortWindowEngine.DecodeTimings` gained
-`jointMs`/`decoderMs`/`jointCalls`/`decoderCalls` for it; the counting costs
-~0.1 us per call against a ~200-600 us call.
+number of Core ML calls each one made. A file that needs more than one encoder
+window prints one row per window from its last run, because the split points are
+the same in every run, and those files stay out of the summary mean.
+
+`ShortWindowEngine.DecodeTimings` gained
+`jointMs`/`decoderMs`/`jointCalls`/`decoderCalls` for it. The four counters are
+recorded on every decode the app runs, not only when the bench reads them, and
+they cost about 0.1 us per call against a 200-600 us call.
 
 ## Stage split (warm, `say` clips, one file per row)
 
@@ -79,11 +85,7 @@ encoder cost and the RNNT's 0.21 ms joint / 0.6 ms decoder per dispatch.
 Nothing in the app changed. `--stages` prints the split above for any file set,
 through the engine the app really uses, and `ShortWindowEngine.DecodeTimings`
 gained `jointMs`, `decoderMs`, `jointCalls`, `decoderCalls` to feed it. Exact
-same decode path, no behaviour change. The four counters are recorded on every
-decode the app runs, not only when the bench is reading them, and they cost
-about 0.1 us per call against a 200-600 us call. A file that needs more than one
-encoder window prints one row per window, since the whole-file time and one
-window's stages are different scopes.
+same decode path, no behaviour change.
 
 ## Dead ends (do not redo without a new reason)
 

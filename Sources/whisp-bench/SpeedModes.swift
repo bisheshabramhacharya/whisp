@@ -120,8 +120,9 @@ func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws 
     var singleWindow = 0
     var multiWindow = 0
     for f in files {
-        var windows: [ShortWindowEngine.DecodeTimings] = []
-        var total = 0.0
+        // One entry per measured run, each holding that run's windows in order.
+        var perRun: [[ShortWindowEngine.DecodeTimings]] = []
+        var totals: [Double] = []
         for run in 0..<runs {
             _ = stages.drain()
             let t0 = DispatchTime.now().uptimeNanoseconds
@@ -129,35 +130,44 @@ func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws 
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             let drained = stages.drain()
             guard run > 0 || runs == 1 else { continue }
-            windows = drained.map(\.t)
-            total = ms
+            perRun.append(drained.map(\.t))
+            totals.append(ms)
         }
-        guard let first = windows.first else {
+        guard let last = perRun.last, let first = last.first else {
             print("\(f.name): no stage timings (engine \(engineName) does not report them)")
             continue
         }
         let seconds = Double(f.samples.count) / 16_000
-        if windows.count == 1 {
+        if perRun.allSatisfy({ $0.count == 1 }) {
+            // Median over the measured runs, so one scheduling hiccup cannot
+            // become the row that gets quoted.
             singleWindow += 1
+            let decode = median(totals)
+            let mel = median(perRun.map { $0[0].melMs })
+            let enc = median(perRun.map { $0[0].encoderMs })
+            let rnnt = median(perRun.map { $0[0].rnntMs })
+            let joint = median(perRun.map { $0[0].jointMs })
+            let dec = median(perRun.map { $0[0].decoderMs })
             print(String(
                 format: "%@: %4.1f s on the %2d s window | decode %5.1f | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3d calls) + dec %5.1f (%2d calls)",
-                f.name, seconds, first.windowSamples / 16_000, total,
-                first.melMs, first.encoderMs, first.rnntMs,
-                first.jointMs, first.jointCalls, first.decoderMs, first.decoderCalls))
-            for (key, value) in [("decode", total), ("mel", first.melMs), ("encoder", first.encoderMs),
-                                 ("rnnt", first.rnntMs), ("joint", first.jointMs),
-                                 ("decoder", first.decoderMs)] {
+                f.name, seconds, first.windowSamples / 16_000, decode,
+                mel, enc, rnnt, joint, first.jointCalls, dec, first.decoderCalls))
+            for (key, value) in [("decode", decode), ("mel", mel), ("encoder", enc),
+                                 ("rnnt", rnnt), ("joint", joint), ("decoder", dec)] {
                 sums[key, default: []].append(value)
             }
         } else {
+            // Windows are split points on the same audio, so they are the same
+            // in every run; the row reports the last run.
             multiWindow += 1
+            let total = median(totals)
             print(String(
-                format: "%@: %4.1f s decoded as %d windows | whole file %5.1f ms",
-                f.name, seconds, windows.count, total))
-            for (i, t) in windows.enumerated() {
+                format: "%@: %4.1f s decoded as %d windows | whole file %5.1f ms (last of %d runs)",
+                f.name, seconds, last.count, total, perRun.count))
+            for (i, t) in last.enumerated() {
                 print(String(
                     format: "    window %d/%d: in %5.2f s on the %2d s window | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3d calls) + dec %5.1f (%2d calls)",
-                    i + 1, windows.count, Double(t.inputSamples) / 16_000, t.windowSamples / 16_000,
+                    i + 1, last.count, Double(t.inputSamples) / 16_000, t.windowSamples / 16_000,
                     t.melMs, t.encoderMs, t.rnntMs, t.jointMs, t.jointCalls, t.decoderMs, t.decoderCalls))
             }
         }
@@ -167,7 +177,7 @@ func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws 
         print("mean over \(singleWindow) single-window files: decode \(fmt(sums["decode"] ?? [])) | mel \(fmt(sums["mel"] ?? [])) enc \(fmt(sums["encoder"] ?? [])) rnnt \(fmt(sums["rnnt"] ?? [])) = joint \(fmt(sums["joint"] ?? [])) + dec \(fmt(sums["decoder"] ?? []))")
     }
     if multiWindow > 0 {
-        print("\(multiWindow) files needed more than one window; their rows are per window and are not in the mean.")
+        print("\(multiWindow) files needed more than one window; their rows are per window from one run and are not in the mean.")
     }
 }
 
