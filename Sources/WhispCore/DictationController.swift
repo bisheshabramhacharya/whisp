@@ -612,7 +612,7 @@ public final class DictationController: ObservableObject {
 
         let cleaned = cleaner.clean(raw)
         let cleanMs = Self.ms(since: transcribedAt)
-        // Clean, then format, then paste — in that order, and the format step is
+        // Clean, then format, then paste, in that order, and the format step is
         // timed on its own because it has a budget of its own.
         let formatStart = DispatchTime.now()
         let text = formatter.format(cleaned)

@@ -162,7 +162,7 @@ let formatCases: [(String, String, String)] = [
     ("we ship today. then we rest.", "We ship today. Then we rest.", "second sentence"),
 ]
 for (input, expected, rule) in formatCases {
-    expect(formatter.format(input), expected, "format("\(input)") — \(rule)")
+    expect(formatter.format(input), expected, "format(\(input)) - \(rule)")
 }
 
 // A formatting pass may rewrite how a word is written, never drop one. The only
@@ -2162,10 +2162,10 @@ if perCallMs > 20 { failures += 1; print("FAIL clean() too slow") }
 // The format step's budget is 5 ms for a long take: five minutes of dictation is
 // about 750 words, so measure on more than that, including the parts that make the
 // rules work hardest (numbers, spoken paths, sentence ends).
-let longTake = String(
+let longDictation = String(
     repeating: "um so I I was thinking we should, like, ship the the build to src slash main dot swift at five thirty and it costs twenty five dollars. ",
     count: 32)
-let longCleaned = dictCleaner.clean(longTake)
+let longCleaned = dictCleaner.clean(longDictation)
 let longWords = longCleaned.split(whereSeparator: \.isWhitespace).count
 let t1 = Date()
 for _ in 0..<50 { _ = formatter.format(longCleaned) }
