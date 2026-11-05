@@ -65,9 +65,9 @@ CACHE="${WHISP_SCOREBOARD_CACHE:-$HOME/.whisp-scoreboard-cache}"
 DATA="${WHISP_DATA:-$HOME/whisp-data}"
 ENGINE="${WHISP_SCOREBOARD_ENGINE:-short}"
 CASUAL="${WHISP_CASUAL_SET:-}"
-# BIS-20: reference text built by scripts/speed/reference.py, two independent
-# models, agreed recordings only. Opt-in, printed as its own row, and it never
-# feeds the last-word gate.
+# BIS-20: reference text built by scripts/speed/reference.py, one reference
+# model with the wildly disagreeing recordings dropped. Opt-in, printed as its
+# own row, and it never feeds the last-word gate.
 REFERENCE="${WHISP_REFERENCE:-}"
 STATE="$TMP/state.json"
 OUTDIR="$ROOT/docs/speed/scoreboard"
