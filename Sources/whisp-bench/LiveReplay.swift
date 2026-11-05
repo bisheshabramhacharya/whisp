@@ -137,6 +137,14 @@ struct LiveRow {
     let melMs: Double
     let encoderMs: Double
     let rnntMs: Double
+    /// Encoder wake-ups (prewarm dummies) that finished before the release,
+    /// and the chunk/speculation decodes the capture loop ran meanwhile. Their
+    /// work is off the critical path but it still occupies the engine, so a
+    /// prewarm A/B has to read them next to the wait.
+    let wakeups: Int
+    let wakeupMs: Double
+    let chunkDecodes: Int
+    let chunkMs: Double
 }
 
 /// Stage timings reported by the short engine, stamped with when they ended.
@@ -234,6 +242,8 @@ func runLive(
             continue
         }
         let calls = engine.drain()
+        let wakeups = calls.filter { $0.samples == -1 }
+        let chunkCalls = calls.filter { $0.samples > 0 && $0.start < releaseNs }
         let overlapping = calls.filter { $0.start < releaseNs && $0.end > releaseNs }
         let after = calls.filter { $0.start >= releaseNs && $0.samples >= 0 }
         let lastEnd = calls.filter { $0.end <= releaseNs }.map(\.end).max()
@@ -248,20 +258,27 @@ func runLive(
             idleBeforeMs: overlapping.isEmpty ? lastEnd.map { Double(releaseNs - $0) / 1e6 } ?? -1 : 0,
             melMs: finalStages.map(\.melMs).reduce(0, +),
             encoderMs: finalStages.map(\.encoderMs).reduce(0, +),
-            rnntMs: finalStages.map(\.rnntMs).reduce(0, +))
+            rnntMs: finalStages.map(\.rnntMs).reduce(0, +),
+            wakeups: wakeups.count,
+            wakeupMs: wakeups.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +),
+            chunkDecodes: chunkCalls.count,
+            chunkMs: chunkCalls.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +))
         rows.append(row)
         let window = finalStages.last.map { "\($0.windowSamples / 16_000)s" } ?? "-"
-        print(String(format: "  %@ %6.1f s  release→paste %4d ms (real: %@)  bg wait %4.0f  final %4.0f ms x%d [%@ mel %3.0f enc %4.0f rnnt %4.0f]  idle before %5.0f ms",
+        print(String(format: "  %@ %6.1f s  release→paste %4d ms (real: %@)  bg wait %4.0f  final %4.0f ms x%d [%@ mel %3.0f enc %4.0f rnnt %4.0f]  wake-ups %d/%3.0f ms  chunks %d/%4.0f ms  idle before %5.0f ms",
                      String(id.prefix(8)), row.seconds, row.latencyMs,
                      row.realMs.map { "\($0) ms" } ?? "—",
                      row.backgroundWaitMs, row.finalDecodeMs, row.finalDecodes,
-                     window, row.melMs, row.encoderMs, row.rnntMs, row.idleBeforeMs))
+                     window, row.melMs, row.encoderMs, row.rnntMs,
+                     row.wakeups, row.wakeupMs, row.chunkDecodes, row.chunkMs, row.idleBeforeMs))
         if json {
             // The pasted text is included so a scoreboard can compare words
             // across builds; it stays on this machine, nothing uploads it.
             var object: [String: Any] = [
                 "file": id, "sec": row.seconds, "latencyMs": row.latencyMs,
                 "bgWaitMs": row.backgroundWaitMs, "finalMs": row.finalDecodeMs,
+                "wakeups": row.wakeups, "wakeupMs": row.wakeupMs,
+                "chunks": row.chunkDecodes, "chunkMs": row.chunkMs,
                 "text": entry.cleaned,
             ]
             if let real = row.realMs { object["realMs"] = real }
@@ -282,11 +299,17 @@ func runLive(
         let live = group.map { Double($0.latencyMs) }
         let realMs = group.compactMap { $0.realMs.map(Double.init) }
         let bg = group.map(\.backgroundWaitMs), fin = group.map(\.finalDecodeMs)
-        print(String(format: "  %@ n=%3d  now p50 %4.0f p90 %4.0f max %5.0f | real p50 %4.0f p90 %4.0f | bg wait p50 %3.0f, final decode p50 %3.0f (enc %3.0f, rnnt %3.0f)",
+        let work = group.map { $0.wakeupMs + $0.chunkMs + $0.finalDecodeMs }
+        print(String(format: "  %@ n=%3d  now p50 %4.0f p90 %4.0f max %5.0f | real p50 %4.0f p90 %4.0f | bg wait p50 %3.0f, final decode p50 %3.0f (enc %3.0f, rnnt %3.0f) | wake-ups p50 %4.1f/%3.0f ms, chunks p50 %4.1f/%3.0f ms, engine work p50 %5.0f ms",
                      label.padding(toLength: 8, withPad: " ", startingAt: 0), group.count,
                      percentile(live, 0.5), percentile(live, 0.9), live.max() ?? 0,
                      percentile(realMs, 0.5), percentile(realMs, 0.9),
                      percentile(bg, 0.5), percentile(fin, 0.5),
-                     percentile(group.map(\.encoderMs), 0.5), percentile(group.map(\.rnntMs), 0.5)))
+                     percentile(group.map(\.encoderMs), 0.5), percentile(group.map(\.rnntMs), 0.5),
+                     percentile(group.map { Double($0.wakeups) }, 0.5),
+                     percentile(group.map(\.wakeupMs), 0.5),
+                     percentile(group.map { Double($0.chunkDecodes) }, 0.5),
+                     percentile(group.map(\.chunkMs), 0.5),
+                     percentile(work, 0.5)))
     }
 }
