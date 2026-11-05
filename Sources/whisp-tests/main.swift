@@ -1510,15 +1510,10 @@ if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
 
 // MARK: - Auto-learn
 
-// The learner's "real word" oracle is the app's own: NSSpellChecker, wired the
-// same way Composition wires it. No stub, because a stub can make a rule look
-// right on a word the real checker already knows.
-let learner = CorrectionLearner(isKnownWord: { word in
-    NSSpellChecker.shared.checkSpelling(
-        of: word, startingAt: 0, language: "en", wrap: false,
-        inSpellDocumentWithTag: 0, wordCount: nil
-    ).location == NSNotFound
-})
+// The learner's "real word" oracle comes from the app itself, through the same
+// factory Composition calls. No stub and no copy, because either one can make a
+// rule look right on a word the real checker already knows.
+let learner = SpellCheckOracle.learner()
 
 func checkLearn(_ pasted: String, _ current: String,
                 _ expected: [CorrectionLearner.Decision],

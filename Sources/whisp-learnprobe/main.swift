@@ -22,13 +22,8 @@ try FileManager.default.createDirectory(at: landing, withIntermediateDirectories
 let dictionary = landing.appendingPathComponent("dictionary.json")
 try "{\n  \"terms\": [],\n  \"replacements\": []\n}".write(to: dictionary, atomically: true, encoding: .utf8)
 
-// The app's own oracle.
-let learner = CorrectionLearner { word in
-    NSSpellChecker.shared.checkSpelling(
-        of: word, startingAt: 0, language: "en", wrap: false,
-        inSpellDocumentWithTag: 0, wordCount: nil
-    ).location == NSNotFound
-}
+// The app's own oracle, through the same factory the app uses.
+let learner = SpellCheckOracle.learner()
 
 let pasted = "Ship the knockout today."     // "knockout" is a word, "nelko" is not
 let anchor = "Note: "

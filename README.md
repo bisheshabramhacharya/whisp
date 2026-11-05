@@ -245,6 +245,7 @@ and include your Mac model and macOS version.
 swift build                                   # debug build
 swift run -c release whisp-tests              # tests (WHISP_TEST_PASTEBOARD=1 adds the real-clipboard ones)
 swift run -c release whisp-bench clip.wav     # speed + accuracy benchmark
+swift run -c release whisp-learnprobe         # live check: a correction typed after a paste reaches dictionary.json
 bash scripts/build-app.sh && dist/Whisp.app/Contents/MacOS/Whisp --render-designs /tmp/whisp-previews
                                               # setup + pill screenshots and UI checks
 ```
@@ -339,6 +340,7 @@ Sources/WhispCore    speech model, mic, hotkey, paste, storage, text cleanup
 Sources/Whisp        menu-bar app (status bar, recording pill, onboarding)
 Sources/whisp-bench  benchmark CLI
 Sources/whisp-tests  test runner
+Sources/whisp-learnprobe  live probe for the auto-learn path
 Resources/           Info.plist, app icon
 scripts/             build-app.sh, icon generation; speed/ has test-set tools
 tools/convert/       rebuilds the Core ML models (incl. the 5 s encoder) from NVIDIA's checkpoint
