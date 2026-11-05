@@ -192,6 +192,9 @@ public final class EditWatcher: CorrectionWatching {
         // dictionary call reported a real change.
         if !saved.isEmpty {
             onDictionarySaved?("saved to dictionary: " + saved.joined(separator: ", "))
+            // Learned pairs only, never the take: this is the one line to look
+            // for when "it never learns anything" comes up again.
+            logger.notice("learn: saved \(saved.joined(separator: ", "), privacy: .public)")
         }
     }
 
@@ -235,11 +238,45 @@ public final class EditWatcher: CorrectionWatching {
         var range = CFRange(location: location, length: length)
         guard let param = AXValueCreate(.cfRange, &range) else { return nil }
         var value: AnyObject?
-        guard AXUIElementCopyParameterizedAttributeValue(
+        if AXUIElementCopyParameterizedAttributeValue(
             span.element, kAXStringForRangeParameterizedAttribute as CFString,
             param, &value
-        ) == .success else { return nil }
-        return value as? String
+        ) == .success, let window = value as? String {
+            return windowText(ranged: window, whole: nil, location: location, length: length)
+        }
+        // Some editors refuse the parameterized read but still publish the whole
+        // value. Slice that the same way, or a correction made in those apps is
+        // silently never reviewed.
+        var wholeValue: AnyObject?
+        let whole = AXUIElementCopyAttributeValue(
+            span.element, kAXValueAttribute as CFString, &wholeValue
+        ) == .success ? wholeValue as? String : nil
+        return windowText(ranged: nil, whole: whole, location: location, length: length)
+    }
+
+    /// The text to review: the editor's ranged answer when it gave one, else the
+    /// same span taken from its whole value. Needs no selected range, only the
+    /// location and length recorded at paste time.
+    public nonisolated static func windowText(
+        ranged: String?, whole: String?, location: Int, length: Int
+    ) -> String? {
+        if let ranged { return ranged }
+        guard let whole else { return nil }
+        return slice(whole, location: location, length: length)
+    }
+
+    /// `location ..< location+length` of `text` in UTF-16 units, clamped to its
+    /// end. nil when `location` is past the end of the text.
+    public nonisolated static func slice(_ text: String, location: Int, length: Int) -> String? {
+        let utf16 = text.utf16
+        guard location >= 0, location < utf16.count else { return nil }
+        let end = min(location + max(0, length), utf16.count)
+        guard let start = utf16.index(utf16.startIndex, offsetBy: location, limitedBy: utf16.endIndex),
+              let stop = utf16.index(start, offsetBy: end - location, limitedBy: utf16.endIndex),
+              let lower = start.samePosition(in: text),
+              let upper = stop.samePosition(in: text)
+        else { return nil }
+        return String(text[lower..<upper])
     }
 
     /// Index range of the anchor when it occurs exactly once in `window`.

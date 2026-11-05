@@ -29,14 +29,9 @@ enum Composition {
         Task.detached(priority: .utility) { _ = cleaner.clean("warm at 5.30") }
         // Auto-learn: after each paste, the watcher reviews the pasted span once
         // (next dictation / app switch / 90 s) and folds small owner fixes into
-        // dictionary.json. NSSpellChecker decides "real word" for the
-        // pending-twice gate — cheap and matches what the system underlines.
-        let learner = CorrectionLearner { word in
-            NSSpellChecker.shared.checkSpelling(
-                of: word, startingAt: 0, language: "en", wrap: false,
-                inSpellDocumentWithTag: 0, wordCount: nil
-            ).location == NSNotFound
-        }
+        // dictionary.json. SpellCheckOracle is the app's "real word" answer, and
+        // the suite and the probe build their learner from it too.
+        let learner = SpellCheckOracle.learner()
         let learnWatcher = EditWatcher(
             learner: learner,
             dictionaryFile: AppPaths.dictionaryFile,

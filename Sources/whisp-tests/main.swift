@@ -5,6 +5,13 @@ import WhispCore
 // Plain executable test runner (Command Line Tools ship without XCTest/Testing).
 // Exits non-zero on any failure.
 
+// Never touch the owner's real dictations: the suite writes a history line, a
+// dictionary and a wav, so point AppPaths at a throwaway folder before the
+// first use of it. AppPaths.root is a lazy `let`, so this must run first.
+let testDataDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("whisp-tests-\(UUID().uuidString)", isDirectory: true)
+setenv("WHISP_DATA_DIR", testDataDir.path, 1)
+
 var failures = 0
 var passes = 0
 
@@ -1067,9 +1074,8 @@ await sessionInterruptTests()
 // Dictation data is private: the data dir and every file in it must be
 // readable only by the owner (~/Library/Application Support is world-readable).
 do {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-root-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: dir) }
-    setenv("WHISP_DATA_DIR", dir.path, 1)
+    // AppPaths.root is already pointed at the suite's throwaway folder at the
+    // top of this file.
     func perm(_ url: URL) -> String {
         let attrs = try! FileManager.default.attributesOfItem(atPath: url.path)
         return String(format: "%o", attrs[.posixPermissions] as! Int)
@@ -1085,6 +1091,47 @@ do {
     let permArchive = RecordingArchive(directory: AppPaths.recordingsDir)
     _ = try! permArchive.save(samples: [0.1, 0.2], id: "t1")
     expect(perm(AppPaths.recordingsDir.appendingPathComponent("t1.wav")), "600", "wav is user-only")
+}
+
+// The data folder the app reads must be the one the owner edits: the first
+// installs lived in ~/whisp-data, and a double-clicked app has no environment
+// to say so.
+// Decided against real folders, because the rule asks the filesystem.
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("whisp-home-\(UUID().uuidString)",
+                                                            isDirectory: true)
+    let legacy = home.appendingPathComponent("whisp-data", isDirectory: true)
+    let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
+    let firstInstall = support.appendingPathComponent("Whisp", isDirectory: true)
+    defer { try? fm.removeItem(at: home) }
+    func choose(_ override: String? = nil) -> URL {
+        var isDirectory: ObjCBool = false
+        let exists = fm.fileExists(atPath: legacy.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+        return AppPaths.chooseRoot(override: override, legacy: legacy, legacyExists: exists,
+                                   appSupport: support)
+    }
+    expect(choose().path, firstInstall.path, "no ~/whisp-data: a fresh install uses Application Support")
+    expect(choose("/tmp/x").path, "/tmp/x", "WHISP_DATA_DIR wins over everything")
+    expect(choose("").path, firstInstall.path, "an empty WHISP_DATA_DIR is not an override")
+    try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+    expect(choose().path, legacy.path, "an empty ~/whisp-data is still the data root")
+    try #"{"terms":["Vinted"],"replacements":[]}"#.write(
+        to: legacy.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "~/whisp-data holding a dictionary is the data root")
+    try fm.createDirectory(at: firstInstall, withIntermediateDirectories: true)
+    try #"{"terms":["Sol"],"replacements":[]}"#.write(
+        to: firstInstall.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "both folders present: the owner's data wins")
+    // The rule reads no file, so an unreadable dictionary inside must not move
+    // the root, and opening it must not take the reader down with it.
+    try "not json {{{".write(to: legacy.appendingPathComponent("dictionary.json"),
+                             atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "an unreadable dictionary inside does not move the root")
+    expect(PersonalDictionary(fileURL: legacy.appendingPathComponent("dictionary.json"))
+            .apply("We sell on vinted."),
+           "We sell on vinted.", "an unreadable dictionary applies nothing and does not crash")
 }
 
 // MARK: - A2 Reliability
@@ -1772,16 +1819,10 @@ if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
 
 // MARK: - Auto-learn
 
-// The learner's "real word" oracle is a set here. "Pychy" is unknown model
-// junk. Names like Priya, Filip, and Ellem are left out on purpose: the spell
-// checker doesn't know them, so they exercise the unknown-word gate.
-let knownWords: Set<String> = [
-    "soul", "use", "the", "model", "open", "now", "we", "sell", "on", "vinted",
-    "meet", "tuesday", "monday", "should", "ship", "it", "send", "to", "him",
-    "hello", "there", "with", "and", "more", "typed", "after", "pi", "cli",
-    "fully", "rewritten", "this", "is", "a", "different", "story", "today", "i",
-]
-let learner = CorrectionLearner(isKnownWord: { knownWords.contains($0.lowercased()) })
+// The learner's "real word" oracle comes from the app itself, through the same
+// factory Composition calls. No stub and no copy, because either one can make a
+// rule look right on a word the real checker already knows.
+let learner = SpellCheckOracle.learner()
 
 func checkLearn(_ pasted: String, _ current: String,
                 _ expected: [CorrectionLearner.Decision],
@@ -1792,18 +1833,36 @@ func checkLearn(_ pasted: String, _ current: String,
            "\(label) — got \(decisions)", line: line)
 }
 
-// The required table from the brief.
+// The required table from the brief. Expectations below are what the app's own
+// NSSpellChecker oracle produces; the words it happens to know decide the gate.
+// A real word fixed to something the checker does not know is the owner naming
+// a thing, so one sighting is saved.
+checkLearn("Help me set up tail skill.", "Help me set up tailscale.",
+           [.replacement(from: "tail skill", to: "tailscale")],
+           "known words fixed to a name save at once")
+checkLearn("Ship it to the knockout.", "Ship it to the nelko.",
+           [.replacement(from: "knockout", to: "nelko")],
+           "a product name the checker never saw saves at once")
+checkLearn("Open the agents MD now.", "Open the AGENTS.md now.",
+           [.replacement(from: "agents MD", to: "AGENTS.md")],
+           "an abbreviation the checker never saw saves at once")
+// The checker knows "Sol" and "Claude", so these two are not naming a new word:
+// they still wait for a second sighting. Kept as rows precisely because the
+// PR first claimed the opposite.
 checkLearn("I use the soul model.", "I use the Sol model.",
-           [.pending(from: "soul", to: "Sol", kind: .replacement)], "soul→Sol: pending")
+           [.pending(from: "soul", to: "Sol", kind: .replacement)],
+           "soul→Sol: the checker knows Sol, so it waits")
+checkLearn("Open cloud code now.", "Open Claude Code now.",
+           [.pending(from: "cloud code", to: "Claude Code", kind: .replacement)],
+           "cloud code→Claude Code: the checker knows Claude, so it waits")
 checkLearn("Open Pychy now.", "Open pi CLI now.",
            [.replacement(from: "Pychy", to: "pi CLI")], "junk from learns right away")
-checkLearn("Meet Priya today.", "Meet Anil today.",
-           [.pending(from: "Priya", to: "Anil", kind: .replacement)],
-           "priya→anil waits for a second sighting")
+checkLearn("Meet Priya today.", "Meet Anil today.", [],
+           "priya→anil is not a mishearing, so nothing is learned")
 checkLearn("Meet priya today.", "Meet Priya today.",
            [.term("Priya")], "casing an unknown name still learns")
 checkLearn("We sell on vinted.", "We sell on Vinted.",
-           [.pending(from: "vinted", to: "Vinted", kind: .term)], "case-only pending")
+           [.term("Vinted")], "casing a name the checker does not know saves at once")
 checkLearn("Meet on Tuesday.", "Meet on Monday.", [], "Tuesday→Monday never")
 checkLearn("We should ship it.", "We should not ship it.", [], "insertion ignored")
 checkLearn("Send it to him.", "Send it too him.", [], "stoplist ignored")
@@ -1825,15 +1884,14 @@ checkLearn("I use the Sol model.", "I use the soul model.",
            rules: [(["soul"], "Sol")], "undo removes the rule")
 checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
-            .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
+            .term("Vinted")], "two fixes in one take")
 
 // Review edge cases for the mishearing gate (PR #52).
 // "gonna" and "2nd" are unknown to this oracle and fail the gate, so they
 // wait for a second sighting instead of being dropped.
 checkLearn("Meet Priya today.", "Meet today.", [], "deleting an unknown name learns nothing")
-checkLearn("We gonna ship it.", "We will ship it.",
-           [.pending(from: "gonna", to: "will", kind: .replacement)],
-           "rewording slang is not a mishearing")
+checkLearn("We gonna ship it.", "We will ship it.", [],
+           "rewording slang is not a mishearing, so nothing is learned")
 checkLearn("Use 2nd copy.", "Use 3rd copy.",
            [.pending(from: "2nd", to: "3rd", kind: .replacement)],
            "digit-led words with no Soundex key do not match")
@@ -1843,8 +1901,8 @@ checkLearn("Email Filip today.", "Email Phillip today.",
            [.pending(from: "Filip", to: "Phillip", kind: .replacement)],
            "Filip→Phillip first sighting is pending")
 checkLearn("Email Katie today.", "Email Caty today.",
-           [.pending(from: "Katie", to: "Caty", kind: .replacement)],
-           "Katie→Caty first sighting is pending")
+           [.replacement(from: "Katie", to: "Caty")],
+           "Katie→Caty is close enough to the sound to save at once")
 checkLearn("Email Ellem today.", "Email LLM today.",
            [.pending(from: "Ellem", to: "LLM", kind: .replacement)],
            "Ellem→LLM first sighting is pending")
@@ -1863,7 +1921,7 @@ checkLearn("Open Pychy now.", "Open Pitchy Now.", [],
 // The same two fixes in separate sentence blocks each learn on their own.
 checkLearn("Open Pychy now. Meet tuesday.", "Open Pitchy now. Meet Tuesday.",
            [.replacement(from: "Pychy", to: "Pitchy"),
-            .pending(from: "tuesday", to: "Tuesday", kind: .term)],
+            .term("Tuesday")],
            "two fixes in separate blocks both learn")
 // Three real fixes in one take: the per-paste cap learns only the first two.
 checkLearn("I use the soul model. Open Pychy now. We sell on vinted.",
@@ -1908,6 +1966,28 @@ do {
     let empty = EditWatcher.singleOccurrence(of: "", in: "Sol model.")
     expect(empty != nil && String("Sol model."[empty!.upperBound...]) == "Sol model." ? "ok" : "bad",
            "ok", "empty anchor = document start")
+    // Whole-value fallback window: offsets are UTF-16, the tail clamps, and a
+    // cursor past the end reads nothing.
+    expect(EditWatcher.slice("abcdef", location: 2, length: 3) ?? "nil", "cde",
+           "fallback window slice")
+    expect(EditWatcher.slice("abcdef", location: 4, length: 99) ?? "nil", "ef",
+           "fallback window slice clamps at the end")
+    expect(EditWatcher.slice("abcdef", location: 6, length: 3) == nil ? "nil" : "text", "nil",
+           "fallback window slice past the end reads nothing")
+    expect(EditWatcher.slice("éclair 🤖 done", location: 10, length: 4) ?? "nil", "done",
+           "fallback slice counts UTF-16 units like the AX range")
+    // The fallback as one function: the ranged read wins when the editor gives
+    // one, else the same span of its whole value. It takes no selected range,
+    // only the location and length recorded at paste time, which is what keeps
+    // review working in an editor that publishes a value and no selection.
+    expect(EditWatcher.windowText(ranged: "cde", whole: "ignored", location: 2, length: 3) ?? "nil",
+           "cde", "ranged read wins over the whole value")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 2, length: 3) ?? "nil",
+           "cde", "whole value and no selected range falls back to the slice")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 99, length: 3) == nil
+             ? "nil" : "text", "nil", "whole value with the cursor past its end reads nothing")
+    expect(EditWatcher.windowText(ranged: nil, whole: nil, location: 0, length: 3) == nil
+             ? "nil" : "text", "nil", "neither answer reads nothing and does not crash")
 }
 
 // Apply path: pending file + dictionary.json in a temp dir.
@@ -1932,22 +2012,20 @@ func dictHas(_ needle: String) -> Bool {
     (try? String(contentsOf: dictFile, encoding: .utf8).contains(needle)) ?? false
 }
 
-// 1st sighting of a real-word fix: pending only, dictionary untouched.
-watcher.apply(learner.decide(pasted: "I use the soul model.",
-                                   current: "I use the Sol model.", existingRules: []))
-expect(dictHas("Sol").description, "false", "pending writes nothing to dictionary")
-expect((try? String(contentsOf: pendFile, encoding: .utf8))?
-        .contains("soul") == true ? "pending" : "empty", "pending", "fix counted in pending file")
-expect(String(saveNotices.count), "0", "pending sighting shows no save alert")
-
-// 2nd sighting: promoted into dictionary.json.
-watcher.apply(learner.decide(pasted: "I use the soul model.",
-                                   current: "I use the Sol model.", existingRules: []))
-expect(dictHas("soul").description, "true", "second sighting writes the rule")
-expect(dictHas("Sol").description, "true", "rule maps to Sol")
-expect(watcher.lastSummary?.contains("soul → Sol") ?? false ? "shown" : "hidden",
-       "shown", "menu shows Learned: soul → Sol")
-expect(saveNotices.last ?? "", "saved to dictionary: soul → Sol", "alert follows the dictionary write")
+// A real word fixed to a name the checker does not know saves on the first
+// sighting: the owner is naming something, and that name is what the
+// dictionary is for.
+watcher.apply(learner.decide(pasted: "Help me set up tail skill.",
+                                   current: "Help me set up tailscale.", existingRules: []))
+expect(dictHas("tail skill").description, "true", "a name fix writes on the first sighting")
+expect(dictHas("tailscale").description, "true", "rule maps to tailscale")
+expect(watcher.lastSummary?.contains("tail skill → tailscale") ?? false ? "shown" : "hidden",
+       "shown", "menu shows Learned: tail skill → tailscale")
+expect(saveNotices.last ?? "", "saved to dictionary: tail skill → tailscale",
+       "alert follows the dictionary write")
+// Saved now, used by the next dictation: the same file loads the rule back.
+expect(PersonalDictionary(fileURL: dictFile).apply("Help me set up tail skill."),
+       "Help me set up tailscale.", "the next dictation uses the learned rule")
 
 // Junk fix writes immediately.
 watcher.apply(learner.decide(pasted: "Open Pychy now.",
@@ -1962,24 +2040,32 @@ watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(String(saveNotices.count), String(noticesAfterPychy), "duplicate rule is not announced again")
 
-// A different person is not saved the first time: pending only, no alert.
-watcher.apply(learner.decide(pasted: "Meet Priya today.",
-                                   current: "Meet Anil today.", existingRules: []))
-expect(dictHas("Priya").description, "false", "priya→anil is not written the first time")
-expect(dictHas("Anil").description, "false", "anil is not written the first time")
-expect(String(saveNotices.count), String(noticesAfterPychy), "priya→anil shows no save alert")
+// A fix the checker can see through but does not consider a mishearing waits
+// for a second sighting, then is written.
+watcher.apply(learner.decide(pasted: "Email Filip today.",
+                                   current: "Email Phillip today.", existingRules: []))
+expect(dictHas("Filip").description, "false", "Filip→Phillip is not written the first time")
+expect(dictHas("Phillip").description, "false", "Phillip is not written the first time")
+expect(String(saveNotices.count), String(noticesAfterPychy), "Filip→Phillip shows no save alert")
+watcher.apply(learner.decide(pasted: "Email Filip today.",
+                                   current: "Email Phillip today.", existingRules: []))
+expect(dictHas("Filip").description, "true", "second sighting writes the name swap")
+expect(saveNotices.last ?? "", "saved to dictionary: Filip → Phillip",
+       "name swap alerts on the second sighting")
 
 // Undo of the learned batch restores the pre-learn state.
 watcher.undoLast()
-expect(dictHas("Pychy").description, "false", "undo removes the junk fix")
-expect(String(saveNotices.count), String(noticesAfterPychy), "undo shows no save alert")
+expect(dictHas("Filip").description, "false", "undo removes the promoted name swap")
+expect(dictHas("Pychy").description, "true", "undo leaves earlier saves alone")
+expect(String(saveNotices.count), String(noticesAfterPychy + 1), "undo shows no save alert")
 
-// Undo: owner corrects a pasted Sol back to soul — the from is removed.
+// Undo: owner corrects a pasted Sol back to soul — the rule loses that source.
+try PersonalDictionary.addReplacement(from: "soul", to: "Sol", fileURL: dictFile)
 watcher.apply(learner.decide(pasted: "I use the Sol model.",
                                    current: "I use the soul model.",
                                    existingRules: PersonalDictionary.loadPairs(fileURL: dictFile)))
 expect(dictHas("soul").description, "false", "undone rule loses its from")
-expect(String(saveNotices.count), String(noticesAfterPychy), "unlearning shows no save alert")
+expect(String(saveNotices.count), String(noticesAfterPychy + 1), "unlearning shows no save alert")
 
 // Casing an unknown name is a real dictionary write, so it does announce.
 watcher.apply(learner.decide(pasted: "Meet priya today.",
@@ -1999,8 +2085,6 @@ func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: Strin
     expect(dictHas(to).description, "true", "\(label) target saved")
     expect(saveNotices.last ?? "", "saved to dictionary: \(from) → \(to)", "\(label) alerts after the second write")
 }
-learnTwice("Email Filip today.", "Email Phillip today.", "Filip", "Phillip", "Filip→Phillip")
-learnTwice("Email Katie today.", "Email Caty today.", "Katie", "Caty", "Katie→Caty")
 learnTwice("Email Ellem today.", "Email LLM today.", "Ellem", "LLM", "Ellem→LLM")
 
 // Malformed dictionary.json: no write, no crash, no alert.

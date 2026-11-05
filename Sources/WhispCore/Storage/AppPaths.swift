@@ -2,22 +2,46 @@ import Foundation
 
 /// All on-disk locations for Whisp data.
 ///
-/// Default root: `~/Library/Application Support/Whisp/`
+/// Default root: `~/whisp-data` when that folder already exists, else
+/// `~/Library/Application Support/Whisp/`.
 /// Override with the `WHISP_DATA_DIR` env var (useful for dev runs and tests).
 public enum AppPaths {
 
-    /// ~/Library/Application Support/Whisp
+    /// ~/whisp-data if it exists, else ~/Library/Application Support/Whisp
     public static let root: URL = {
-        if let override = ProcessInfo.processInfo.environment["WHISP_DATA_DIR"],
-           !override.isEmpty {
-            return URL(fileURLWithPath: override, isDirectory: true)
-        }
+        let legacy = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("whisp-data", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        let legacyExists = FileManager.default.fileExists(atPath: legacy.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        return appSupport.appendingPathComponent("Whisp", isDirectory: true)
+        return chooseRoot(
+            override: ProcessInfo.processInfo.environment["WHISP_DATA_DIR"],
+            legacy: legacy,
+            legacyExists: legacyExists,
+            appSupport: appSupport
+        )
     }()
+
+    /// The data folder rule: an explicit override wins, then the first-install
+    /// folder `~/whisp-data` when it already exists, then Application Support.
+    ///
+    /// The first installs kept everything in ~/whisp-data, and on this Mac the
+    /// owner's 2,598 dictations and the dictionary they curate are there.
+    /// Falling back to Application Support instead would hand a double-clicked
+    /// app an empty dictionary while the real one sits next to the recordings —
+    /// a learned correction would land in a file nothing reads.
+    public static func chooseRoot(override: String?, legacy: URL, legacyExists: Bool,
+                                  appSupport: URL) -> URL {
+        if let override, !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        if legacyExists { return legacy }
+        return appSupport.appendingPathComponent("Whisp", isDirectory: true)
+    }
 
     /// root/history.jsonl — append-only transcription history.
     public static var historyFile: URL {
