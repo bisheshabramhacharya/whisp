@@ -71,6 +71,30 @@ enough, because the transcript is no longer the same twice:
 - take 2, "Chez Panisse" comes out as Chepanas, Cheapanis, Che Pennis, and Shea
   Chepanas in different phases, and one phase drops "Book".
 
+## No seam at all, and the common short release gets worse
+
+A take shorter than the held-back bound plus a cadence never commits, so there is no
+seam and nothing for the partition to do. That is the common dictation, and it is
+the one case where this change has no reason to move anything. Six `say` clips of
+1.6 to 1.8 s, live, both builds, one run each:
+
+| | release to paste | release decode | text |
+|---|---|---|---|
+| main | min 65, p50 88, max 106 ms | 0 ms | baseline |
+| this change | min 116, p50 151, max 152 ms | 40 to 56 ms | 2 of 6 clips differ by one word |
+
+Main pays no decode at release on these at all: the speech ends in a pause, and the
+live loop already decoded that pause before the key came up. The timed path cannot
+reuse that decode, because the reuse it had was text without word times, so it
+dropped the speculation and every short release now pays a fresh one. The fix is
+obvious, keep the pause decode as a text fast path when nothing was committed, and
+it was not built because the direction closes first. Two of six clips also differ by
+one word, the audio decoded a frame earlier at the trim, which is enough to flip a
+one-word answer on a 1.6 s clip.
+
+So on the common case this change costs about 63 ms and a word on the wrong clip,
+and that is on top of failing the gate everywhere else.
+
 ## The three second cadence, and the end of the direction
 
 A seam every second leaves too little context, so the fair next move was to commit
