@@ -41,10 +41,7 @@ BUCKETS = [
 BUCKET_NAMES = [b[0] for b in BUCKETS]
 WORST_TARGET_MS = 100
 AUDIO_EXT = (".wav", ".flac", ".aiff", ".m4a")
-# 2: the accuracy comparison reads numbers, money, percentages and spoken file
-# paths the way they are written (see canonical_words), so rows from schema 1
-# cannot be compared against schema 2 rows.
-SCHEMA = 2
+SCHEMA = 1
 
 # Words a dictated number can be built from, and what each one is worth.
 NUMBER_WORDS = {
@@ -192,17 +189,27 @@ def canonical_words(ws):
     return out
 
 
-def text_hashes(text):
+def text_hashes(cleaned, pasted=None):
     """What a cache row keeps instead of the transcript.
 
-    Only hashes leave this machine. `words` is the folded word list from
-    canonical_words, so a formatting change cannot look like lost accuracy.
+    `words` / `lastWord` are the words cleanup produced, the measure this gate has
+    always used, so a recorded baseline stays comparable.
+
+    `formattedWords` / `formattedLastWord` are the take as it pasted, folded with
+    canonical_words: a number in digits, a money word, a percentage and a joined
+    path all count as the words they were said as. The gate uses this pair when
+    both sides have it, so formatting is covered once a baseline carries it.
     """
-    ws = canonical_words(words(text))
-    return {
+    ws = words(cleaned)
+    out = {
         "lastWord": word_hash(ws[-1]) if ws else "",
         "words": sorted(word_hash(w) for w in ws),
     }
+    if pasted is not None:
+        folded = canonical_words(words(pasted))
+        out["formattedLastWord"] = word_hash(folded[-1]) if folded else ""
+        out["formattedWords"] = sorted(word_hash(w) for w in folded)
+    return out
 
 
 def file_key(name):
@@ -273,9 +280,7 @@ def wer_cache_path(state, corpus):
 def load_cache(path):
     """A cache file for this schema, or an empty one.
 
-    Rows written before the accuracy comparison learned about numbers, money and
-    spoken paths are not comparable with rows written after, so they are dropped
-    rather than mixed.
+    A cache file for another schema is stale, so it is ignored rather than mixed.
     """
     data = read_json(path) or {}
     if data.get("schema") != SCHEMA:
@@ -490,7 +495,9 @@ def cmd_merge_live(args):
             "sec": round(float(sec), 3),
             "latencyMs": int(latency),
         }
-        record.update(text_hashes(text))
+        # Builds before the formatter existed have no preFormat: the take pasted
+        # as it was cleaned.
+        record.update(text_hashes(row.get("preFormat") or text, text))
         files[entry["key"]] = record
         merged += 1
     cache["build"] = state["build"]
@@ -674,15 +681,21 @@ def baseline_comparison(state):
     had_last_word = kept = dropped = 0
     for k in common:
         b, c = base[k], current[k]
-        want = Counter(b.get("words", []))
-        have = Counter(c.get("words", []))
+        # Compare the pasted take against the pasted take once both builds kept it;
+        # otherwise the words cleanup produced, which is what older baselines hold.
+        if b.get("formattedWords") and c.get("formattedWords"):
+            want, have = Counter(b["formattedWords"]), Counter(c["formattedWords"])
+            base_last, current_last = b.get("formattedLastWord"), c.get("formattedLastWord")
+        else:
+            want, have = Counter(b.get("words", [])), Counter(c.get("words", []))
+            base_last, current_last = b.get("lastWord"), c.get("lastWord")
         lost = sum(max(0, n - have[w]) for w, n in want.items())
         if lost == 0:
             same_or_better += 1
         # Only a recording the baseline heard a last word in can keep one.
-        if b.get("lastWord"):
+        if base_last:
             had_last_word += 1
-            if b["lastWord"] == c.get("lastWord"):
+            if base_last == current_last:
                 kept += 1
             else:
                 dropped += 1
