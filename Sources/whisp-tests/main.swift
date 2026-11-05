@@ -2165,13 +2165,22 @@ if perCallMs > 20 { failures += 1; print("FAIL clean() too slow") }
 let longDictation = String(
     repeating: "um so I I was thinking we should, like, ship the the build to src slash main dot swift at five thirty and it costs twenty five dollars. ",
     count: 32)
-let longCleaned = dictCleaner.clean(longDictation)
-let longWords = longCleaned.split(whereSeparator: \.isWhitespace).count
+let longWords = longDictation.split(whereSeparator: \.isWhitespace).count
+// One take, both text steps, so the numbers line up: clean alone is where the
+// text step stood before the formatter existed, clean+format is where it stands
+// now, and format alone is what the new step costs.
 let t1 = Date()
+for _ in 0..<50 { _ = dictCleaner.clean(longDictation) }
+let beforeMs = Date().timeIntervalSince(t1) * 1000 / 50
+let t2 = Date()
+for _ in 0..<50 { _ = formatter.format(dictCleaner.clean(longDictation)) }
+let afterMs = Date().timeIntervalSince(t2) * 1000 / 50
+let longCleaned = dictCleaner.clean(longDictation)
+let t3 = Date()
 for _ in 0..<50 { _ = formatter.format(longCleaned) }
-let perFormatMs = Date().timeIntervalSince(t1) * 1000 / 50
-print(String(format: "format() on %d words / %d chars (%.0f s of speech): %.3f ms",
-             longWords, longCleaned.count, Double(longWords) / 2.5, perFormatMs))
+let perFormatMs = Date().timeIntervalSince(t3) * 1000 / 50
+print(String(format: "text step on %d words / %d chars (%.0f s of speech): clean %.3f ms -> clean+format %.3f ms (format %.3f ms)",
+             longWords, longDictation.count, Double(longWords) / 2.5, beforeMs, afterMs, perFormatMs))
 if perFormatMs > 5 {
     failures += 1
     print("FAIL format() over the 5 ms budget")
