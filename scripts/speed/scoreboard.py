@@ -65,6 +65,12 @@ ORDINAL_WORDS = {
 # comparison drops them too, so writing "25 dollars" as "$25" or "src slash
 # main dot swift" as "src/main.swift" is never read as lost words.
 CURRENCY_WORDS = {"dollars", "dollar", "bucks", "buck", "cents", "cent"}
+# What the qualifier means once the number is written in digits: "fifty bucks" and
+# "$50" are the same, "twenty five cents" and "$25" are not.
+CURRENCY_QUALIFIER = {
+    "dollars": "dollars", "dollar": "dollars", "bucks": "dollars", "buck": "dollars",
+    "cents": "cents", "cent": "cents",
+}
 PERCENT_WORDS = {"percent", "per", "cent"}
 PATH_SEPARATORS = {"slash", "backslash", "dot", "underscore"}
 ORDINAL_SUFFIX = re.compile(r"^(\d+)(?:st|nd|rd|th)$")
@@ -132,6 +138,9 @@ def number_run(ws, i):
             break
         if kind == "unit" and last == "unit":
             break
+        # "twenty nineteen" is a year, not 39.
+        if kind == "unit" and last == "tens" and value >= 10:
+            break
         if kind == "tens" and last in ("unit", "tens"):
             break
         if kind == "scale":
@@ -150,6 +159,44 @@ def number_run(ws, i):
     return str(total + current), used
 
 
+CLOCK_PREPOSITIONS = {"at", "by", "around", "from", "before", "after", "until", "till",
+                      "past", "about"}
+
+
+def clock_pair(ws, i):
+    """(hour, minute, words used after the hour) when ws[i:] reads like a clock time.
+
+    Same shape and same context as the formatter: after a time word, with a minute
+    spoken, so "at five thirty" is a time and "two fifty" is a price.
+    """
+    if i < 1 or i >= len(ws) or ws[i - 1] not in CLOCK_PREPOSITIONS:
+        return None
+    hour = NUMBER_WORDS.get(ws[i])
+    if hour is None or not 1 <= hour <= 12 or i + 1 >= len(ws):
+        return None
+    nxt = ws[i + 1]
+    if nxt == "oh" and i + 2 < len(ws) and NUMBER_WORDS.get(ws[i + 2], 99) < 10:
+        return hour, NUMBER_WORDS[ws[i + 2]], 2
+    minute = NUMBER_WORDS.get(nxt)
+    if minute is None or minute < 10:
+        return None
+    if minute % 10 == 0 and i + 2 < len(ws) and NUMBER_WORDS.get(ws[i + 2], 99) < 10:
+        return hour, minute + NUMBER_WORDS[ws[i + 2]], 2
+    return hour, minute, 1
+
+
+def number_word_at(ws, i):
+    if i < 0 or i >= len(ws):
+        return False
+    return ws[i] in NUMBER_WORDS or ws[i] in SCALE_WORDS or ws[i] in ORDINAL_WORDS
+
+
+def spelled_symbols(text):
+    """Write $ and % as words, so the fold can compare a symbol with a word."""
+    text = re.sub(r"\$\s?([\d,]+(?:\.\d+)?)", r"\1 dollars", text or "")
+    return re.sub(r"([\d,]+(?:\.\d+)?)\s?%", r"\1 percent", text)
+
+
 def canonical_words(ws):
     """The word list with number, money, percentage and path spellings folded.
 
@@ -161,30 +208,56 @@ def canonical_words(ws):
     i = 0
     while i < len(ws):
         w = ws[i]
+        clock = clock_pair(ws, i)
+        if clock:
+            hour, minute, extra = clock
+            out.append(str(hour))
+            out.append(f"{minute:02d}")
+            i += 1 + extra
+            continue
         ordinal = ORDINAL_SUFFIX.match(w)
         run = None if ordinal else number_run(ws, i)
+        # A number word touching another one is a year or a price read aloud ("we met
+        # in twenty nineteen", "two fifty"). The formatter leaves all of it as words,
+        # and so does the fold, so a half reading like "39" cannot compare equal.
+        if run and (number_word_at(ws, i - 1) or number_word_at(ws, i + run[1])):
+            run = None
         if ordinal:
             out.append(ordinal.group(1))
             i += 1
         elif run:
-            out.append(run[0])
+            digits = run[0]
             i += run[1]
+            # A number's money or percentage word belongs to the number, and stays
+            # with it: dollars and cents are not the same number.
+            if i < len(ws) and ws[i] in CURRENCY_QUALIFIER:
+                digits += CURRENCY_QUALIFIER[ws[i]]
+                i += 1
+            elif i + 1 < len(ws) and ws[i] == "per" and ws[i + 1] == "cent":
+                digits += "percent"
+                i += 2
+            elif i < len(ws) and ws[i] == "percent":
+                digits += "percent"
+                i += 1
+            out.append(digits)
         elif w.isdigit():
-            out.append(w)
+            digits = w
             i += 1
+            if i < len(ws) and ws[i] in CURRENCY_QUALIFIER:
+                digits += CURRENCY_QUALIFIER[ws[i]]
+                i += 1
+            elif i + 1 < len(ws) and ws[i] == "per" and ws[i + 1] == "cent":
+                digits += "percent"
+                i += 2
+            elif i < len(ws) and ws[i] == "percent":
+                digits += "percent"
+                i += 1
+            out.append(digits)
         else:
             # Spoken path separators carry no words of their own once a path is joined.
             if w not in PATH_SEPARATORS and not (w == "forward" and i + 1 < len(ws)
                                                  and ws[i + 1] == "slash"):
                 out.append(w)
-            i += 1
-            continue
-        # A number's money or percentage word belongs to the number.
-        if i < len(ws) and ws[i] in CURRENCY_WORDS:
-            i += 1
-        elif i + 1 < len(ws) and ws[i] in PERCENT_WORDS and ws[i + 1] in PERCENT_WORDS:
-            i += 2
-        elif i < len(ws) and ws[i] == "percent":
             i += 1
     return out
 
@@ -206,7 +279,7 @@ def text_hashes(cleaned, pasted=None):
         "words": sorted(word_hash(w) for w in ws),
     }
     if pasted is not None:
-        folded = canonical_words(words(pasted))
+        folded = canonical_words(words(spelled_symbols(pasted)))
         out["formattedLastWord"] = word_hash(folded[-1]) if folded else ""
         out["formattedWords"] = sorted(word_hash(w) for w in folded)
     return out
@@ -858,6 +931,66 @@ def cmd_record(args):
     return 0
 
 
+# ---------------------------------------------------------------- selftest
+
+
+SELFTEST_SAME = [
+    ("twenty five dollars", "$25"),
+    ("25 dollars", "$25"),
+    ("fifty bucks", "$50"),
+    ("twenty five percent", "25%"),
+    ("twenty five cents", "25 cents"),
+    ("the total is twenty five cents", "the total is 25 cents"),
+    ("the twenty fifth of May", "the 25th of May"),
+    ("two hundred fifty", "250"),
+    ("one hundred and five", "105"),
+    ("three hundred thousand", "300000"),
+    ("src slash main dot swift", "src/main.swift"),
+    ("www dot example dot com", "www.example.com"),
+    ("at five thirty", "at 5:30"),
+]
+
+SELFTEST_DIFFERENT = [
+    # a spoken year read as one number, and a spoken price read as one number
+    ("we met in twenty nineteen", "We met in 39."),
+    ("I said twenty ten", "I said 30."),
+    ("twenty twelve", "32"),
+    ("in twenty twenty four", "In 20 24."),
+    ("flight twenty five twenty", "flight 25 20"),
+    ("that costs two fifty", "that costs two 50"),
+    ("three ninety nine", "three 99"),
+    # cents are not dollars, and a percentage is not a price
+    ("twenty five cents", "$25"),
+    ("twenty five percent", "$25"),
+    # real word loss still shows
+    ("send it now", "send it"),
+    ("the last word", "the last"),
+    ("update the readme", "update the"),
+]
+
+
+def cmd_selftest(args):
+    """Check the fold on the strings that matter, and exit non-zero when it is blind."""
+    bad = 0
+    for spoken, written in SELFTEST_SAME:
+        a = canonical_words(words(spelled_symbols(spoken)))
+        b = canonical_words(words(spelled_symbols(written)))
+        if a != b:
+            bad += 1
+            print(f"FAIL same words, folded differently: {spoken!r} {a} vs {written!r} {b}")
+    for spoken, wrong in SELFTEST_DIFFERENT:
+        a = canonical_words(words(spelled_symbols(spoken)))
+        b = canonical_words(words(spelled_symbols(wrong)))
+        if a == b:
+            bad += 1
+            print(f"FAIL different words, folded the same: {spoken!r} and {wrong!r} {a}")
+    same_n = len(SELFTEST_SAME)
+    diff_n = len(SELFTEST_DIFFERENT)
+    print(f"fold selftest: {same_n - bad if bad <= same_n else 0} same, "
+          f"{diff_n} different, {bad} failures")
+    return 1 if bad else 0
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -885,6 +1018,7 @@ def main(argv):
         "wer-plan": cmd_wer_plan,
         "wer-merge": cmd_wer_merge,
         "report": cmd_report,
+        "selftest": cmd_selftest,
         "record": cmd_record,
     }
     handler = handlers.get(command)

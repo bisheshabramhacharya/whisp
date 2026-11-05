@@ -71,6 +71,7 @@ let cases: [(String, String)] = [
     ("She had had enough.", "She had had enough."),
     ("No no, that's wrong.", "No no, that's wrong."),
     ("It was very very good.", "It was very very good."),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped."),
     ("Go. Go.", "Go. Go."),
     // Restarted phrases
     ("Go to the go to desktop folder.", "Go to desktop folder."),
@@ -130,6 +131,18 @@ let formatCases: [(String, String, String)] = [
     ("I have told you a hundred times.", "I have told you a hundred times.", "must not fire: a hundred times"),
     ("It costs five dollars.", "It costs five dollars.", "must not fire: small money stays words"),
     ("The five of us are here.", "The five of us are here.", "must not fire: five of us"),
+    // A year or a price said the way people say it is not one number: half a
+    // reading would write a wrong number, so all of it stays words.
+    ("We met in twenty nineteen.", "We met in twenty nineteen.", "must not fire: spoken year"),
+    ("I said twenty ten.", "I said twenty ten.", "must not fire: spoken year"),
+    ("Twenty twelve was a good year.", "Twenty twelve was a good year.", "must not fire: spoken year"),
+    ("In twenty twenty four we shipped it.", "In twenty twenty four we shipped it.",
+     "must not fire: spoken year"),
+    ("Flight twenty five twenty.", "Flight twenty five twenty.", "must not fire: number read in pairs"),
+    ("That costs two fifty.", "That costs two fifty.", "must not fire: price read in pairs"),
+    ("Three ninety nine for the shirt.", "Three ninety nine for the shirt.",
+     "must not fire: price read in pairs"),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped.", "must not fire: spoken ellipsis"),
     // Spoken clock times, only after a time word and only with a minute.
     ("Meet me at five thirty.", "Meet me at 5:30.", "clock time"),
     ("The call is at ten fifteen tomorrow.", "The call is at 10:15 tomorrow.", "clock time, teens"),
@@ -145,6 +158,8 @@ let formatCases: [(String, String, String)] = [
     ("Check the package dot json file.", "Check the package dot json file.",
      "must not fire: one spoken dot alone"),
     ("We slash prices today.", "We slash prices today.", "must not fire: slash as a verb"),
+    ("We slash prices slash costs today.", "We slash prices slash costs today.",
+     "must not fire: two verbs, not a path"),
     ("Put a dot of paint on it.", "Put a dot of paint on it.", "must not fire: a dot of paint"),
     // Sentences: capital, closing stop, question mark, opener comma.
     ("we should ship it", "We should ship it.", "closing stop and capital"),
@@ -202,9 +217,12 @@ func testWords(_ text: String) -> [String] {
     return out
 }
 
-for (input, expected, rule) in formatCases {
+for (input, _, rule) in formatCases {
+    // The real output, not the table's expectation: a wrong value written in digits
+    // is caught by the equality check above, and this one is for a lost word.
+    let actual = formatter.format(input)
     var have: [String: Int] = [:]
-    for word in testWords(expected) { have[word, default: 0] += 1 }
+    for word in testWords(actual) { have[word, default: 0] += 1 }
     for word in testWords(input) {
         if word.contains(where: \.isNumber) || absorbedWords.contains(word) { continue }
         if numberWords.contains(word) { continue }
@@ -212,7 +230,7 @@ for (input, expected, rule) in formatCases {
             have[word] = count - 1
         } else {
             failures += 1
-            print("FAIL format lost a word: \(word) in \(rule): \(input) -> \(expected)")
+            print("FAIL format lost a word: \(word) in \(rule): \(input) -> \(actual)")
         }
     }
 }

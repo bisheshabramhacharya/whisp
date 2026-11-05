@@ -61,8 +61,11 @@ public final class TextFormatter: TextFormatting {
 
     /// A word that can stand on either side of a spoken path separator: no leading
     /// punctuation, and no trailing punctuation unless it ends the take.
+    private static let separatorWords: Set<String> = ["slash", "backslash", "dot", "underscore", "forward"]
+
     private static func isPathWord(_ token: Token) -> Bool {
-        guard token.leading.isEmpty, !token.core.isEmpty else { return false }
+        guard token.leading.isEmpty, !token.core.isEmpty,
+              !separatorWords.contains(token.word) else { return false }
         for ch in token.core where !(ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == ".") {
             return false
         }
@@ -103,6 +106,9 @@ public final class TextFormatter: TextFormatting {
     /// ordinary words. Conservative: a separator only joins when the result is a path
     /// somebody recognises, so "we slash prices" and "a dot of paint" stay words.
     private static func pathRun(in tokens: [Token], at start: Int) -> PathRun? {
+        // "we slash prices slash costs" is three words and two verbs, not a path: a
+        // run never starts right after a separator word.
+        if start > 0, separator(in: tokens, at: start - 1) != nil { return nil }
         var run = PathRun(start: start, end: start, lastPart: start, separators: 0,
                           hasSlash: false, startsWithSeparator: false,
                           wordBeforeFirstSeparator: nil)
@@ -259,8 +265,10 @@ public final class TextFormatter: TextFormatting {
                 break
             }
             if count > 0 {
-                // "twenty five" is 25, "five twenty" is not 25.
+                // "twenty five" is 25, "five twenty" is not 25, and "twenty
+                // nineteen" is a year, not 39.
                 if kind == "unit", last == "unit" { break }
+                if kind == "unit", last == "tens", value >= 10 { break }
                 if kind == "tens", last == "unit" || last == "tens" { break }
             }
             if kind == "scale", value == 100 {
@@ -278,6 +286,10 @@ public final class TextFormatter: TextFormatting {
         }
         guard count > 0 else { return nil }
         return NumberRun(value: total + current, count: count, ordinal: ordinal)
+    }
+
+    private static func isNumberWord(_ word: String) -> Bool {
+        ones[word] != nil || tens[word] != nil || scales[word] != nil || ordinals[word] != nil
     }
 
     private static func ordinalSuffix(_ value: Int) -> String {
@@ -384,6 +396,16 @@ public final class TextFormatter: TextFormatting {
             }
             guard let run = Self.numberRun(in: tokens, at: start),
                   var written = Self.digits(for: run) else {
+                start += 1
+                continue
+            }
+            // A number word touching the run on either side means the speaker said a
+            // year or a price the way people do ("twenty nineteen", "two fifty",
+            // "twenty twenty four"). Half a reading would write a wrong number, so
+            // leave all of it as words.
+            let before = start > 0 ? tokens[start - 1].word : ""
+            let after = start + run.count < tokens.count ? tokens[start + run.count].word : ""
+            guard !Self.isNumberWord(before), !Self.isNumberWord(after) else {
                 start += 1
                 continue
             }

@@ -56,6 +56,11 @@ statement, `do not do that` stays a statement), a question mark on `, right` and
 
 Wrong text is worse than plain text, so each rule gives up rather than guess.
 
+- **A year or a price said the way people say it stays words.** "we met in
+  twenty nineteen", "twenty twelve", "that costs two fifty", "three ninety nine",
+  "in twenty twenty four", "flight twenty five twenty": a number word touching
+  another one means the speaker said a year or a price read aloud, and half a
+  reading would write a wrong number, so none of it is converted.
 - **Numbers under twenty stay words.** "five minutes" reads better than "5 minutes",
   and "one thing" must never become "1 thing". A lone "hundred" stays a word too
   ("I've told you a hundred times"), as does "five dollars".
@@ -64,6 +69,8 @@ Wrong text is worse than plain text, so each rule gives up rather than guess.
 - **One spoken "dot" on its own does not join words.** "package dot json" is left as
   words: a fixed rule cannot tell it apart from "Edit dot env". Two separators or a
   slash always join, and "dot env" at a start of a sentence becomes ".env".
+- **A run never starts right after a separator word**, so "we slash prices slash
+  costs" stays three words and two verbs instead of becoming "prices/costs".
 - **"star" is not rewritten as "\*".**
 - **A separator word doing grammar is left alone**: "we slash prices today" stays
   words, and so does "a dot of paint".
