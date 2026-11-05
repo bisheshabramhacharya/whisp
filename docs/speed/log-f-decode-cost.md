@@ -28,9 +28,11 @@ speech length and overtakes the encoder around 3-4 s. Per dispatch the joint
 costs ~0.21 ms and the decoder ~0.6 ms, and the joint runs about twice per
 token (one blank check per frame, one decision per symbol).
 
-Duration census of the owner's 2,598 recordings (`afinfo`, counts only): 211
-under 1 s, then 141 at 1 s, 110 at 2 s, 120 at 3 s, 74 at 4 s, 90 at 5 s, and a
-long tail. 371 of the 844 takes in the 1-10 s bucket (44%) are 3 s or shorter.
+Duration census of the owner's 2,598 recordings (`afinfo`, counts only, whole
+seconds): 211 under 1 s, then 141 at 1-2 s, 110 at 2-3 s, 120 at 3-4 s, 74 at
+4-5 s, 90 at 5-6 s, and a long tail. So 371 of the 844 takes in the 1-10 s
+bucket are under 4 s (44%), 251 of those are under 3 s, and 462 recordings in
+total fit a 3 s window once the 211 sub-second takes are counted.
 
 ## Measured and dropped: a 3 s encoder window
 
@@ -77,8 +79,11 @@ encoder cost and the RNNT's 0.21 ms joint / 0.6 ms decoder per dispatch.
 Nothing in the app changed. `--stages` prints the split above for any file set,
 through the engine the app really uses, and `ShortWindowEngine.DecodeTimings`
 gained `jointMs`, `decoderMs`, `jointCalls`, `decoderCalls` to feed it. Exact
-same decode path, no behaviour change; the counting costs ~0.1 us per call
-against a 200-600 us call.
+same decode path, no behaviour change. The four counters are recorded on every
+decode the app runs, not only when the bench is reading them, and they cost
+about 0.1 us per call against a 200-600 us call. A file that needs more than one
+encoder window prints one row per window, since the whole-file time and one
+window's stages are different scopes.
 
 ## Dead ends (do not redo without a new reason)
 

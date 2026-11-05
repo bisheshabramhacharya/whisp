@@ -145,10 +145,12 @@ func printUsage() {
                        model in 100 ms buffers (the mic cadence) and time the release step.
           --profile    per-file stage profile (mel / encoder / joint / decoder ms, call
                        counts) of one <=15 s window via the profiled engine
-          --stages     per-file stage split through the app's own engine on the encoder
-                       window it really uses (--engine, default the app's), --runs
-                       decodes each, median printed: mel, encoder, RNNT split by
-                       joint/decoder with Core ML call counts
+          --stages     per-file stage split through the app's own engine (--engine,
+                       default the app's): mel, encoder, RNNT split by joint and
+                       decoder with Core ML call counts, on the encoder window it
+                       really uses. A file that needs more than one window prints
+                       one row per window, since the whole-file time and one
+                       window's stages are different scopes
           --replay     release replay: run the real chunk/speculate/finish loop over each
                        file and simulate key release at --offsets ms after the last word;
                        prints wait p50/p95/mean, no-wait share, last-word survival

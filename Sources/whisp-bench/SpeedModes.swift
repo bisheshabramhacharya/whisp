@@ -103,9 +103,11 @@ func median(_ values: [Double]) -> Double {
 
 // MARK: - --stages
 
-/// Per-file stage split through the app's own engine, on the window each file
-/// actually decodes with: mel, encoder, then the RNNT loop split by model
-/// (joint decisions and decoder steps, with Core ML call counts).
+/// Per-file stage split through the app's own engine: mel, encoder, then the
+/// RNNT loop split by model (joint decisions and decoder steps, with Core ML
+/// call counts). A file that needs more than one encoder window prints one row
+/// per window, because the whole-file time and a single window's stages are
+/// different scopes and must not be printed side by side.
 func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws {
     let engine = ASREngine.make(named: engineName)
     let stages = StageLog()
@@ -115,42 +117,57 @@ func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws 
     try await engine.prepare()
 
     var sums: [String: [Double]] = [:]
+    var singleWindow = 0
+    var multiWindow = 0
     for f in files {
-        var decode: [Double] = [], mel: [Double] = [], enc: [Double] = [], rnnt: [Double] = []
-        var joint: [Double] = [], dec: [Double] = []
-        var jointCalls: [Double] = [], decCalls: [Double] = []
-        var window = 0
+        var windows: [ShortWindowEngine.DecodeTimings] = []
+        var total = 0.0
         for run in 0..<runs {
             _ = stages.drain()
             let t0 = DispatchTime.now().uptimeNanoseconds
             _ = try await engine.transcribe(f.samples)
-            let total = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-            guard let t = stages.drain().last?.t, (run > 0 || runs == 1) else { continue }
-            window = t.windowSamples
-            decode.append(total)
-            mel.append(t.melMs); enc.append(t.encoderMs); rnnt.append(t.rnntMs)
-            joint.append(t.jointMs); dec.append(t.decoderMs)
-            jointCalls.append(Double(t.jointCalls))
-            decCalls.append(Double(t.decoderCalls))
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            let drained = stages.drain()
+            guard run > 0 || runs == 1 else { continue }
+            windows = drained.map(\.t)
+            total = ms
         }
-        guard !decode.isEmpty else {
+        guard let first = windows.first else {
             print("\(f.name): no stage timings (engine \(engineName) does not report them)")
             continue
         }
-        let p50 = { (v: [Double]) in median(v) }
-        print(String(
-            format: "%@: %4.1f s on the %2d s window | decode %5.1f | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3.0f calls) + dec %5.1f (%2.0f calls)",
-            f.name, Double(f.samples.count) / 16_000, window / 16_000,
-            p50(decode), p50(mel), p50(enc), p50(rnnt),
-            p50(joint), p50(jointCalls), p50(dec), p50(decCalls)))
-        for (key, values) in [("decode", decode), ("mel", mel), ("encoder", enc), ("rnnt", rnnt),
-                              ("joint", joint), ("decoder", dec)] {
-            sums[key, default: []].append(p50(values))
+        let seconds = Double(f.samples.count) / 16_000
+        if windows.count == 1 {
+            singleWindow += 1
+            print(String(
+                format: "%@: %4.1f s on the %2d s window | decode %5.1f | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3d calls) + dec %5.1f (%2d calls)",
+                f.name, seconds, first.windowSamples / 16_000, total,
+                first.melMs, first.encoderMs, first.rnntMs,
+                first.jointMs, first.jointCalls, first.decoderMs, first.decoderCalls))
+            for (key, value) in [("decode", total), ("mel", first.melMs), ("encoder", first.encoderMs),
+                                 ("rnnt", first.rnntMs), ("joint", first.jointMs),
+                                 ("decoder", first.decoderMs)] {
+                sums[key, default: []].append(value)
+            }
+        } else {
+            multiWindow += 1
+            print(String(
+                format: "%@: %4.1f s decoded as %d windows | whole file %5.1f ms",
+                f.name, seconds, windows.count, total))
+            for (i, t) in windows.enumerated() {
+                print(String(
+                    format: "    window %d/%d: in %5.2f s on the %2d s window | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3d calls) + dec %5.1f (%2d calls)",
+                    i + 1, windows.count, Double(t.inputSamples) / 16_000, t.windowSamples / 16_000,
+                    t.melMs, t.encoderMs, t.rnntMs, t.jointMs, t.jointCalls, t.decoderMs, t.decoderCalls))
+            }
         }
     }
-    if files.count > 1 {
+    if singleWindow > 0 {
         let fmt = { (d: [Double]) in String(format: "%5.1f", d.reduce(0, +) / Double(max(d.count, 1))) }
-        print("mean p50 over \(files.count) files: decode \(fmt(sums["decode"] ?? [])) | mel \(fmt(sums["mel"] ?? [])) enc \(fmt(sums["encoder"] ?? [])) rnnt \(fmt(sums["rnnt"] ?? [])) = joint \(fmt(sums["joint"] ?? [])) + dec \(fmt(sums["decoder"] ?? []))")
+        print("mean over \(singleWindow) single-window files: decode \(fmt(sums["decode"] ?? [])) | mel \(fmt(sums["mel"] ?? [])) enc \(fmt(sums["encoder"] ?? [])) rnnt \(fmt(sums["rnnt"] ?? [])) = joint \(fmt(sums["joint"] ?? [])) + dec \(fmt(sums["decoder"] ?? []))")
+    }
+    if multiWindow > 0 {
+        print("\(multiWindow) files needed more than one window; their rows are per window and are not in the mean.")
     }
 }
 
