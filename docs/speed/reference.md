@@ -119,6 +119,16 @@ mean 5.03 words per second, against the `say` stand-in's slow, tidy studio
 speech. Long takes are left to the reference row: one long take is 7 to 10
 minutes, so it would eat the whole budget on its own.
 
+Read the say stand-in row with care, and never as accuracy. Its references spell
+numbers out, because that is what was fed to `say`: "my number is five five five
+oh one seven two" is what the app hears and "My number is 5550172." is what it
+writes, so word scoring counts seven words wrong out of ten and three out of
+seven on the two clips in the quick sample. Those exact errors sit in the
+baseline cache too, counted identically, so the row has not moved; its reading
+swings between 4.55 and 18.52 purely with how many files were sampled, 150
+against 10. It is a regression detector with a fixed baseline, not a reading of
+how good the app is on real speech. The two new rows are those readings.
+
 The row prints as `reference set, whisper   [ref errs ~1 word in 8]`, next to
 the last-word gate, not instead of it. First real reading, `--quick` on this
 branch: reference set WER 8.06 (n=6), casual set 8.80 (n=7), with the older rows
