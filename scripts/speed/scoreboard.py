@@ -41,7 +41,36 @@ BUCKETS = [
 BUCKET_NAMES = [b[0] for b in BUCKETS]
 WORST_TARGET_MS = 100
 AUDIO_EXT = (".wav", ".flac", ".aiff", ".m4a")
-SCHEMA = 1
+# 2: the accuracy comparison reads numbers, money, percentages and spoken file
+# paths the way they are written (see canonical_words), so rows from schema 1
+# cannot be compared against schema 2 rows.
+SCHEMA = 2
+
+# Words a dictated number can be built from, and what each one is worth.
+NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+    "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+SCALE_WORDS = {"hundred": 100, "thousand": 1000, "million": 1000000, "billion": 1000000000}
+ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+    "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20, "thirtieth": 30, "fortieth": 40, "fiftieth": 50,
+    "sixtieth": 60, "seventieth": 70, "eightieth": 80, "ninetieth": 90,
+    "hundredth": 100, "thousandth": 1000, "millionth": 1000000,
+}
+# Words the formatter turns into symbols or drops when it joins a path. The
+# comparison drops them too, so writing "25 dollars" as "$25" or "src slash
+# main dot swift" as "src/main.swift" is never read as lost words.
+CURRENCY_WORDS = {"dollars", "dollar", "bucks", "buck", "cents", "cent"}
+PERCENT_WORDS = {"percent", "per", "cent"}
+PATH_SEPARATORS = {"slash", "backslash", "dot", "underscore"}
+ORDINAL_SUFFIX = re.compile(r"^(\d+)(?:st|nd|rd|th)$")
 
 
 # ---------------------------------------------------------------- helpers
@@ -78,9 +107,98 @@ def word_hash(word):
     return hashlib.sha256(word.encode("utf-8")).hexdigest()[:16]
 
 
+def number_run(ws, i):
+    """(digits, tokens used) when ws[i:] starts with a number, else None.
+
+    Strict on purpose: an order people don't say ("five six") ends the run, so
+    the words stay words.
+    """
+    total = current = 0
+    used = 0
+    last = ""
+    while i + used < len(ws):
+        w = ws[i + used]
+        if w == "and" and last == "scale":
+            used += 1
+            last = "and"
+            continue
+        value = NUMBER_WORDS.get(w)
+        kind = ""
+        if value is not None:
+            kind = "unit" if value < 20 else "tens"
+        elif w in SCALE_WORDS:
+            value, kind = SCALE_WORDS[w], "scale"
+        elif w in ORDINAL_WORDS:
+            value = ORDINAL_WORDS[w]
+            kind = "unit" if value < 20 else ("tens" if value < 100 else "scale")
+        else:
+            break
+        if kind == "unit" and last == "unit":
+            break
+        if kind == "tens" and last in ("unit", "tens"):
+            break
+        if kind == "scale":
+            if value == 100:
+                current = max(current, 1) * value
+            else:
+                total += max(current, 1) * value
+                current = 0
+            last = "scale"
+        else:
+            current += value
+            last = kind
+        used += 1
+    if not used:
+        return None
+    return str(total + current), used
+
+
+def canonical_words(ws):
+    """The word list with number, money, percentage and path spellings folded.
+
+    "twenty five dollars" and "$25" both come out ["25"], and "src slash main
+    dot swift" and "src/main.swift" both come out ["src", "main", "swift"], so
+    the accuracy gate measures lost words rather than changed spelling.
+    """
+    out = []
+    i = 0
+    while i < len(ws):
+        w = ws[i]
+        ordinal = ORDINAL_SUFFIX.match(w)
+        run = None if ordinal else number_run(ws, i)
+        if ordinal:
+            out.append(ordinal.group(1))
+            i += 1
+        elif run:
+            out.append(run[0])
+            i += run[1]
+        elif w.isdigit():
+            out.append(w)
+            i += 1
+        else:
+            # Spoken path separators carry no words of their own once a path is joined.
+            if w not in PATH_SEPARATORS and not (w == "forward" and i + 1 < len(ws)
+                                                 and ws[i + 1] == "slash"):
+                out.append(w)
+            i += 1
+            continue
+        # A number's money or percentage word belongs to the number.
+        if i < len(ws) and ws[i] in CURRENCY_WORDS:
+            i += 1
+        elif i + 1 < len(ws) and ws[i] in PERCENT_WORDS and ws[i + 1] in PERCENT_WORDS:
+            i += 2
+        elif i < len(ws) and ws[i] == "percent":
+            i += 1
+    return out
+
+
 def text_hashes(text):
-    """What a cache row keeps instead of the transcript."""
-    ws = words(text)
+    """What a cache row keeps instead of the transcript.
+
+    Only hashes leave this machine. `words` is the folded word list from
+    canonical_words, so a formatting change cannot look like lost accuracy.
+    """
+    ws = canonical_words(words(text))
     return {
         "lastWord": word_hash(ws[-1]) if ws else "",
         "words": sorted(word_hash(w) for w in ws),
@@ -153,7 +271,18 @@ def wer_cache_path(state, corpus):
 
 
 def load_cache(path):
-    return read_json(path, {"schema": SCHEMA, "files": {}}) or {"schema": SCHEMA, "files": {}}
+    """A cache file for this schema, or an empty one.
+
+    Rows written before the accuracy comparison learned about numbers, money and
+    spoken paths are not comparable with rows written after, so they are dropped
+    rather than mixed.
+    """
+    data = read_json(path) or {}
+    if data.get("schema") != SCHEMA:
+        data = {}
+    data.setdefault("schema", SCHEMA)
+    data.setdefault("files", {})
+    return data
 
 
 # ---------------------------------------------------------------- init
@@ -487,8 +616,8 @@ def cmd_wer_merge(args):
 
 
 def wer_result(state, corpus):
-    cache = read_json(wer_cache_path(state, corpus))
-    if not cache or not cache.get("files"):
+    cache = load_cache(wer_cache_path(state, corpus))
+    if not cache.get("files"):
         return None
     err = sum(v["err"] for v in cache["files"].values())
     ref = sum(v["ref"] for v in cache["files"].values())
@@ -533,8 +662,8 @@ def baseline_comparison(state):
         return None
     base_path = os.path.join(
         state["cache"], baseline["bench"], f"live-{baseline['flags']}.json")
-    base_cache = read_json(base_path)
-    if not base_cache or not base_cache.get("files"):
+    base_cache = load_cache(base_path)
+    if not base_cache.get("files"):
         return None
     current = load_cache(live_cache_path(state)).get("files", {})
     base = base_cache["files"]
