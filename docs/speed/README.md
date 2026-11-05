@@ -80,6 +80,27 @@ by window. Gating each window of a split tail instead would take the remaining
 | Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
 | Cut as soon as the audio looks quiet (first version of the fix above) | long bucket worst 9329 → 151 ms, but 3 of 78 owner recordings changed text and one 35.9 s take went 74 → 68 words vs baseline | reverted: the guard gives way only past a minute of pending audio |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
+| Skipping near-silent pieces of a long release tail (PR #65) | 977 → 208 ms on the 9 1/2 minute take by skipping 34 of its 38 pieces, and identical text on every other long take, but one 258.89 s recording ends in a 3.89 s piece with RMS 0.00065 and peak 0.0090, and the model returns that take's last five words from it: 33 words on main, 28 with the gate, at every release offset. Cut the gate back to skipping only digitally silent pieces and it skips nothing: none of 1295 owner recordings over one window holds an all-zero piece | closed: this model reads 15 dB below the gate, so no level above zero is safe |
+
+### How quiet still counts as speech
+
+The piece gate is tempting because a long release tail is mostly room noise, and
+skipping it is free speed: 34 of the 38 pieces of the 9 1/2 minute take sit
+under the absolute silence test and cost 20 ms each to decode.
+
+It cannot be done on this model. One 258.89 s recording ends in a 3.89 s piece
+with RMS 0.00065 and peak 0.0090, which is 15 dB under the gate's 0.05 peak
+limit, and decoding that piece alone returns the take's last five words. With
+the gate the pasted text is 28 words where main's is 33, at every simulated
+release offset. So the level below which the model stays silent is under 0.0090
+peak, and a quieter piece has not been found to justify guessing where: the
+quietest piece measured anywhere so far is 0.00754 peak, on the same take.
+
+Exact digital silence is the only safe piece test, and it pays nothing here:
+none of the 1295 owner recordings longer than one encoder window contains a piece
+of all zeros, because the recorder always writes a noise floor. What that leaves
+is the buffer-level test, which is what main does, and the 60 s cut bound, which
+is what keeps a release from decoding minutes of audio.
 
 ## 10 s window
 

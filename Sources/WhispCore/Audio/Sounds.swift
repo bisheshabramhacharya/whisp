@@ -10,7 +10,7 @@ public enum Sounds {
     public static var enabled = true
 
     private enum Kind: CaseIterable {
-        case start, stop, cancel, error
+        case start, stop, cancel, error, learned
 
         /// Quiet, low-latency choices (willow-style "tick" feedback, not alarms).
         /// Names resolve via NSSound(named:), which searches /System/Library/Sounds.
@@ -20,6 +20,9 @@ public enum Sounds {
             case .stop:   return "Pop"
             case .cancel: return "Bottle"
             case .error:  return "Basso"
+            // A quiet two-note chime for "saved a word for you": pleasant, and
+            // nothing like the start/stop ticks.
+            case .learned: return "Glass"
             }
         }
 
@@ -28,6 +31,7 @@ public enum Sounds {
             case .start, .stop: return 0.45
             case .cancel: return 0.35
             case .error:  return 0.5
+            case .learned: return 0.3
             }
         }
     }
@@ -58,6 +62,8 @@ public enum Sounds {
     public static func playStop()   { play(.stop) }
     public static func playCancel() { play(.cancel) }
     public static func playError()  { play(.error) }
+    /// A word just landed in the dictionary.
+    public static func playLearned() { play(.learned) }
 
     private static func play(_ kind: Kind) {
         guard enabled, let sound = library[kind] else { return }

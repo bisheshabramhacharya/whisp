@@ -199,6 +199,16 @@ public final class CorrectionLearner {
             }
             return caseOnly ? .term(to) : .replacement(from: from, to: to)
         }
+        // The source is a real word and the fix is a name, product term or
+        // abbreviation the spell-checker has never seen ("knockout" → "nelko",
+        // "tail skill" → "tailscale", "cloud code" → "Claude Code"). Naming the
+        // thing is the whole point of the dictionary, and one sighting is all
+        // the owner gives a name, so save it now. A change of mind between two
+        // real words ("Tuesday" → "Monday") still falls through to the
+        // second-sighting gate below.
+        if !caseOnly, toWords.contains(where: { !isKnownWord($0) }) {
+            return .replacement(from: from, to: to)
+        }
         // Real word: only learn a fix that plausibly sounds/looks the same,
         // and only after it has been seen once before (tracked by the caller).
         guard caseOnly || Self.soundsAlike(from, to) else { return nil }
