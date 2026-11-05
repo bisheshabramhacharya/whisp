@@ -145,6 +145,18 @@ struct LiveRow {
     let wakeupMs: Double
     let chunkDecodes: Int
     let chunkMs: Double
+    /// Same audio decoded again in the same process, right after the take, on
+    /// the bench's own task. When this is much faster than the release decode
+    /// it was the live context that cost the time, not the engine's state.
+    var secondPassMs: Double?
+    var secondMelMs: Double?
+    var secondEncoderMs: Double?
+    var secondRnntMs: Double?
+    /// A third decode of the same audio, the pass after the second. If it costs
+    /// what the second cost, one repeat was enough to warm everything and the
+    /// gap to the release decode is the live context, not warm-up.
+    var thirdPassMs: Double?
+    var thirdEncoderMs: Double?
 }
 
 /// Stage timings reported by the short engine, stamped with when they ended.
@@ -187,7 +199,7 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 @MainActor
 func runLive(
     engineName: String, paths: [String], gapSeconds: Double, historyPath: String?,
-    json: Bool = false
+    json: Bool = false, secondPass: Bool = false
 ) async throws {
     let inner = ASREngine.make(named: engineName)
     let engine = TimedTranscriber(inner)
@@ -248,7 +260,7 @@ func runLive(
         let after = calls.filter { $0.start >= releaseNs && $0.samples >= 0 }
         let lastEnd = calls.filter { $0.end <= releaseNs }.map(\.end).max()
         let finalStages = stages.drain().filter { $0.end > releaseNs }.map(\.t)
-        let row = LiveRow(
+        var row = LiveRow(
             seconds: Double(samples.count) / 16_000,
             latencyMs: entry.latencyMs,
             realMs: real[id],
@@ -263,6 +275,22 @@ func runLive(
             wakeupMs: wakeups.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +),
             chunkDecodes: chunkCalls.count,
             chunkMs: chunkCalls.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +))
+        if secondPass, let short = inner as? ShortWindowEngine {
+            _ = stages.drain()
+            let start = DispatchTime.now().uptimeNanoseconds
+            _ = try? await short.transcribe(samples)
+            let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+            let again = stages.drain().map(\.t)
+            row.secondPassMs = took
+            row.secondMelMs = again.map(\.melMs).reduce(0, +)
+            row.secondEncoderMs = again.map(\.encoderMs).reduce(0, +)
+            row.secondRnntMs = again.map(\.rnntMs).reduce(0, +)
+            _ = stages.drain()
+            let thirdStart = DispatchTime.now().uptimeNanoseconds
+            _ = try? await short.transcribe(samples)
+            row.thirdPassMs = Double(DispatchTime.now().uptimeNanoseconds - thirdStart) / 1e6
+            row.thirdEncoderMs = stages.drain().map(\.t.encoderMs).reduce(0, +)
+        }
         rows.append(row)
         let window = finalStages.last.map { "\($0.windowSamples / 16_000)s" } ?? "-"
         print(String(format: "  %@ %6.1f s  release→paste %4d ms (real: %@)  bg wait %4.0f  final %4.0f ms x%d [%@ mel %3.0f enc %4.0f rnnt %4.0f]  wake-ups %d/%3.0f ms  chunks %d/%4.0f ms  idle before %5.0f ms",
@@ -289,6 +317,14 @@ func runLive(
                 "preFormat": FillerCleaner().clean(entry.raw),
             ]
             if let real = row.realMs { object["realMs"] = real }
+            if let again = row.secondPassMs {
+                object["secondMs"] = again
+                object["secondMelMs"] = row.secondMelMs ?? 0
+                object["secondEncMs"] = row.secondEncoderMs ?? 0
+                object["secondRnntMs"] = row.secondRnntMs ?? 0
+                object["thirdMs"] = row.thirdPassMs ?? 0
+                object["thirdEncMs"] = row.thirdEncoderMs ?? 0
+            }
             emitJSON(object)
         }
         try? await Task.sleep(nanoseconds: UInt64(gapSeconds * 1e9))

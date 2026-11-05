@@ -80,23 +80,38 @@ take and lands back at 80 ms p50 with the encoder tail intact (p90 72 ms),
 because the dummies queue ahead of the decode the release is waiting for. 300 ms
 idle is the setting that keeps the window warm without competing with it.
 
-## The base gap is still not explained by warmth
+## The gap to a bench decode is the live context, not the encoder
 
-The live path pays 35-37 ms of encoder on a release against 22-23 ms for the
-same window in a warm `--stages` decode, and no prewarm setting closes that: the
-warm runs here sit at 35, not 22. Warming only removes the 68-72 ms outliers
-above it. So the 13-15 ms that a live decode costs over a bench decode is not
-ANE idle, and dummies do not touch it. `--idle-curve` on one 1.7 s clip does
-show an idle penalty in a bench process (0 ms 39, 100 ms 49, 500 ms 54, 1000 ms
-58, 2000 ms 49, 4000 ms 50, 8000 ms 91), which is what made warming look
-promising; the live path does not behave that way.
+The live path pays 35-37 ms of encoder on a release, and a `--stages` loop that
+decodes files back to back pays 22-23 ms for the same window. Those are not the
+same situation: between dictations the engine sits idle for seconds, while the
+loop never lets it idle. `--second-pass` decodes the same audio again in the
+same process, on the bench's own task, right after the take, twice, which
+separates the engine's state from the context the release decode runs in.
 
-That leaves the live context: the priority and thread the release decode task
-runs on (a plain `Task {}` inherits its priority from the main-actor call that
-starts it in `DictationController.stopCapture`), whatever the capture loop still
-has awake at the moment of release, and the second encoder lane the transcriber
-keeps for overlapping decodes. Next thread measures those, not the encoder's
-warmth. Implementation waits on BIS-19.
+16 short takes, 2 s between them, stock 8 s prewarm:
+
+| piece | live release decode | second decode | third decode |
+|---|---|---|---|
+| mel | 7.7 ms | 3.8 ms | not measured |
+| encoder | 36.6 ms | 31.8 ms | 29.5 ms |
+| RNNT | 29.3 ms | 22.8 ms | not measured |
+| total | 70.7 ms | 55.9 ms | 53.7 ms |
+
+Two things fall out of it. First, warm-up saturates almost immediately: the
+second decode recovers 15 ms, the third only 4 more (pass 2 slower than pass 3
+on 14 of 16 takes, mean +3.9 ms). So an encoder idled for two seconds costs about
+30 ms, not 22; the 22 ms figure is a loop that never pauses. Second, and this is
+the part that matters: after warming has saturated, the live release decode is
+still 22 ms slower on the same audio, the same engine, and the same main-actor
+task (14 of 16 takes, median +20.8 ms). The cost is spread across all three
+stages, encoder +7, RNNT +6.5, mel +3.9, so it is not an encoder problem.
+
+What differs at release is what else is awake: the mic tap is still delivering
+its last chunk, the recorder is stopping, and the capture loop is unwinding.
+That is the thing to chase in BIS-19, not the encoder's warmth. A warm window
+does not help it (the 300 ms setting above leaves the base encoder time at 35-36
+ms), and no setting of the prewarm threshold will.
 
 ## Nothing here changes the app
 
