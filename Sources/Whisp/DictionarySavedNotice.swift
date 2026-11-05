@@ -1,6 +1,9 @@
 import AppKit
 import WhispCore
 
+typealias LearnedBatch = EditWatcher.LearnedBatch
+typealias LearnedEntry = EditWatcher.LearnedEntry
+
 /// Small card at the top right of the screen after a correction lands in the
 /// dictionary: a soft chime, a confetti pop, and five seconds of Undo.
 ///
