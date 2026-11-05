@@ -123,6 +123,36 @@ final class TimedTranscriber: Transcribing {
     private func record(_ call: Call) { lock.withLock { calls.append(call) } }
 }
 
+/// Times one decode into the same call log as the rest.
+extension TimedTranscriber {
+    func measure<T>(samples: Int, _ body: () async throws -> T) async rethrows -> T {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        defer { record(Call(start: t0, end: DispatchTime.now().uptimeNanoseconds, samples: samples)) }
+        return try await body()
+    }
+}
+
+/// The bench drives the real controller, so the word-time path only runs when the
+/// transcriber it is handed reports timings. Every other engine is handed the plain
+/// instrumented wrapper and stays on the text-only path.
+final class TimedWordTranscriber: TimedTranscribing {
+    private let base: TimedTranscriber
+    private let timed: TimedTranscribing
+
+    init(base: TimedTranscriber, timed: TimedTranscribing) {
+        self.base = base
+        self.timed = timed
+    }
+
+    func prepare() async throws { try await base.prepare() }
+    func transcribe(_ samples: [Float]) async throws -> String { try await base.transcribe(samples) }
+    func rewarm() async { await base.rewarm() }
+    func prewarm(forSamples samples: Int) async { await base.prewarm(forSamples: samples) }
+    func transcribeTimed(_ samples: [Float]) async throws -> TimedTranscript {
+        try await base.measure(samples: samples.count) { try await timed.transcribeTimed(samples) }
+    }
+}
+
 struct LiveRow {
     let seconds: Double
     let latencyMs: Int
@@ -183,6 +213,8 @@ func runLive(
 ) async throws {
     let inner = ASREngine.make(named: engineName)
     let engine = TimedTranscriber(inner)
+    let handed: Transcribing = (inner as? TimedTranscribing)
+        .map { TimedWordTranscriber(base: engine, timed: $0) } ?? engine
     let stages = StageLog()
     if let short = inner as? ShortWindowEngine {
         await short.observeDecodes { stages.add($0) }
@@ -202,7 +234,7 @@ func runLive(
     settings.keepRecordings = false
     let recorder = ClipRecorder(), hotkey = ReplayHotkey()
     let controller = DictationController(
-        transcriber: engine, recorder: recorder, hotkey: hotkey, paster: NullPaster(),
+        transcriber: handed, recorder: recorder, hotkey: hotkey, paster: NullPaster(),
         cleaner: FillerCleaner(), muter: SilentMuter(), sounds: SilentSounds(), settings: settings,
         history: HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl")),
         recordings: RecordingArchive(directory: dir.appendingPathComponent("recordings")))

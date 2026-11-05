@@ -2518,17 +2518,23 @@ func partitionOfTheTake(
     let samples = [Float](repeating: 0, count: Int(seconds * 16_000))
     var pieces: [SpeechSegmenter.Piece] = []
     var committed = 0
-    while true {
-        let pending = Array(samples[committed...])
-        guard let cut = SpeechSegmenter.nextHeldBackCut(in: pending) else { break }
-        let left = min(SpeechSegmenter.leftContextSamples, committed)
-        let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
-        decoder.windowStart = Double(committed - left) / 16_000
-        let decoded = try await decoder.transcribeTimed(Array(pending[(cut - left)..<(cut + right)]))
-        pieces.append(SpeechSegmenter.Piece(
-            spanStart: committed, spanEnd: committed + cut,
-            words: SpeechSegmenter.absoluteWords(decoded, windowStartSample: committed - left)))
-        committed += cut
+    // Audio arrives 100 ms at a time, as the recorder hands it over.
+    var available = 0
+    while available < samples.count {
+        available = min(samples.count, available + 1_600)
+        while true {
+            let pending = Array(samples[committed..<available])
+            guard let cut = SpeechSegmenter.nextHeldBackCut(in: pending) else { break }
+            let left = min(SpeechSegmenter.leftContextSamples, committed)
+            let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
+            decoder.windowStart = Double(committed - left) / 16_000
+            let decoded = try await decoder.transcribeTimed(
+                Array(samples[(committed - left)..<(committed + cut + right)]))
+            pieces.append(SpeechSegmenter.Piece(
+                spanStart: committed, spanEnd: committed + cut,
+                words: SpeechSegmenter.absoluteWords(decoded, windowStartSample: committed - left)))
+            committed += cut
+        }
     }
     let overlap = Int(releaseOverlap * 16_000)
     decoder.windowStart = Double(max(0, committed - overlap)) / 16_000
@@ -2553,6 +2559,14 @@ for tenths in 0...15 {
 }
 expect(Set(releaseTexts).count.description, "1", "the release text does not depend on the release overlap")
 expect(releaseTexts.first ?? "", wanted, "the partition reproduces every word in order")
+
+// A starved tick: ten seconds of audio arrive at once. The commit takes at most the
+// limit, so its decode window stays inside the encoder window, and the next tick works
+// through the rest. Every word is still owned exactly once.
+let starved = try await partitionOfTheTake(takeWords, seconds: 21.5, releaseOverlap: 0.5)
+expect(starved.pieces.allSatisfy { $0.spanEnd - $0.spanStart <= SpeechSegmenter.commitLimitSamples } ? "bounded" : "wide",
+       "bounded", "a starved tick commits at most the limit")
+expect(starved.text, wanted, "a starved tick still owns every word once")
 
 // A genuine "that that" across a seam: one word starts before the seam, the next after.
 // Ownership by start keeps both; matching text at the seam is what ate one of them.

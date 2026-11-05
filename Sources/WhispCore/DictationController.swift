@@ -446,7 +446,7 @@ public final class DictationController: ObservableObject {
         let pending = recorder.samples(from: chunks.committed)
         Task { [transcriber, count = pending.count] in await transcriber.prewarm(forSamples: count) }
         if transcriber is TimedTranscribing {
-            commitTimed(pending, chunks)
+            commitTimed(chunks)
             return
         }
         guard let cut = SpeechSegmenter.nextCut(in: pending) else {
@@ -469,21 +469,25 @@ public final class DictationController: ObservableObject {
     /// Commits the audio older than the held-back bound, decoding a window that starts
     /// `leftContextSamples` before the span so a word straddling the previous seam is
     /// heard whole and then owned by its start time alone.
-    private func commitTimed(_ pending: [Float], _ chunks: LiveChunks) {
+    private func commitTimed(_ chunks: LiveChunks) {
+        let pending = recorder.samples(from: chunks.committed)
         guard let cut = SpeechSegmenter.nextHeldBackCut(in: pending) else { return }
         let spanStart = chunks.committed
         let spanEnd = spanStart + cut
+        // The window reaches back before the span, so it comes from the recorder, not
+        // from `pending`, which starts exactly at the span.
         let left = min(SpeechSegmenter.leftContextSamples, spanStart)
         let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
-        let window = Array(pending[(cut - left)..<(cut + right)])
+        let windowStart = spanStart - left
+        let window = Array(recorder.samples(from: windowStart).prefix(left + cut + right))
         chunks.committed = spanEnd
         chunks.inFlight = Task { [transcriber] in
             do {
                 guard let timed = transcriber as? TimedTranscribing else { throw CancellationError() }
                 let decoded = try await timed.transcribeTimed(window)
-                let piece = SpeechSegmenter.Piece(
+                let piece = SpeechSegmenter.piece(
                     spanStart: spanStart, spanEnd: spanEnd,
-                    words: SpeechSegmenter.absoluteWords(decoded, windowStartSample: spanStart - left))
+                    decoded: decoded, windowStartSample: windowStart)
                 chunks.pieces.append(piece)
                 chunks.starts.append(spanStart)
                 if !piece.text.isEmpty { chunks.texts.append(piece.text) }

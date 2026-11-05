@@ -28,7 +28,7 @@ private let asrLogger = Logger(subsystem: "com.bishesha.whisp", category: "ASR")
 /// the next larger window runs, which with no short bundles at all is the
 /// stock 15 s encoder. Audio longer than every loaded window is split across
 /// those windows.
-public final class ShortWindowEngine: Transcribing, StatusReporting {
+public final class ShortWindowEngine: Transcribing, TimedTranscribing, StatusReporting {
     /// Largest window the offline export supports (the stock encoder).
     public static let maxWindowSamples = 15 * 16_000
     /// Stock weights re-traced at 5 s. Clips that fit here are the fast path
@@ -151,6 +151,29 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
         }
         try await prepare()
         return ParakeetTranscriber.removingUnknownTokens(try await engine.transcribe(input))
+    }
+
+    /// The same decode as `transcribe`, keeping each word's start time so the live
+    /// path can decide which piece owns a word at a seam. Same trim, same padding,
+    /// same cleanup, so the words are the ones `transcribe` would have said.
+    public func transcribeTimed(_ samples: [Float]) async throws -> TimedTranscript {
+        guard !samples.isEmpty else { throw TranscriberError.audioTooShort }
+        guard !SpeechSegmenter.isNearSilent(samples, rmsThreshold: silenceThreshold) else {
+            return TimedTranscript(text: "", words: [])
+        }
+        let bounds = SpeechSegmenter.trimSpeechBounds(samples)
+        let speech = bounds.map { Array(samples[$0.start..<$0.end]) } ?? samples
+        var input = speech.isEmpty ? samples : speech
+        let minSamples = Int(0.3 * 16_000)
+        if input.count < minSamples {
+            input.append(contentsOf: [Float](repeating: 0, count: minSamples - input.count))
+        }
+        try await prepare()
+        let decoded = try await engine.transcribeTimed(input)
+        return TimedTranscript(
+            text: ParakeetTranscriber.removingUnknownTokens(decoded.text),
+            words: decoded.tokens.isEmpty ? [] : ParakeetTranscriber.words(from: decoded.tokens),
+            audioStart: Double(bounds?.start ?? 0) / 16_000)
     }
 
     @MainActor
@@ -421,6 +444,15 @@ extension ShortWindowEngine {
         /// Identical decode path to `UnifiedAsrManager.transcribe` on one
         /// window, at the variant's window length.
         private func transcribeWindow(_ samples: [Float], variant: WindowVariant) throws -> String {
+            try decodeWindow(samples, variant: variant).text
+        }
+
+        /// Every token with its text and the time it starts, relative to the audio
+        /// handed in. Empty tokens mean this decode cannot be timed (the >15 s
+        /// fallback manager), so the caller keeps its text whole.
+        private func decodeWindow(
+            _ samples: [Float], variant: WindowVariant
+        ) throws -> (text: String, tokens: [(text: String, start: TimeInterval)]) {
             guard let mel = mels[variant.windowSamples],
                 let encoder = encoders[variant.windowSamples],
                 let rnnt, let tokenizer
@@ -455,7 +487,43 @@ extension ShortWindowEngine {
                     melMs: Double(t1 - t0) / 1e6, encoderMs: Double(t2 - t1) / 1e6,
                     rnntMs: Double(t3 - t2) / 1e6))
             }
-            return tokenizer.decode(ids: tokens)
+            let secondsPerFrame = Double(config.frameSamples) / Double(config.sampleRate)
+            let timed = tokens.compactMap { token -> (text: String, start: TimeInterval)? in
+                guard let piece = tokenizer.piece(forId: token.token) else { return nil }
+                return (piece.replacingOccurrences(of: "\u{2581}", with: " "),
+                        Double(token.frame) * secondsPerFrame)
+            }
+            return (tokenizer.decode(ids: tokens.map(\.token)), timed)
+        }
+
+        /// The same decode, plus word times, walking several windows for audio
+        /// longer than the largest one. Times are relative to `samples`.
+        func transcribeTimed(
+            _ samples: [Float]
+        ) async throws -> (text: String, tokens: [(text: String, start: TimeInterval)]) {
+            if let variant = variant(for: samples.count) {
+                return try decodeWindow(samples, variant: variant)
+            }
+            if let largest = variants.last {
+                var text = ""
+                var tokens: [(text: String, start: TimeInterval)] = []
+                var offset = 0
+                for piece in SpeechSegmenter.split(samples, maxSamples: largest.windowSamples) {
+                    let decoded = try decodeWindow(
+                        piece, variant: variant(for: piece.count) ?? largest)
+                    text += decoded.text
+                    tokens += decoded.tokens.map {
+                        (text: $0.text, start: $0.start + Double(offset) / 16_000)
+                    }
+                    offset += piece.count
+                }
+                return (text, tokens)
+            }
+            if fallbackManager == nil {
+                fallbackManager = UnifiedAsrManager()
+                try await fallbackManager!.loadModels(progressHandler: nil)
+            }
+            return (try await fallbackManager!.transcribe(samples), [])
         }
     }
 }
@@ -496,11 +564,14 @@ final class UnifiedGreedyRnnt {
         lastToken = Int32(config.blankIdx)
     }
 
-    func decode(encoded: MLMultiArray, frameRange: Range<Int>) throws -> [Int] {
+    /// Tokens with the encoder frame they were emitted on. A frame is
+    /// `config.frameSamples / config.sampleRate` long (80 ms), which is what turns
+    /// a token into a time.
+    func decode(encoded: MLMultiArray, frameRange: Range<Int>) throws -> [(token: Int, frame: Int)] {
         var currentToken = lastToken
         var currentH = hState
         var currentC = cState
-        var tokens: [Int] = []
+        var tokens: [(token: Int, frame: Int)] = []
 
         var decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC)
 
@@ -514,7 +585,7 @@ final class UnifiedGreedyRnnt {
                 else { throw TranscriberError.notPrepared }
                 let tokenId = tokenArray[0].int32Value
                 if tokenId == Int32(config.blankIdx) { break }
-                tokens.append(Int(tokenId))
+                tokens.append((Int(tokenId), t))
                 currentToken = tokenId
                 currentH = decoderStep.h
                 currentC = decoderStep.c

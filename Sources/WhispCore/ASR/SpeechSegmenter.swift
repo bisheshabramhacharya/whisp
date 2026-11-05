@@ -31,24 +31,43 @@ public enum SpeechSegmenter {
         Int(ProcessInfo.processInfo.environment["WHISP_SPEC_PAUSE_FRAMES"] ?? "") ?? 18
     static let frame = 160  // 10 ms
 
-    /// One decoded piece of a take: the span of audio it owns, in samples, and the
-    /// words the decode returned with take-absolute start times.
+    /// One decoded piece of a take: the span of audio it owns, in samples, the words
+    /// the decode returned with take-absolute start times, and the text those words
+    /// make up. A decode with no timings (an engine that cannot report them) keeps
+    /// its whole text here, so nothing is ever dropped for want of a timestamp.
     public struct Piece: Sendable {
         public let spanStart: Int
         public let spanEnd: Int
         public let words: [TimedWord]
-        public init(spanStart: Int, spanEnd: Int, words: [TimedWord]) {
+        public let text: String
+
+        public init(spanStart: Int, spanEnd: Int, words: [TimedWord], text: String? = nil) {
             self.spanStart = spanStart
             self.spanEnd = spanEnd
             self.words = words
+            self.text = text ?? Self.owned(words, spanStart: spanStart, spanEnd: spanEnd)
         }
+
         public var span: (start: TimeInterval, end: TimeInterval) {
             (Double(spanStart) / 16_000, Double(spanEnd) / 16_000)
         }
-        public var text: String {
-            words.filter { $0.start >= span.start && $0.start < span.end }
+
+        static func owned(_ words: [TimedWord], spanStart: Int, spanEnd: Int) -> String {
+            let span = (Double(spanStart) / 16_000, Double(spanEnd) / 16_000)
+            return words.filter { $0.start >= span.0 && $0.start < span.1 }
                 .map(\.text).joined(separator: " ")
         }
+    }
+
+    /// The piece one commit's decode owns: the window it actually decoded, moved to
+    /// take time, filtered to the words that start inside its own span.
+    public static func piece(
+        spanStart: Int, spanEnd: Int, decoded: TimedTranscript, windowStartSample: Int
+    ) -> Piece {
+        let words = absoluteWords(decoded, windowStartSample: windowStartSample)
+        return Piece(
+            spanStart: spanStart, spanEnd: spanEnd, words: words,
+            text: words.isEmpty ? decoded.text : nil)
     }
 
     /// Words from a decode that started at `windowStartSample`, moved to take time.
@@ -75,8 +94,12 @@ public enum SpeechSegmenter {
         guard !tail.isEmpty else { return join(texts) }
         let decoded = try await transcriber.transcribeTimed(tail)
         let words = absoluteWords(decoded, windowStartSample: windowStart)
-        let owned = words.filter { $0.start >= Double(committed) / 16_000 }
-            .map(\.text).joined(separator: " ")
+        guard !words.isEmpty else {
+            if !decoded.text.isEmpty { texts.append(decoded.text) }
+            return join(texts)
+        }
+        let releaseOwned = words.filter { $0.start >= Double(committed) / 16_000 }
+        let owned = releaseOwned.map(\.text).joined(separator: " ")
         guard !owned.isEmpty else { return join(texts) }
         texts.append(owned)
         return join(texts)
@@ -163,18 +186,27 @@ public enum SpeechSegmenter {
     /// behind its span. Decoding wider than the span is what lets a word that
     /// straddles a seam be heard whole and then owned by start time alone.
     public static let heldBackSamples = 16_000
+    /// How much audio one commit takes: about a second, so the loop decodes once a
+    /// second instead of once a tick.
+    public static let cadenceSamples = 16_000
     public static let leftContextSamples = 16_000
     public static let rightContextSamples = 16_000
     public static let releaseOverlapSamples = 8_000
+    /// Most audio one commit takes, so a starved tick (no tick for ten seconds) cannot
+    /// hand the encoder a window wider than it takes: left context, span and right
+    /// context stay inside the 15 s window. The rest of the backlog commits next tick.
+    public static let commitLimitSamples = 10 * 16_000
 
     /// Where to commit when the audio pending since the last commit is older than
     /// `heldBackSamples`: the quietest 100 ms of the window the bound allows, which
     /// leaves at most `heldBackSamples` pending and at least that much right context
     /// for the decode. Nil while the pending audio is short enough to wait for a pause.
     public static func nextHeldBackCut(in samples: [Float]) -> Int? {
-        guard samples.count > heldBackSamples else { return nil }
+        guard samples.count > heldBackSamples + cadenceSamples else { return nil }
         let energies = frameEnergies(samples)
-        let earliest = (samples.count - heldBackSamples) / frame
+        // At least a cadence of span, or a cut near the start of the region would
+        // leave a full window pending and commit again on the very next tick.
+        let earliest = max(cadenceSamples, samples.count - heldBackSamples - cadenceSamples) / frame
         let window = 10
         var quietest = earliest
         var quietestSum = Float.greatestFiniteMagnitude
@@ -188,7 +220,7 @@ public enum SpeechSegmenter {
             i += 1
         }
         guard quietest + window <= energies.count else { return nil }
-        return (quietest + window / 2) * frame
+        return min((quietest + window / 2) * frame, commitLimitSamples)
     }
 
     /// Never leave more than a minute of audio pending. A release past it decodes the
@@ -259,26 +291,12 @@ public enum SpeechSegmenter {
         return (start, end)
     }
 
+    /// Same rule as `trimSpeechBounds`, so the timed decode and the plain one can
+    /// never trim different audio.
     public static func trimSpeech(_ samples: [Float]) -> [Float] {
-        let margin = 2400  // 150 ms
-        let frameCount = samples.count / frame
-        guard frameCount > 2 else { return samples }
-
-        let energies = frameEnergies(samples)
-        guard let peak = energies.max(), peak > 0 else { return [] }
-        let loud = percentile(energies, 0.9) ?? peak
-        let threshold = speechThreshold(peak: loud)
-
-        var first = 0
-        while first < frameCount, energies[first] < threshold { first += 1 }
-        var last = frameCount - 1
-        while last > first, energies[last] < threshold { last -= 1 }
-        guard first <= last else { return [] }
-
-        let start = max(0, first * frame - margin)
-        let end = min(samples.count, (last + 1) * frame + margin)
-        guard end > start else { return [] }
-        return Array(samples[start..<end])
+        guard samples.count / frame > 2 else { return samples }
+        guard let bounds = trimSpeechBounds(samples) else { return [] }
+        return Array(samples[bounds.start..<bounds.end])
     }
 
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
