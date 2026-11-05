@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Coding words come out right, with no setup.** File names, AI coding tools and everyday developer words are now spelled the way they are written: say "agents dot md" and `AGENTS.md` lands, say "claude code" and `Claude Code` lands, say "chat gpt" and `ChatGPT` lands. A word that is also plain English only changes next to a coding word, so "move the cursor", "a linear function" and "Jason called" stay as they are. Your own dictionary rules still win over the built-in ones.
 - **10 s encoder window.** Speech that runs past 5 s without a pause was still encoded at the stock 15 s size. When `parakeet_unified_encoder_w10000_int8.mlmodelc` is in the model cache, that audio uses the 10 s window instead, same text path as the 15 s model. The checksum is empty until the zip is published: build it with `tools/convert` (`--windows 10 --install`) to use a local copy, then publish the zip and paste its real SHA-256 into `ShortWindowEngine.middleBundle`. Pause detection is unchanged.
 
 ## 0.4.0 — 2026-09-30
