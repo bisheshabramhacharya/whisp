@@ -112,9 +112,10 @@ dropped the last word, so the segmenter is unchanged.
 On the VM (`short`, 330 files, release at +0 ms) those leftovers fall into two
 buckets: 5–10 s (11.8% of releases) waits p50 164 / p95 177 ms and 10–15 s
 (7.3%) 179 / 201 ms, both paying the 15 s encoder's flat cost. The 10 s window
-takes the first bucket to **130 / 161 ms** with transcripts identical to the
-15 s window, and the second to 168 / 175 ms. VM numbers only — the M1 verdict
-is `scripts/speed/m1-check.sh`. A piecewise alternative that decoded two
+took the first bucket to **130 / 161 ms** on the VM and the second to 168 / 175
+ms. VM numbers only, and the transcript-identity claim from that run did not
+survive the M1 replay below: on real recordings the 10 s window is faster and
+loses a last word. A piecewise alternative that decoded two
 overlapped 5 s pieces also measured faster on the 5–10 s bucket (164 → 150 ms
 VM) but was not shipped, so there is no `split` engine to pass to `--engine`
 (see [log-e](log-e-split-and-w10000.md)); 10–15 s has no cheaper option at the
@@ -137,8 +138,15 @@ is 5 to 10 s, `--live`, engine `short`, both passes over the same clips:
 | clips word-identical | 11 of 12 | — |
 
 The one that differs is a 12.0 s recording whose tail is 6.4 s, and it loses its
-**last word**: kept on both 15 s runs, dropped on both 10 s runs, so it is the
-window and not run-to-run noise.
+**last word**: kept on both 15 s runs, dropped on both 10 s runs, so the
+difference is the bundle and not run-to-run noise.
+
+Two things about how that was measured, because they matter to anyone repeating
+it. The bundle was installed into the live FluidAudio cache for the two passes
+and removed from it afterwards, which means the app on this machine was reading 5
+to 10 s tails on the 10 s window for those minutes. The app uses a bundle that is
+already on disk with no checksum, so **do not reinstall it** until the twelve clips
+pass: an installed bundle changes every 5 to 10 s release, not just a benchmark.
 
 It is not the frame accounting. Feeding the same 6.08 s of audio to both traces
 gives the same mel (608 frames), the same encoder output shape for each window
@@ -147,8 +155,9 @@ decoder reads, so nothing is truncated and neither trace is fed a wrong length.
 The difference is inside the encoder: full attention over a 1001-frame input
 against a 1501-frame one changes the representation of the last frames, and the
 last word is the one that tips. A shorter input window is therefore the wrong
-knob for this; a 12 or 14 s window is a different build and would need the same
-twelve-clip check before anything is published. The last word is the number this effort exists to
+knob for this. If anyone wants to pursue it, a 12 or 14 s window is a different
+build, it would have to pass the same twelve clips, and nothing here says it
+would. The last word is the number this effort exists to
 protect, so the bundle stays unpublished and `middleBundle.sha256` stays empty.
 65 ms for a dropped last word on 1 of 12 clips is the same trade the per-piece
 silence gate offered, and it is refused for the same reason.
