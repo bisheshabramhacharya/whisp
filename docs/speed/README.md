@@ -185,15 +185,16 @@ with it moved aside.
 
 The zip is not published, so `ShortWindowEngine.middleBundle.sha256` is empty
 and the app does not download the 10 s window; a bundle already on disk is used
-without a checksum. It stayed unpublished after the M1 measurement above: it is
-faster on the 5 to 10 s bucket and it costs a last word. Follow-up: publish
-`parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on `models-v2` and paste
-its SHA-256 into `middleBundle` (see `tools/convert/RELEASE.md`). The number
-recorded for the drafted zip is
+without a checksum. It stays unpublished after the M1 measurement above, and
+publishing it is blocked rather than pending: this trace is faster on the 5 to
+10 s bucket and it costs a last word, so no checksum should be pasted until the
+twelve clips pass, and they do not pass on this trace. What that needs is a
+different window length, 12 or 14 s, built and put through the same twelve clips.
+The number recorded for the drafted zip is
 `ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50` — re-hash
 it if the bundle is rebuilt, and do not paste a number you have not verified.
-Once that checksum lands the bundle is fetched on launch like the 5 s one, so
-the download is gated on publishing, not opt-in. Until then `--install` copies
+If a trace ever passes the twelve clips, that checksum makes the app fetch it on
+launch like the 5 s one, so the download is gated on publishing, not opt-in. Until then `--install` copies
 a locally built bundle into the FluidAudio model cache, which is the directory
 the engine scans, and `WHISP_MODEL_DIR` points the bench at another folder of
 the same files.
