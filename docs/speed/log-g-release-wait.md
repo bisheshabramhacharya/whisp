@@ -127,9 +127,9 @@ That is the thing to chase in BIS-19, not the encoder's warmth. A warm window
 does not help it (the 300 ms setting above leaves the base encoder time at 35-36
 ms), and no setting of the prewarm threshold will.
 
-One more suspect, and it is this file's own harness: the waiting loop described
-in the next section. Until `--poll-ms` puts a number on it, treat the 22 ms as
-"the live context, harness included" rather than the app's alone.
+One more suspect was this file's own harness: the waiting loop described in the
+next section. `--poll-ms` puts a number on it there, and it comes to a few
+milliseconds at most, so the 13-22 ms stands as the live context.
 
 ## A bench that polls the thing it is timing, on the same actor, measures itself
 
@@ -143,8 +143,24 @@ running, so part of the gap attributed to "what is still awake at release" may
 be the harness. `--poll-ms` changes the interval so the share can be measured:
 same takes at 1 ms and at 20 ms, and the delta is what the loop costs.
 
+`--poll-ms` puts a number on it. 16 short takes, two rounds, each round running
+1 ms and then 20 ms over the same takes in the same order:
+
+| round | 1 ms p50 | 20 ms p50 | paired 1 ms minus 20 ms (mean / median) | 1 ms slower on |
+|---|---|---|---|---|
+| 1 | 70.5 ms | 70.0 ms | -0.7 / +4.5 ms | 9 of 16 |
+| 2 | 85.0 ms | 75.5 ms | +7.4 / +7.0 ms | 10 of 16 |
+
+So the loop costs a few milliseconds at most, and it does not agree with itself
+between rounds: round 1 says nothing and round 2 says about 7 ms, both inside the
+12 ms this machine drifts between identical settings. It cannot carry the 13-22
+ms the live release decode pays over the second pass, so that gap survives. The
+harness's own share is now measured at a few ms rather than assumed, which is the
+only honest way to keep quoting the rest.
+
 The lesson is general and worth one line on its own: a benchmark that waits by
-polling, on the same actor as the code under test, is measuring itself.
+polling, on the same actor as the code under test, is measuring itself. Measure
+that share before blaming the code.
 
 ## Nothing here changes the app
 
