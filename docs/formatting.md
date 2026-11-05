@@ -11,13 +11,13 @@ The format step is fixed rules only: no model, no network, nothing that can add 
 second of wait. It is timed on its own and printed with the other stages in the log:
 
 ```
-dictation done: audio=6.20s ... clean=1ms format=837us paste=9ms release→paste=51ms
+dictation done: audio=6.20s ... clean=1ms format=867us paste=9ms release→paste=51ms
 ```
 
 Budget: under 5 ms for five minutes of dictation, checked by the test suite on an
 896 word take (five minutes and 58 seconds of speech). On the base M1 the whole
-text step measured 1.350 ms before this step existed and 2.182 ms with it, so the
-format step itself is 0.837 ms. The same gate measured 1.383 ms on a busier run of
+text step measured 1.423 ms before this step existed and 2.248 ms with it, so the
+format step itself is 0.867 ms. The same gate measured 1.383 ms on a busier run of
 the machine, so read it as about one millisecond.
 
 ## What it does
