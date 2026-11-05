@@ -74,6 +74,9 @@ CURRENCY_QUALIFIER = {
 PERCENT_WORDS = {"percent", "per", "cent"}
 PATH_SEPARATORS = {"slash", "backslash", "dot", "underscore"}
 ORDINAL_SUFFIX = re.compile(r"^(\d+)(?:st|nd|rd|th)$")
+# What a fold appends to keep an ordinal an ordinal. It never reaches a person: it
+# only ever becomes a hash.
+ORDINAL_MARK = "ord"
 
 
 # ---------------------------------------------------------------- helpers
@@ -119,6 +122,7 @@ def number_run(ws, i):
     total = current = 0
     used = 0
     last = ""
+    ordinal = False
     while i + used < len(ws):
         w = ws[i + used]
         if w == "and" and last == "scale":
@@ -134,6 +138,7 @@ def number_run(ws, i):
         elif w in ORDINAL_WORDS:
             value = ORDINAL_WORDS[w]
             kind = "unit" if value < 20 else ("tens" if value < 100 else "scale")
+            ordinal = True
         else:
             break
         if kind == "unit" and last == "unit":
@@ -156,7 +161,7 @@ def number_run(ws, i):
         used += 1
     if not used:
         return None
-    return str(total + current), used
+    return str(total + current), used, ordinal
 
 
 CLOCK_PREPOSITIONS = {"at", "by", "around", "from", "before", "after", "until", "till",
@@ -223,10 +228,13 @@ def canonical_words(ws):
         if run and (number_word_at(ws, i - 1) or number_word_at(ws, i + run[1])):
             run = None
         if ordinal:
-            out.append(ordinal.group(1))
+            # "25th" keeps its marker: an ordinal is not the cardinal it looks like,
+            # so "the twenty fifth of May" cannot fold like "the 25 of May".
+            out.append(ordinal.group(1) + ORDINAL_MARK)
             i += 1
         elif run:
             digits = run[0]
+            ordinal_run = run[2]
             i += run[1]
             # A number's money or percentage word belongs to the number, and stays
             # with it: dollars and cents are not the same number.
@@ -239,7 +247,7 @@ def canonical_words(ws):
             elif i < len(ws) and ws[i] == "percent":
                 digits += "percent"
                 i += 1
-            out.append(digits)
+            out.append(digits + (ORDINAL_MARK if ordinal_run else ""))
         elif w.isdigit():
             digits = w
             i += 1
@@ -959,6 +967,10 @@ SELFTEST_DIFFERENT = [
     ("flight twenty five twenty", "flight 25 20"),
     ("that costs two fifty", "that costs two 50"),
     ("three ninety nine", "three 99"),
+    # an ordinal is not the cardinal it looks like
+    ("the twenty fifth of May", "the 25 of May"),
+    ("the first of May", "the 1 of May"),
+    ("first place", "1 place"),
     # cents are not dollars, and a percentage is not a price
     ("twenty five cents", "$25"),
     ("twenty five percent", "$25"),
