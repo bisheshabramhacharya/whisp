@@ -12,12 +12,21 @@ numbers are below.
 
 ## What was built
 
+Three numbers describe the shape. `L`, the left context, is the audio a commit
+decodes before its own span; `A`, the right context, is the audio after it; `R`, the
+release overlap, is how far before the last commit the release window starts. Both
+`L` and `A` are 1.0 s here and `R` is 0.5 s.
+
 The live loop commits the audio older than a 1 s held-back bound, once a second. A
-commit decodes a second of left context behind its span and a second of right
-context after it, and keeps only the words that start inside the span. The release
-decodes from 0.5 s before the last commit to the end and keeps words that start at
-or after it, so the release piece is just the last piece. `join` keeps its casing
-rules and nothing else: no dedupe anywhere.
+commit decodes `L` behind its span and `A` after it, and keeps only the words that
+start inside the span. The release decodes from `R` before the last commit to the
+end and keeps words that start at or after it, so the release piece is just the last
+piece. `join` keeps its casing rules and nothing else: no dedupe anywhere.
+
+On a 5 s encoder window those constants leave room rather than exhaust it: a 1 s
+span with `L` 1 s and `A` 1 s fills 3 s of the 5 s window, so about 2 s of window
+went unused. `A` was fixed at 1 s by a constant, not by the window, and a larger `A`
+was never tried.
 
 Word times come from the engine that the app actually runs. That was the first
 thing this work found: the timed decode had been written on `ParakeetTranscriber`
@@ -62,31 +71,48 @@ enough, because the transcript is no longer the same twice:
 - take 2, "Chez Panisse" comes out as Chepanas, Cheapanis, Che Pennis, and Shea
   Chepanas in different phases, and one phase drops "Book".
 
-## Why it fails
+## Why it fails, and it is two effects, not one
 
-A seam is every second. The model is decoded per window, and the same word decoded
-in a window that begins in one place and a window that begins 1 s later does not
-always come out with the same text: it comes out as whichever spelling the context
-that window had produced. Handing the word to one piece by start time decides *who
-keeps it*, not *what it says*, so the transcript inherits a per-window spelling
-that moves with the phase.
+Take 2 is the context effect. "Chez Panisse" comes out as Chepanas, Cheapanis, Che
+Pennis and Shea Chepanas in different phases: the same word decoded in a window that
+begins in one place and a window that begins a second later gets whichever spelling
+that window's context produced. Ownership by start time decides who keeps a word,
+not what it says, so the transcript inherits a spelling that moves with the phase.
 
-The other attempt at this idea committed every 30 s on an 82 s encoder window, so
-each seam sat inside tens of seconds of context. Our window is 5 s. Per-second
-commits on a 5 s window leave each word with a couple of seconds of context, and
-that is where the spellings diverge.
+Take 1 is the other effect, and it is cut placement rather than context. The two
+"play some music" clips are identical and sit next to each other with no gap. When a
+seam falls between them, each copy is inside its own span and both survive, which is
+why 9 of 11 phases keep the repeat where a single decode collapses it. In p3 and p7
+a single span holds both copies and the model returns one, exactly as main does. The
+repeat's survival is the seam landing in the right place, not the partition
+understanding the audio.
 
-This is not a value of R or A to tune. R only decides how far back the release
-window starts, and A only decides how much audio follows the span; neither changes
-how much context the model has when it decides a word. A larger commit interval
-would, and that is a different shape: one seam per window instead of one per
-second, at the cost of a bigger release tail.
+That distinction matters for what comes next, and it is the opposite of what an
+earlier draft of this document said: a larger commit interval means fewer seams,
+which means the two identical copies share one span more often and collapse more
+often. Fewer seams buy stability and cost the repeat. The two effects pull in
+opposite directions on this pair of takes.
+
+What is certain from this run: a seam every second leaves each word a couple of
+seconds of context on a 5 s window, so the transcript moves with the phase, and no
+value of `R` or `A` changes how much context the model has when it decides a word.
+`R` only moves the start of the release window and `A` only adds audio after a span;
+neither changes the evidence the model had. A different commit interval is a
+different shape, and the counter-argument above is why it is not obviously better.
+
+The earlier attempt at this idea, by the sidecar this was modelled on, re-decodes
+everything pending every 0.4 s and only commits once 60 s of audio is pending, with
+20 s of left context and a 2 s release overlap inside a window that can reach 82 s
+(`sidecar/stream_asr.py` in their repo at commit `2e9a5b7`, read in `reports/WHIB-10.md`
+on this machine). A seam there is one per 60 s of speech sitting inside tens of
+seconds of context, which is why the same primitive holds up for them and not for a
+one second cadence on a 5 s window.
 
 It is also slower at release than main on these takes, 138–156 ms against
-66–108 ms, because the release now decodes 1.5 s on top of decodes that already
-ran during speech. The release decode on its own is 32–59 ms, which is what the
-design predicted for a 1.5 s window; the rest of the latency is the paste path and
-the commit that is still in flight at release.
+66–108 ms, because the release decodes 1.5 s on top of decodes that already ran
+during speech. The release decode on its own is 32–59 ms, which is what the design
+predicted for a 1.5 s window; the rest of the latency is the paste path and the
+commit still in flight at release.
 
 ## What is worth keeping
 
