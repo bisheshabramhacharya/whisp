@@ -113,11 +113,17 @@ build: same or better means no word the baseline heard went missing, and a new
 dropped last word is a recording whose last word changed. Zero is the gate.
 
 A run takes the benchmark lock first, so nothing else on the Mini can be
-measuring at the same time. Per-file results are cached by build sha and engine
-flags under `~/.whisp-scoreboard-cache`, so a repeat run on the same build and
-sample is near instant; `--force` ignores the cache. `--record` writes
-`baseline-<engine sha>.json`, `latest.json` and `latest.md`. Only aggregates
-land there: no audio, no transcripts, no recording names, ever.
+measuring at the same time. Per-file results are cached under
+`~/.whisp-scoreboard-cache` and keyed by the sha256 of the built `whisp-bench`
+plus the engine flags, so a repeat run on the same binary is near instant
+(seconds) and a rebuilt engine always replays; `--force` ignores the cache.
+`--record` writes `baseline-<engine sha>.json`, `latest.json` and `latest.md`.
+Only aggregates land there: no audio, no transcripts, no recording names, ever.
+
+The last-word delta compares against the recorded baseline build, which needs
+that build's cached per-file rows. If the cache is wiped, run the scoreboard
+once on the baseline build to restore them, or the accuracy row reads `n/a`
+rather than a made-up number.
 
 ## Reproduce
 

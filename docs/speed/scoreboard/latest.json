@@ -27,15 +27,17 @@
   }
  },
  "baseline": {
-  "build_sha": "f32b25f",
+  "bench": "71a12cfa4b1d80e9",
+  "build_sha": "8b915e1",
   "engine_sha": "588c9ee",
   "flags": "short-gap1"
  },
  "build": {
+  "bench": "71a12cfa4b1d80e9",
   "branch": "capy/whisp-scoreboard",
   "dirty": false,
   "engine": "588c9ee",
-  "sha": "f32b25f"
+  "sha": "8b915e1"
  },
  "engine": {
   "flags": "short-gap1",
@@ -48,8 +50,8 @@
   "model": "MacBookPro17,1",
   "os": "26.0.1"
  },
- "recorded": "2026-11-05T04:08:30Z",
- "run_seconds": 2298.1,
+ "recorded": "2026-11-05T04:49:17Z",
+ "run_seconds": 2340.4,
  "sample": {
   "buckets": {
    "average": 16,
@@ -72,24 +74,24 @@
  "speed": {
   "average": {
    "n": 16,
-   "p50_ms": 89,
-   "p95_ms": 449,
+   "p50_ms": 100,
+   "p95_ms": 247,
    "target_ms": 40,
-   "worst_ms": 449
+   "worst_ms": 247
   },
   "long": {
    "n": 3,
-   "p50_ms": 171,
-   "p95_ms": 8738,
+   "p50_ms": 167,
+   "p95_ms": 9329,
    "target_ms": 46,
-   "worst_ms": 8738
+   "worst_ms": 9329
   },
   "short": {
    "n": 59,
-   "p50_ms": 99,
-   "p95_ms": 387,
+   "p50_ms": 88,
+   "p95_ms": 461,
    "target_ms": 38,
-   "worst_ms": 421
+   "worst_ms": 795
   }
  },
  "worst_case_target_ms": 100
