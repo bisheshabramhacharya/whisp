@@ -143,6 +143,110 @@ try! #"{"terms": ["Grailed"], "replacements": [{"from": "depop", "to": "Depop Ap
     .write(to: tmp, atomically: true, encoding: .utf8)
 expect(fileDict.apply("grailed"), "Grailed", "recovers after the file returns")
 
+// MARK: - Coding word pack
+
+// Built in and always on: none of this needs a dictionary.json rule. Each row is
+// a sentence in fast casual dictation, then what has to reach the screen.
+let packCases: [(String, String)] = [
+    // File names, both spoken shapes
+    ("put the rules in agents dot md", "put the rules in AGENTS.md"),
+    ("update agents MD before you ship", "update AGENTS.md before you ship"),
+    ("read claude dot md first", "read CLAUDE.md first"),
+    ("put the rules in claude md", "put the rules in CLAUDE.md"),
+    ("the soul dot md is the personality", "the SOUL.md is the personality"),
+    ("add it to the readme", "add it to the README.md"),
+    ("copy the dot env and fill it in", "copy the .env and fill it in"),
+    ("bump package json and push", "bump package.json and push"),
+    ("the ts config needs another alias", "the tsconfig.json needs another alias"),
+    ("docker compose dot yaml has the ports", "docker-compose.yml has the ports"),
+    ("put node modules in git ignore", "put node modules in .gitignore"),
+    ("the make file has three targets", "the Makefile has three targets"),
+    // Harnesses and AI tools
+    ("claude code keeps rewriting my comments", "Claude Code keeps rewriting my comments"),
+    ("ask chat gpt to check it", "ask ChatGPT to check it"),
+    ("co-pilot wrote a worse version", "Copilot wrote a worse version"),
+    ("open cursor and run the tests", "open Cursor and run the tests"),
+    ("hermes is still running", "Hermes is still running"),
+    ("push it to github", "push it to GitHub"),
+    ("vs code is already open", "VS Code is already open"),
+    ("the windsurf tab is lagging", "the Windsurf tab is lagging"),
+    // Everyday words
+    ("the pr on git hub is red", "the PR on GitHub is red"),
+    ("put it in the jason file", "put it in the JSON file"),
+    ("parse the jason and print it", "parse the JSON and print it"),
+    ("run n p m install", "run npm install"),
+    ("it only works on local host", "it only works on localhost"),
+    ("use ssh to get in", "use SSH to get in"),
+    ("the sub agent blew up", "the sub-agent blew up"),
+    ("the mcp server is down", "the MCP server is down"),
+    ("ask grok about the llm", "ask Grok about the LLM"),
+    ("the gpu is pegged", "the GPU is pegged"),
+    ("the api key is missing", "the API key is missing"),
+    ("check the cli help", "check the CLI help"),
+    ("fix the json output", "fix the JSON output"),
+    ("it is a yaml thing", "it is a YAML thing"),
+    ("post gres keeps dropping it", "Postgres keeps dropping it"),
+    ("deploy it to vercel", "deploy it to Vercel"),
+    ("the supabase keys are in the vault", "the Supabase keys are in the vault"),
+    ("kube control rollout status", "kubectl rollout status"),
+    ("swift ui is fine here", "SwiftUI is fine here"),
+    ("it is core ml under the hood", "it is CoreML under the hood"),
+    ("it works on mac os but not i os", "it works on macOS but not iOS"),
+    ("typescript is fine, java script is not", "TypeScript is fine, JavaScript is not"),
+    ("the cli is written in rust", "the CLI is written in Rust"),
+    ("the cli is written in go", "the CLI is written in Go"),
+    ("write a python script for it", "write a Python script for it"),
+    ("open zed and paste it", "open Zed and paste it"),
+    ("join the slack channel", "join the Slack channel"),
+    ("the linear issue is stale", "the Linear issue is stale"),
+    ("the notion page is empty", "the Notion page is empty"),
+    ("figma has the new icons", "Figma has the new icons"),
+    ("docker is not running", "Docker is not running"),
+    ("ask capy to do it", "ask Capy to do it"),
+    ("the codync agent is stuck", "the Codync agent is stuck"),
+]
+for (input, output) in packCases {
+    expect(cleaner.clean(input), output, "pack: \"\(input)\"")
+}
+
+// The other half of the table: an English word that is also a product or language
+// name must stay English, and a file name already spelled out must not grow a
+// second extension.
+let packUntouched: [String] = [
+    "Jason called about the invoice.",
+    "Jason's car is outside.",
+    "I asked Jason to review the deploy.",
+    "move the cursor to the end of the line.",
+    "the cursor is blinking.",
+    "make file copies of everything.",
+    "a linear function of time.",
+    "linear regression is boring.",
+    "the notion of fairness matters.",
+    "there is slack in the rope.",
+    "the python was three meters long.",
+    "rust on the car door.",
+    "go to the store and get milk.",
+    "swift delivery at noon.",
+    "I bought yarn and a bun.",
+    "the letter zed sounds like zee.",
+    "we merged the commit and rebased the branch.",
+    "the apiary is full of bees.",
+    "she asked about Claude Monet.",
+    "README.md is the entry point.",
+    "the .gitignore file is fine.",
+    "the AGENTS.md file has the rules.",
+    "the package.json already has it.",
+]
+for input in packUntouched {
+    expect(cleaner.clean(input), input, "pack leaves alone: \"\(input)\"")
+}
+
+// A hand-written rule still wins: the pack runs first, the dictionary last, so a
+// rule is written against the spelling Whisp shows you.
+let overrideDict = PersonalDictionary(terms: [], replacements: ["GitHub Enterprise": ["github"]])
+expect(FillerCleaner(dictionary: overrideDict).clean("push it to git hub"), "push it to GitHub Enterprise",
+       "dictionary beats the pack")
+
 // MARK: - SpeechSegmenter
 
 func tone(_ seconds: Double, amplitude: Float = 0.3) -> [Float] {
@@ -2015,6 +2119,32 @@ expect(ASREngine.defaultName, "short", "default engine is the short-window one")
 expect(String(describing: type(of: ASREngine.make(named: "typo"))), "ShortWindowEngine", "unknown engine name falls back")
 
 // MARK: - Speed
+
+// The formatting step has a 5 ms per-dictation budget. Two corpora: ordinary
+// sentences, and sentences full of the words the coding pack rewrites.
+let plainDictations = [
+    "so I think we should ship it today and see what happens with the rest of the batch",
+    "the meeting moved to three thirty and nobody told the other team about it",
+    "can you send me the numbers from last week when you get a second",
+]
+let codingDictations = [
+    "so I told claude code to fix the agents dot md file and it broke the jason config again",
+    "the pr on git hub is red so post gres and vercel both need another look before we ship it",
+    "open cursor and run n p m install, then check the linear issue and put the notes in notion",
+]
+func medianMs(_ texts: [String], _ iterations: Int) -> Double {
+    var samples: [Double] = []
+    for _ in 0..<iterations {
+        let start = Date()
+        for text in texts { _ = cleaner.clean(text) }
+        samples.append(Date().timeIntervalSince(start) * 1000 / Double(texts.count))
+    }
+    return samples.sorted()[samples.count / 2]
+}
+let plainMs = medianMs(plainDictations, 200)
+let codingMs = medianMs(codingDictations, 200)
+print(String(format: "formatting step: %.3f ms ordinary, %.3f ms coding (budget 5 ms)", plainMs, codingMs))
+if Swift.max(plainMs, codingMs) > 5 { failures += 1; print("FAIL formatting step over the 5 ms budget") }
 
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
 let t0 = Date()
