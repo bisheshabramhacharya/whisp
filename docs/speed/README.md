@@ -138,7 +138,17 @@ is 5 to 10 s, `--live`, engine `short`, both passes over the same clips:
 
 The one that differs is a 12.0 s recording whose tail is 6.4 s, and it loses its
 **last word**: kept on both 15 s runs, dropped on both 10 s runs, so it is the
-window and not run-to-run noise. The last word is the number this effort exists to
+window and not run-to-run noise.
+
+It is not the frame accounting. Feeding the same 6.08 s of audio to both traces
+gives the same mel (608 frames), the same encoder output shape for each window
+(126 frames on the 10 s trace, 188 on the 15 s) and the same 76 valid frames the
+decoder reads, so nothing is truncated and neither trace is fed a wrong length.
+The difference is inside the encoder: full attention over a 1001-frame input
+against a 1501-frame one changes the representation of the last frames, and the
+last word is the one that tips. A shorter input window is therefore the wrong
+knob for this; a 12 or 14 s window is a different build and would need the same
+twelve-clip check before anything is published. The last word is the number this effort exists to
 protect, so the bundle stays unpublished and `middleBundle.sha256` stays empty.
 65 ms for a dropped last word on 1 of 12 clips is the same trade the per-piece
 silence gate offered, and it is refused for the same reason.
