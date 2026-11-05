@@ -131,6 +131,12 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
         public let melMs: Double
         public let encoderMs: Double
         public let rnntMs: Double
+        /// The RNNT loop split by model: joint decisions and decoder steps,
+        /// with the number of Core ML calls each one made.
+        public let jointMs: Double
+        public let decoderMs: Double
+        public let jointCalls: Int
+        public let decoderCalls: Int
     }
 
     /// Called after every windowed decode (not the >15 s fallback), on the
@@ -447,21 +453,24 @@ extension ShortWindowEngine {
 
             try rnnt.reset()
             let encoderLength = min(encodedLength[0].intValue, encoded.shape[2].intValue)
-            let tokens = try rnnt.decode(encoded: encoded, frameRange: 0..<encoderLength)
+            let (tokens, stats) = try rnnt.decode(encoded: encoded, frameRange: 0..<encoderLength)
             if let observer {
                 let t3 = DispatchTime.now().uptimeNanoseconds
                 observer(DecodeTimings(
                     windowSamples: variant.windowSamples, inputSamples: samples.count,
                     melMs: Double(t1 - t0) / 1e6, encoderMs: Double(t2 - t1) / 1e6,
-                    rnntMs: Double(t3 - t2) / 1e6))
+                    rnntMs: Double(t3 - t2) / 1e6,
+                    jointMs: stats.jointMs, decoderMs: stats.decoderMs,
+                    jointCalls: stats.jointCalls, decoderCalls: stats.decoderCalls))
             }
             return tokenizer.decode(ids: tokens)
         }
     }
 }
 
-/// Greedy RNNT decode over `encoded` [1, D, T] — same math as FluidAudio's
-/// `UnifiedRnntDecoder` (and whisp-bench's `ProfiledRnnt`).
+/// Greedy RNNT decode over `encoded` [1, D, T]: same math as FluidAudio's
+/// `UnifiedRnntDecoder` (and whisp-bench's `ProfiledRnnt`), with per-model call
+/// counts and timings so the cost of each stage is visible.
 final class UnifiedGreedyRnnt {
     private let decoderModel: MLModel
     private let jointModel: MLModel
@@ -470,6 +479,14 @@ final class UnifiedGreedyRnnt {
     private var hState: MLMultiArray
     private var cState: MLMultiArray
     private var lastToken: Int32
+
+    /// Timing and call counts of the last `decode`.
+    struct Stats {
+        var jointMs = 0.0
+        var decoderMs = 0.0
+        var jointCalls = 0
+        var decoderCalls = 0
+    }
 
     init(decoderModel: MLModel, jointModel: MLModel, config: UnifiedConfig) throws {
         self.decoderModel = decoderModel
@@ -496,20 +513,24 @@ final class UnifiedGreedyRnnt {
         lastToken = Int32(config.blankIdx)
     }
 
-    func decode(encoded: MLMultiArray, frameRange: Range<Int>) throws -> [Int] {
+    func decode(encoded: MLMultiArray, frameRange: Range<Int>) throws -> (tokens: [Int], stats: Stats) {
+        var stats = Stats()
         var currentToken = lastToken
         var currentH = hState
         var currentC = cState
         var tokens: [Int] = []
 
-        var decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC)
+        var decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC, stats: &stats)
 
         for t in frameRange {
             let encStep = try extractEncoderStep(from: encoded, timeIndex: t)
             for _ in 0..<config.maxSymbolsPerFrame {
+                let jointStart = DispatchTime.now().uptimeNanoseconds
                 let jointOutput = try jointModel.prediction(
                     from: JointFeatureProvider(
                         encoderStep: encStep, decoderStep: decoderStep.output))
+                stats.jointMs += Double(DispatchTime.now().uptimeNanoseconds - jointStart) / 1e6
+                stats.jointCalls += 1
                 guard let tokenArray = jointOutput.featureValue(for: "token_id")?.multiArrayValue
                 else { throw TranscriberError.notPrepared }
                 let tokenId = tokenArray[0].int32Value
@@ -518,14 +539,14 @@ final class UnifiedGreedyRnnt {
                 currentToken = tokenId
                 currentH = decoderStep.h
                 currentC = decoderStep.c
-                decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC)
+                decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC, stats: &stats)
             }
         }
 
         lastToken = currentToken
         hState = currentH
         cState = currentC
-        return tokens
+        return (tokens, stats)
     }
 
     private struct DecoderStep {
@@ -534,15 +555,20 @@ final class UnifiedGreedyRnnt {
         let c: MLMultiArray
     }
 
-    private func runDecoder(token: Int32, h: MLMultiArray, c: MLMultiArray) throws -> DecoderStep {
+    private func runDecoder(
+        token: Int32, h: MLMultiArray, c: MLMultiArray, stats: inout Stats
+    ) throws -> DecoderStep {
         let targets = try MLMultiArray(shape: [1, 1], dataType: .int32)
         targets[0] = NSNumber(value: token)
         let targetLength = try MLMultiArray(shape: [1], dataType: .int32)
         targetLength[0] = 1
 
+        let start = DispatchTime.now().uptimeNanoseconds
         let output = try decoderModel.prediction(
             from: DecoderFeatureProvider(
                 targets: targets, targetLength: targetLength, hIn: h, cIn: c))
+        stats.decoderMs += Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+        stats.decoderCalls += 1
         guard let decoderOut = output.featureValue(for: "decoder")?.multiArrayValue,
             let hOut = output.featureValue(for: "h_out")?.multiArrayValue,
             let cOut = output.featureValue(for: "c_out")?.multiArrayValue

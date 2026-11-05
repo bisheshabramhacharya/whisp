@@ -94,6 +94,66 @@ func runProfile(engineName: String, runs: Int, files: [LoadedFile], show: Bool) 
     if skipped > 0 { print("  (\(skipped) files skipped: >15 s, multi-window)") }
 }
 
+/// Median of `values` (0 for an empty list). Small samples, no interpolation.
+func median(_ values: [Double]) -> Double {
+    guard !values.isEmpty else { return 0 }
+    let sorted = values.sorted()
+    return sorted[sorted.count / 2]
+}
+
+// MARK: - --stages
+
+/// Per-file stage split through the app's own engine, on the window each file
+/// actually decodes with: mel, encoder, then the RNNT loop split by model
+/// (joint decisions and decoder steps, with Core ML call counts).
+func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws {
+    let engine = ASREngine.make(named: engineName)
+    let stages = StageLog()
+    if let short = engine as? ShortWindowEngine {
+        await short.observeDecodes { stages.add($0) }
+    }
+    try await engine.prepare()
+
+    var sums: [String: [Double]] = [:]
+    for f in files {
+        var decode: [Double] = [], mel: [Double] = [], enc: [Double] = [], rnnt: [Double] = []
+        var joint: [Double] = [], dec: [Double] = []
+        var jointCalls: [Double] = [], decCalls: [Double] = []
+        var window = 0
+        for run in 0..<runs {
+            _ = stages.drain()
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            _ = try await engine.transcribe(f.samples)
+            let total = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            guard let t = stages.drain().last?.t, (run > 0 || runs == 1) else { continue }
+            window = t.windowSamples
+            decode.append(total)
+            mel.append(t.melMs); enc.append(t.encoderMs); rnnt.append(t.rnntMs)
+            joint.append(t.jointMs); dec.append(t.decoderMs)
+            jointCalls.append(Double(t.jointCalls))
+            decCalls.append(Double(t.decoderCalls))
+        }
+        guard !decode.isEmpty else {
+            print("\(f.name): no stage timings (engine \(engineName) does not report them)")
+            continue
+        }
+        let p50 = { (v: [Double]) in median(v) }
+        print(String(
+            format: "%@: %4.1f s on the %2d s window | decode %5.1f | mel %4.1f enc %5.1f rnnt %5.1f = joint %5.1f (%3.0f calls) + dec %5.1f (%2.0f calls)",
+            f.name, Double(f.samples.count) / 16_000, window / 16_000,
+            p50(decode), p50(mel), p50(enc), p50(rnnt),
+            p50(joint), p50(jointCalls), p50(dec), p50(decCalls)))
+        for (key, values) in [("decode", decode), ("mel", mel), ("encoder", enc), ("rnnt", rnnt),
+                              ("joint", joint), ("decoder", dec)] {
+            sums[key, default: []].append(p50(values))
+        }
+    }
+    if files.count > 1 {
+        let fmt = { (d: [Double]) in String(format: "%5.1f", d.reduce(0, +) / Double(max(d.count, 1))) }
+        print("mean p50 over \(files.count) files: decode \(fmt(sums["decode"] ?? [])) | mel \(fmt(sums["mel"] ?? [])) enc \(fmt(sums["encoder"] ?? [])) rnnt \(fmt(sums["rnnt"] ?? [])) = joint \(fmt(sums["joint"] ?? [])) + dec \(fmt(sums["decoder"] ?? []))")
+    }
+}
+
 // MARK: - Load report
 
 /// Counts which encoder window each short-engine decode actually used.
