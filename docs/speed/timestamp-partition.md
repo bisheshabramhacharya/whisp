@@ -71,6 +71,34 @@ enough, because the transcript is no longer the same twice:
 - take 2, "Chez Panisse" comes out as Chepanas, Cheapanis, Che Pennis, and Shea
   Chepanas in different phases, and one phase drops "Book".
 
+## The three second cadence, and the end of the direction
+
+A seam every second leaves too little context, so the fair next move was to commit
+less often. Three seconds is the most a 5 s window can carry: `L` 1 s, the span 3 s
+and `A` 1 s fill it exactly, and a four or five second commit would push every
+decode to the 15 s encoder and cost three to five times the encoder pass per
+commit. Same gate, same takes, one seam every three seconds:
+
+| | take 1, 11 phases | take 2, 11 phases |
+|---|---|---|
+| main, distinct transcripts | 1 | 2 |
+| one second cadence | 3 | 5 |
+| three second cadence | 3 | **2**, equal to main |
+| three second cadence, edits vs reference per phase | 8 in 10 phases, 11 in 1 | 2, level with main |
+
+Take 2 reaches main's stability, which was the expected direction. Take 1 does not:
+one phase loses the repeated phrase and one reads 4,200 instead of 4,299, so the
+transcript still moves with the phase. The prediction that fewer seams would make
+the two identical copies share a span and collapse more often did not hold either;
+the repeat survives in 10 of 11 phases. Both readings agree on the same thing: the
+seam is the problem, not how often it falls, and a seam inside speech is not safe
+at this window size.
+
+Release to paste, same takes: 101 to 162 ms at three seconds, mostly about 150,
+against main's 65 to 108. The direction closes here. A wider encoder window, where
+one seam sits inside tens of seconds of context, is the only thing that would change
+these rows, and that is a model and converter change rather than a cut policy.
+
 ## Why it fails, and it is two effects, not one
 
 Take 2 is the context effect. "Chez Panisse" comes out as Chepanas, Cheapanis, Che
