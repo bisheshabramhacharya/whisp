@@ -238,7 +238,7 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
 // MARK: - Token
 
 /// A whitespace-delimited word split into leading punctuation, core, and trailing punctuation.
-private struct Token {
+struct Token {
     var leading: String
     var core: String {
         didSet { word = core.lowercased() }
