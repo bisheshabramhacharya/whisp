@@ -8,16 +8,16 @@ numbers in `log.md` are not comparable.
 
 `whisp-bench --stages --engine short --runs N <clips>` decodes through the app's
 own `ShortWindowEngine` and prints, per clip, the median over the measured runs
-(the first run of each file is paid as warm-up and dropped) of: mel, encoder,
-RNNT total, and the RNNT split into joint decisions and decoder steps with the
-number of Core ML calls each one made. A file that needs more than one encoder
+(the first run of each file is warm-up and is dropped when `--runs` is more than
+one) of: mel, encoder, RNNT total, and the RNNT split into joint decisions and
+decoder steps with the number of Core ML calls each one made. A file that needs more than one encoder
 window prints one row per window from its last run, because the split points are
 the same in every run, and those files stay out of the summary mean.
 
 `ShortWindowEngine.DecodeTimings` gained
 `jointMs`/`decoderMs`/`jointCalls`/`decoderCalls` for it. The four counters are
 recorded on every decode the app runs, not only when the bench reads them, and
-they cost about 0.1 us per call against a 200-600 us call.
+they cost about 0.03 us per call against a 200-600 us call.
 
 ## Stage split (warm, `say` clips, one file per row)
 

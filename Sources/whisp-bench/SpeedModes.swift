@@ -94,11 +94,14 @@ func runProfile(engineName: String, runs: Int, files: [LoadedFile], show: Bool) 
     if skipped > 0 { print("  (\(skipped) files skipped: >15 s, multi-window)") }
 }
 
-/// Median of `values` (0 for an empty list). Small samples, no interpolation.
+/// Median of `values` (0 for an empty list). An even count averages the two
+/// middle values rather than taking the upper one, so a two-run median is not
+/// the slower of the two.
 func median(_ values: [Double]) -> Double {
     guard !values.isEmpty else { return 0 }
     let sorted = values.sorted()
-    return sorted[sorted.count / 2]
+    let middle = sorted.count / 2
+    return sorted.count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
 // MARK: - --stages
