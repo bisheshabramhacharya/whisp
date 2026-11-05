@@ -112,6 +112,13 @@ WHISP_REFERENCE=~/.whisp-reference/set  scripts/speed/scoreboard.sh
 WHISP_CASUAL_SET=~/.whisp-reference/casual scripts/speed/scoreboard.sh
 ```
 
+The casual set is built from the same kept recordings: the fastest short and
+average takes, fastest first, capped at ten minutes of audio because the
+scoreboard replays a set in real time. Today that is 16 takes, 5.8 minutes, a
+mean 5.03 words per second, against the `say` stand-in's slow, tidy studio
+speech. Long takes are left to the reference row: one long take is 7 to 10
+minutes, so it would eat the whole budget on its own.
+
 The row prints as `reference set, whisper   [ref errs ~1 word in 8]`, next to
 the last-word gate, not instead of it. It samples 40 recordings by default (about
 20 minutes of replay) and 6 under `--quick`, so the row never quietly turns the

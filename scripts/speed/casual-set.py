@@ -18,8 +18,8 @@ and the set keeps the fastest takes, which is the shape of speech that breaks th
 engine: no pauses to lean on. Nothing private enters the repo, and the audio is
 never copied or moved.
 
-  scripts/speed/casual-set.py                    # build with the defaults
-  scripts/speed/casual-set.py --per-bucket 100
+  scripts/speed/casual-set.py                    # build with the defaults, ten minutes of audio
+  scripts/speed/casual-set.py --budget-seconds 1200 --per-bucket 100
   scripts/speed/casual-set.py --stats            # what the set looks like
 """
 import argparse
@@ -51,23 +51,39 @@ def words_per_second(record):
     return record["words"] / max(record["seconds"], 0.1)
 
 
-def pick(per_bucket):
+def pick(per_bucket, budget_seconds):
     """Usable recordings only, fastest first inside each bucket, so the set is
-    weighted the way he actually talks and not by how long it happens to be."""
+    weighted the way he actually talks and not by how long it happens to be.
+
+    The scoreboard replays a whole set in real time, so the set is also capped by
+    audio: ten minutes of the fastest takes is a fresh sample every run, where
+    the full 56 minutes would double the scoreboard's wall clock for the same
+    answer.
+
+    Short and average takes only. A single long take is 7 to 10 minutes of audio,
+    so one of them would eat the whole budget and turn every scoreboard run into
+    a marathon. Long takes are measured by the reference row instead.
+    """
     usable = records()
     if not usable:
         notify("no usable recordings in the cache; run scripts/speed/reference.py first")
         return []
+    shares = {"short": 0.4, "average": 0.6}
     chosen = []
-    for bucket in ("short", "average", "long"):
+    for bucket, share in shares.items():
+        spent = 0.0
         pool = sorted((r for r in usable if r.get("bucket") == bucket),
-                      key=words_per_second, reverse=True)
-        chosen += pool[:per_bucket]
+                      key=words_per_second, reverse=True)[:per_bucket]
+        for record in pool:
+            if spent + record["seconds"] > budget_seconds * share:
+                continue
+            chosen.append(record)
+            spent += record["seconds"]
     return chosen
 
 
-def build(out, per_bucket):
-    chosen = pick(per_bucket)
+def build(out, per_bucket, budget_seconds):
+    chosen = pick(per_bucket, budget_seconds)
     if not chosen:
         return 1
     os.makedirs(out, exist_ok=True)
@@ -129,11 +145,13 @@ def main():
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--per-bucket", type=int, default=80,
                         help="how many recordings to keep from each length bucket (default 80)")
+    parser.add_argument("--budget-seconds", type=float, default=600.0,
+                        help="cap the set by audio, because the scoreboard replays it in real time (default 600)")
     parser.add_argument("--stats", action="store_true")
     args = parser.parse_args()
     if args.stats:
         return stats(args.out)
-    return build(args.out, args.per_bucket)
+    return build(args.out, args.per_bucket, args.budget_seconds)
 
 
 if __name__ == "__main__":
