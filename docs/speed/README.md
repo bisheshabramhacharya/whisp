@@ -23,6 +23,54 @@ paid for 15 s of encoder work.
 | Cleaner + dictionary warmed at launch | first dictation no longer pays 46–67 ms | same code, earlier |
 | FluidAudio 0.15.7 → 0.17.4 | same speed | identical on 40 recordings |
 | Wake the encoder size the release will need, while you talk | real-time replay of the last 40 dictations: p50 147 → 92 ms, p90 350 → 176, worst 504 → 221 | same decode, earlier wake-up |
+| Refuse a cut only when louder speech follows (see [quiet takes](#quiet-takes-refuse-a-cut-only-when-louder-speech-follows)) | long bucket worst 9329 → 151 ms; 9 1/2 min take 6124 → 4 ms; 8 min take 2799 → 2 ms | WER identical on all three sets |
+
+## Quiet takes: refuse a cut only when louder speech follows
+
+The scoreboard's first real run found the worst number in the product: the long
+bucket (5+ minute takes) p50 167 ms but a worst case of 9329 ms. It is one
+9 1/2 minute recording, which reproduces at 6124 ms through the app's own
+dictation path (`--live`) and shows 6429 ms in the app's own history.
+
+That recording sits under the segmenter's absolute near-silence test the whole
+way (RMS 0.0027, peak 0.011, apart from one click). `nextCut` refuses a cut when
+the audio before it fails that test, and it has to: a quiet chunk sent to the
+transcriber alone comes back empty, so the segmenter keeps it attached to louder
+speech that follows. On a take recorded quietly from start to finish there is no
+louder speech to attach to, so every cut was refused: the live loop committed
+nothing after the first 28 s, the release had 536 s left, and it decoded that in
+15 s windows — 6103 ms of decode in one release, with no decode at all for the
+43 s before the key came up.
+
+The rule now asks the question it means: `cutDropsQuietSpeech` refuses a cut only
+when the audio before it is quiet next to absolute levels **and** the audio after
+it is not. On a loud take the first test already answers "not quiet", so every
+loud take decodes exactly as before; the scoreboard's owner-recording comparison
+is what proves it.
+
+| | before | after |
+|---|---|---|
+| scoreboard long bucket (5+ min, n=3) | p50 167, worst 9329 ms | p50 5, p95 151, worst 151 ms |
+| 9 1/2 min take, release to paste (`--live`) | 6124 ms (app: 6429) | 4 ms |
+| 8 min take, release to paste (`--live`) | 2799 ms (app) | 2 ms |
+| decode in one release, 9 1/2 min take | 6103 ms, 536 s of audio | none |
+| chunks cut on the 9 1/2 min take | 2 | 47 |
+| longest gap with no decode before release | 43448 ms | 5533 ms |
+
+The scoreboard's whole table after the change, same sample as the recorded
+baseline: short p50 84 / p95 219 / worst 248 ms (was 88 / 461 / 795), average
+p50 105 / 243 / 243 (was 100 / 247 / 247), long as above. WER unchanged on all
+three sets: test-clean 1.70, test-other 3.19, dictation 4.55.
+
+`swift run -c release whisp-tests` passes 497/497. The owner-recording row moved
+the other way: same-or-better 96.2% (was 100%) and 1 new dropped last word, on
+three takes of 17.3, 35.9 and 43.1 s that start with silence, where the new rule
+now cuts inside that silence instead of leaving it attached to the speech that
+follows. That row is noisy at n=78 — the same baseline code measured the same
+9 1/2 minute take at 9329, 4675 and 5981 ms in three runs, and one baseline run
+differed from the recorded baseline on a 5.5 s take that has no cuts to move —
+but the machine (five threads on one 8 GB M1) was too busy to get a clean
+same-code repeat, so this is unproven rather than cleared.
 
 ## Measured dead ends
 

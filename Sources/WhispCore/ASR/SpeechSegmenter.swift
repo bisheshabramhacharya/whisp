@@ -59,7 +59,7 @@ public enum SpeechSegmenter {
         }
         // A chunk the transcriber would drop as silence may still hold quiet speech;
         // keep it attached to what follows, as whole-clip decoding would.
-        if let best, !isNearSilent(Array(samples[..<(best * frame)])) { return best * frame }
+        if let best, !cutDropsQuietSpeech(samples, at: best * frame) { return best * frame }
 
         guard samples.count >= forceChunk else { return nil }
         // Quietest 100 ms window in the last 5 s.
@@ -74,7 +74,22 @@ public enum SpeechSegmenter {
             i += 1
         }
         let cut = (quietest + window / 2) * frame
-        return isNearSilent(Array(samples[..<cut])) ? nil : cut
+        return cutDropsQuietSpeech(samples, at: cut) ? nil : cut
+    }
+
+    /// Whether cutting `samples` at `cut` would lose words: the audio before the cut
+    /// is quiet next to absolute levels while what follows is louder, so the
+    /// transcriber drops the quiet part on its own and keeps it only when it decodes
+    /// together with what follows.
+    ///
+    /// False when the pending audio is quiet throughout. There is nothing louder to
+    /// attach to then, so cutting costs nothing — and never cutting is what makes a
+    /// release decode the whole take in 15 s windows: 6103 ms on a real 9 1/2 minute
+    /// recording whose level sits under the absolute test the whole way (6124 ms
+    /// release to paste, 43 s with no decode at all before the key came up).
+    static func cutDropsQuietSpeech(_ samples: [Float], at cut: Int) -> Bool {
+        guard cut > 0, cut < samples.count, isQuiet(samples[..<cut]) else { return false }
+        return !isQuiet(samples[cut...])
     }
 
     /// Whether `samples` (audio pending since the last cut) holds speech and ends in a
@@ -127,6 +142,12 @@ public enum SpeechSegmenter {
 
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
     public static func isNearSilent(_ samples: [Float], rmsThreshold: Float = 0.004) -> Bool {
+        isQuiet(samples[...], rmsThreshold: rmsThreshold)
+    }
+
+    /// The same test over a view of the audio, so a cut decision reads both sides of
+    /// a candidate cut without copying either.
+    private static func isQuiet(_ samples: ArraySlice<Float>, rmsThreshold: Float = 0.004) -> Bool {
         guard !samples.isEmpty else { return true }
         var rms: Float = 0
         var peak: Float = 0

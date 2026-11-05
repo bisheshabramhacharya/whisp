@@ -156,11 +156,23 @@ expect(SpeechSegmenter.nextCut(in: tone(3) + silence(0.6) + tone(1)).map(String.
 expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.5)).description, "true", "speech then pause")
 expect(SpeechSegmenter.endsInPause(tone(2) + silence(0.1)).description, "false", "pause too short")
 expect(SpeechSegmenter.endsInPause(silence(2)).description, "false", "no speech")
-expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4)).map(String.init) ?? "nil", "nil",
-       "keeps near-silent chunk attached")
+expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4, amplitude: 0.3))
+       .map(String.init) ?? "nil", "nil",
+       "keeps near-silent chunk attached to louder speech")
 expect(SpeechSegmenter.nextCut(in: tone(8)).map(String.init) ?? "nil", "nil", "no pause, below forceChunk")
 expect(SpeechSegmenter.nextCut(in: tone(15)) != nil ? "cut" : "nil", "cut", "forced cut")
 expect(SpeechSegmenter.plan(tone(5) + silence(0.6) + tone(5) + silence(0.6) + tone(5)).count.description, "2", "plan")
+
+// A take recorded under the absolute near-silence limits (RMS 0.0014 here) has
+// nothing louder to attach to, so there is nothing to lose by cutting. Refusing
+// every cut on one of these is what made a real 9 1/2 minute take decode whole at
+// release: 6103 ms, with no decode at all for the last 43 s of recording.
+expect(SpeechSegmenter.nextCut(in: tone(15, amplitude: 0.002)) != nil ? "cut" : "nil", "cut",
+       "quiet take gets its forced cut")
+expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4, amplitude: 0.002))
+       != nil ? "cut" : "nil", "cut", "quiet take cuts at a pause")
+expect(SpeechSegmenter.plan(tone(120, amplitude: 0.002)).count >= 3 ? "cuts" : "starved", "cuts",
+       "quiet take keeps cutting")
 
 // Long release tails are split to fit the largest encoder window instead of
 // loading a second model set (a 30-75 s stall when Core ML recompiled it).
