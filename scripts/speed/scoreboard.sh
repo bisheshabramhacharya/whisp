@@ -96,6 +96,10 @@ notify "building whisp-bench (release)"
 swift build -c release --product whisp-bench >"$TMP/build.log" 2>&1 || {
   tail -20 "$TMP/build.log" >&2; exit 2; }
 [ -x "$BENCH" ] || { notify "no $BENCH after build"; exit 2; }
+# The cache key is the built binary's hash, not the commit: the numbers belong
+# to the code that ran, so a commit that only touches scripts or docs keeps the
+# cache and a rebuilt engine invalidates it.
+BENCH_HASH="$(shasum -a 256 "$BENCH" | cut -c1-16)"
 
 # --- test sets (one time) ---------------------------------------------------
 if [ ! -d testdata/librispeech/LibriSpeech/test-clean ] ||
@@ -135,6 +139,7 @@ export WHISP_SB_THIS_IS_BASELINE="$RECORD"
 
 python3 "$ROOT/scripts/speed/scoreboard.py" init \
   --state "$STATE" --cache "$CACHE" --data "$DATA" --root "$ROOT" --started "$START_EPOCH" \
+  --bench-hash "$BENCH_HASH" \
   --sha "$SHA" --engine-sha "$ENGINE_SHA" --branch "$BRANCH" --dirty "$DIRTY" \
   --model "$MODEL" --chip "$CHIP" --mem-gb "$MEM_GB" --os "$OS_VER" \
   --engine "$ENGINE" --gap 1 \

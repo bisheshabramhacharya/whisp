@@ -130,9 +130,12 @@ def save_state(path, state):
 
 
 def build_dir(state):
-    """Cache directory for this build: sha, plus -dirty when the tree isn't clean."""
-    sha = state["build"]["sha"] + ("-dirty" if state["build"]["dirty"] else "")
-    return os.path.join(state["cache"], sha)
+    """Cache directory for this build: the built binary's hash.
+
+    Keyed on the binary rather than the commit, so a commit that only changes
+    scripts or docs reuses the measurements, and a rebuilt engine never does.
+    """
+    return os.path.join(state["cache"], state["build"]["bench"])
 
 
 def flags_tag(state):
@@ -167,6 +170,7 @@ def cmd_init(args):
             "engine": args["engine_sha"],
             "branch": args["branch"],
             "dirty": args["dirty"] == "1",
+            "bench": args["bench_hash"],
         },
         "machine": {
             "model": args["model"],
@@ -210,7 +214,7 @@ def baseline_ref(state):
     """
     build, tag = state["build"], flags_tag(state)
     if os.environ.get("WHISP_SB_THIS_IS_BASELINE") == "1":
-        return {"build_sha": build["sha"], "dirty": build["dirty"],
+        return {"bench": build["bench"], "build_sha": build["sha"],
                 "engine_sha": build["engine"], "flags": tag}
     path = os.environ.get("WHISP_SB_BASELINE_FILE") or ""
     recorded = read_json(path) if path else None
@@ -218,8 +222,8 @@ def baseline_ref(state):
         return {}
     recorded_build = recorded.get("build") or {}
     return {
+        "bench": recorded_build.get("bench"),
         "build_sha": recorded_build.get("sha"),
-        "dirty": bool(recorded_build.get("dirty")),
         "engine_sha": recorded_build.get("engine"),
         "flags": (recorded.get("engine") or {}).get("flags"),
     }
@@ -524,13 +528,11 @@ def speed_rows(state):
 def baseline_comparison(state):
     """Last word kept and word-loss count against the recorded baseline build."""
     baseline = state.get("baseline") or {}
-    base_build = baseline.get("build_sha")
     # Same measurement, later build, or the delta would compare unlike things.
-    if not base_build or baseline.get("flags") != flags_tag(state):
+    if not baseline.get("bench") or baseline.get("flags") != flags_tag(state):
         return None
     base_path = os.path.join(
-        state["cache"], base_build + ("-dirty" if baseline.get("dirty") else ""),
-        f"live-{baseline['flags']}.json")
+        state["cache"], baseline["bench"], f"live-{baseline['flags']}.json")
     base_cache = read_json(base_path)
     if not base_cache or not base_cache.get("files"):
         return None
@@ -667,6 +669,7 @@ def record_payload(state):
         "baseline": {
             "engine_sha": baseline.get("engine_sha") or state["build"]["engine"],
             "build_sha": baseline.get("build_sha") or state["build"]["sha"],
+            "bench": baseline.get("bench") or state["build"]["bench"],
             "flags": baseline.get("flags") or flags_tag(state),
         },
         "machine": state["machine"],
