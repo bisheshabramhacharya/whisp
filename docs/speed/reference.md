@@ -120,7 +120,10 @@ speech. Long takes are left to the reference row: one long take is 7 to 10
 minutes, so it would eat the whole budget on its own.
 
 The row prints as `reference set, whisper   [ref errs ~1 word in 8]`, next to
-the last-word gate, not instead of it. It samples 40 recordings by default (about
+the last-word gate, not instead of it. First real reading, `--quick` on this
+branch: reference set WER 8.06 (n=6), casual set 8.80 (n=7), with the older rows
+unmoved at LibriSpeech test-clean 2.21 and test-other 3.98. Six and seven files
+is a smoke test, not a measurement: the full run samples 40 and 16. It samples 40 recordings by default (about
 20 minutes of replay) and 6 under `--quick`, so the row never quietly turns the
 scoreboard into a marathon. The last-word gate and the per-bucket wait numbers
 are computed exactly as before, whether or not these variables are set.
