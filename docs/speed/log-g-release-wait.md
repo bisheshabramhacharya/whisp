@@ -37,9 +37,10 @@ and order:
 | idle over 300 ms | 78 ms | 6 / 288 ms | 371 ms |
 | every tick | 89 ms | 23 / 1096 ms | 1237 ms |
 
-At 24 takes this read as a clean no: the release decode was 77-88 ms in every
-setting with the encoder at 36-37 ms, so warming bought nothing. That sample was
-too small to see the tail. 33 sub-5 s takes is where the difference lives.
+At 24 takes this read as a clean no: p50 77-89 ms across the four settings in no
+useful order (the setting with the most warming was the worst of them), so
+warming looked worthless. That sample was too small to see the tail, and it did
+not break out the encoder. 33 sub-5 s takes is where the difference lives.
 
 **Doubled sample, 47 takes** (33 under 5 s, 14 at 4-8 s), same order, short
 group only (`--json` per take, so these are per-take medians, not bucket rows):
@@ -51,10 +52,21 @@ group only (`--json` per take, so these are per-take medians, not bucket rows):
 | idle over 300 ms | 74 ms | 101 ms | 5 of 33 | 36 ms | 37 ms | 5 / 247 ms |
 | every tick | 80 ms | 129 ms | 12 of 33 | 36 ms | 72 ms | 22 / 1009 ms |
 
-The 300 ms setting is the first one that changes the shape of the wait: the
-slow takes mostly stop happening (5 over a tenth of a second against 14), and
-the encoder stops spiking (p90 37 ms against 68 ms). The median encoder barely
-moves, 37 to 36, so the win is entirely in the tail.
+Start with the floor, because it decides how much of this is real. `off` and the
+stock 8 s default both fire zero wake-ups: they are the same configuration
+measured twice. They read 83 against 78 at 24 takes, 85 against 88 here, and 84
+against 72 in the reversed-order repeat below. That is 5 to 12 ms of drift on the
+median with nothing changed. The encoder shows it too: `off` pays 46 ms p50 in
+this table against 37 for the default, and with no wake-ups in either there is
+nothing but session warm-up to explain the difference, because `off` ran first.
+
+Against that floor, the 300 ms setting moves the median and changes the shape of
+the wait, and only the second part survives the noise. The median encoder barely moves, 37 to 36, and its p90 stops being a
+different animal: 37 ms against 68. The slow takes mostly stop happening, 5 over
+a tenth of a second against 14, and p90 falls from 132 to 101 on the wait. A
+14 ms shift in p50 measured on a machine that drifts 12 ms between identical
+settings is the weakest number in this file, and it is the one to distrust. The
+tail numbers are the ones that hold.
 
 **Repeat, 32 short takes, order reversed** (default, 300 ms, 300 ms, default), to
 test whether the third slot in the first pass explained it:
@@ -66,19 +78,21 @@ test whether the third slot in the first pass explained it:
 | 300 ms again | 68 ms | 64 ms | 94 ms | 35 ms | 5.5 / 233 ms | 335 ms |
 | default again | 72 ms | 77 ms | 130 ms | 37 ms | 0 / 0 ms | 86 ms |
 
-So it is the setting, not the run order. 300 ms wins in both adjacent pairs
-(84 to 68, 72 to 68), the two 300 ms runs agree with each other (68 and 68) while
-the two default runs do not (84 and 72), and the p90 belongs to the warm runs
-(94-99) and never to the cold ones (130-131). Per take, the spread across all
-four passes has a 39 ms median, which is why no single-take comparison proves
-anything and why the 24 take sample missed it.
+So it is the setting, not the run order, and the proof is the p90, not the
+median. The two identical default passes disagree by 12 ms on p50 (84 against
+72) and by 1 ms on p90 (131 against 130). The two 300 ms passes agree on both
+(68 and 68, 99 against 94). The p90 separates cold from warm by 30 ms while the
+machine's own p50 drift is 12 ms, so that is the number to build on. Per take,
+the spread across all four passes has a 39 ms median, which is why no
+single-take comparison proves anything and why the 24 take sample missed it.
 
 The cost is real too: 332-335 ms of dummy work per take against 86-109 ms, about
-three times the engine work, for a tenth of a second off the slow takes. Warming
-harder is not better. Every tick runs 22 wake-ups and 1,009 ms of dummy work per
-take and lands back at 80 ms p50 with the encoder tail intact (p90 72 ms),
-because the dummies queue ahead of the decode the release is waiting for. 300 ms
-idle is the setting that keeps the window warm without competing with it.
+three times the engine work, for 30 ms off the p90 and the takes over a tenth of
+a second cut from 14 of 33 to 5. Warming harder is not better. Every tick runs 22
+wake-ups and 1,009 ms of dummy work per take and lands back at 80 ms p50 with the
+encoder tail intact (p90 72 ms), because the dummies queue ahead of the decode
+the release is waiting for. 300 ms idle is the setting that keeps the window warm
+without competing with it.
 
 ## The gap to a bench decode is the live context, not the encoder
 
@@ -117,11 +131,10 @@ ms), and no setting of the prewarm threshold will.
 
 With the stock 8 s threshold, no wake-up fires for a take under about 5 s (0
 measured), so what the app does today is the "default" row: zero cost and the
-slower tail. Changing the threshold to 300 ms is a real trade (a tenth of a
-second off the slow short takes, three times the engine work, on a machine that
-a tenth of a second off the slow short takes, three times the engine work, a
-warmer machine all day) and it belongs with the threshold itself in BIS-18, not
-with this measurement branch. This branch ships the bench flags, the per-take
+slower tail. Changing the threshold to 300 ms is a real trade (30 ms off the p90,
+the slow takes mostly gone, three times the engine work, a warmer machine all
+day) and it belongs with the threshold itself in BIS-18, not with this
+measurement branch. This branch ships the bench flags, the per-take
 JSON and these notes. The default stays at 8 s.
 
 ## Weights cannot get smaller on this deployment target
