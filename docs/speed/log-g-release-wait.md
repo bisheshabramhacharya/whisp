@@ -127,6 +127,25 @@ That is the thing to chase in BIS-19, not the encoder's warmth. A warm window
 does not help it (the 300 ms setting above leaves the base encoder time at 35-36
 ms), and no setting of the prewarm threshold will.
 
+One more suspect, and it is this file's own harness: the waiting loop described
+in the next section. Until `--poll-ms` puts a number on it, treat the 22 ms as
+"the live context, harness included" rather than the app's alone.
+
+## A bench that polls the thing it is timing, on the same actor, measures itself
+
+The replay loop above waits for the pasted text by checking `controller.lastResult`
+every 1 ms, and it does that on the main actor, which is the same thread the
+release decode runs on. That is about 70 wake-ups inside a 70 ms decode, all of
+them competing with the decode they are waiting for. Any number this harness
+produces for the release decode carries an unknown share of its own checking
+loop, and the `--second-pass` figures above are measured with no such loop
+running, so part of the gap attributed to "what is still awake at release" may
+be the harness. `--poll-ms` changes the interval so the share can be measured:
+same takes at 1 ms and at 20 ms, and the delta is what the loop costs.
+
+The lesson is general and worth one line on its own: a benchmark that waits by
+polling, on the same actor as the code under test, is measuring itself.
+
 ## Nothing here changes the app
 
 With the stock 8 s threshold, no wake-up fires for a take under about 5 s (0
