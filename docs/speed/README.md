@@ -121,6 +121,28 @@ VM) but was not shipped, so there is no `split` engine to pass to `--engine`
 same weights either, because two pieces on any window cost more than one 15 s
 pass.
 
+### The 10 s bundle on the M1: faster, and it drops a last word
+
+Built on the Mini with `tools/convert/convert-short-window.py --windows 10` and
+the pinned NeMo commit, int8 quantized, then compiled with the CoreML framework
+(`MLModel.compileModel`) because `coremlcompiler` ships with a full Xcode this
+machine does not have. Twelve of the owner's recordings whose final speech run
+is 5 to 10 s, `--live`, engine `short`, both passes over the same clips:
+
+| | 15 s window | 10 s window |
+|---|---|---|
+| release to paste p50 | 223 ms | 158 ms |
+| release to paste worst | 285 ms | 276 ms |
+| release decode p50 | 200 ms | 158 ms |
+| clips word-identical | 11 of 12 | — |
+
+The one that differs is a 12.0 s recording whose tail is 6.4 s, and it loses its
+**last word**: kept on both 15 s runs, dropped on both 10 s runs, so it is the
+window and not run-to-run noise. The last word is the number this effort exists to
+protect, so the bundle stays unpublished and `middleBundle.sha256` stays empty.
+65 ms for a dropped last word on 1 of 12 clips is the same trade the per-piece
+silence gate offered, and it is refused for the same reason.
+
 `ShortWindowEngine` now also uses a 10 s encoder
 (`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
 the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
@@ -141,9 +163,10 @@ prints a system-wide `vm_stat` delta around model load (free, wired,
 anonymous, compressor). Compare that delta with the 10 s bundle installed and
 with it moved aside.
 
-The zip is not published yet, so `ShortWindowEngine.middleBundle.sha256` is
-empty and the app does not download the 10 s window; a bundle already on disk
-is used without a checksum. Follow-up: publish
+The zip is not published, so `ShortWindowEngine.middleBundle.sha256` is empty
+and the app does not download the 10 s window; a bundle already on disk is used
+without a checksum. It stayed unpublished after the M1 measurement above: it is
+faster on the 5 to 10 s bucket and it costs a last word. Follow-up: publish
 `parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on `models-v2` and paste
 its SHA-256 into `middleBundle` (see `tools/convert/RELEASE.md`). The number
 recorded for the drafted zip is
