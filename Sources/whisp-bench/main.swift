@@ -32,6 +32,7 @@ struct Options {
     var show = false
     var live = false
     var secondPass = false
+    var pollMs = 1
     var history: String?
     var idleCurve = false
     var pauses = false
@@ -67,6 +68,9 @@ func parseArgs() -> Options {
         case "--gap":
             i += 1
             if i < args.count, let g = Double(args[i]) { opts.gap = g }
+        case "--poll-ms":
+            i += 1
+            if i < args.count, let p = Int(args[i]) { opts.pollMs = max(1, p) }
         case "--ping":
             i += 1
             if i < args.count, let p = Double(args[i]) { opts.ping = p }
@@ -161,6 +165,9 @@ func printUsage() {
                        the mic at real speed, the key is released at its end, and the
                        app's own release→paste time is reported (--engine, default the
                        app's; --gap S between dictations, default 3)
+          --poll-ms N  with --live, how often the replay loop checks for the pasted
+                       text (default 1 ms, on the main actor). Raising it shows how
+                       much of a release decode the loop's own checking costs.
           --second-pass  with --live, decode the same audio once more on the bench's
                        own task right after the take, to tell a slow live context
                        from a slow engine (--json carries both)
@@ -582,7 +589,7 @@ if opts.live {
         try await runLive(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
                           paths: opts.files, gapSeconds: opts.gap > 0 ? opts.gap : 3,
                           historyPath: opts.history, json: opts.json,
-                          secondPass: opts.secondPass)
+                          secondPass: opts.secondPass, pollMs: opts.pollMs)
     } catch {
         print("live replay failed: \(error.localizedDescription)")
         exit(2)

@@ -199,7 +199,7 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 @MainActor
 func runLive(
     engineName: String, paths: [String], gapSeconds: Double, historyPath: String?,
-    json: Bool = false, secondPass: Bool = false
+    json: Bool = false, secondPass: Bool = false, pollMs: Int = 1
 ) async throws {
     let inner = ASREngine.make(named: engineName)
     let engine = TimedTranscriber(inner)
@@ -244,10 +244,13 @@ func runLive(
         try? await Task.sleep(nanoseconds: UInt64(samples.count) * 62_500)
         let releaseNs = DispatchTime.now().uptimeNanoseconds
         hotkey.onEvent?(.stop)
+        // The wait runs on the main actor, the same thread the release decode
+        // runs on, so `--poll-ms` is also a measurement of what a 1 ms check
+        // loop costs the thing it is checking for.
         var waitedMs = 0
         while controller.lastResult?.id == before, waitedMs < 120_000 {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-            waitedMs += 1
+            try? await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
+            waitedMs += pollMs
         }
         guard let entry = controller.lastResult, entry.id != before else {
             print("  \(id.prefix(8)): no result after 120 s")
