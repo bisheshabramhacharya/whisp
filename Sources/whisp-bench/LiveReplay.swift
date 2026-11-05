@@ -279,6 +279,9 @@ func runLive(
                 "bgWaitMs": row.backgroundWaitMs, "finalMs": row.finalDecodeMs,
                 "wakeups": row.wakeups, "wakeupMs": row.wakeupMs,
                 "chunks": row.chunkDecodes, "chunkMs": row.chunkMs,
+                // The release decode's own split, so an A/B can compare the
+                // encoder against the wait it produces instead of only totals.
+                "melMs": row.melMs, "encMs": row.encoderMs, "rnntMs": row.rnntMs,
                 "text": entry.cleaned,
                 // What cleanup produced, before formatting wrote the same words
                 // differently. The scoreboard compares it with `text` to prove a
