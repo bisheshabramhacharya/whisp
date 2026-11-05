@@ -177,7 +177,10 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 }
 
 @MainActor
-func runLive(engineName: String, paths: [String], gapSeconds: Double, historyPath: String?) async throws {
+func runLive(
+    engineName: String, paths: [String], gapSeconds: Double, historyPath: String?,
+    json: Bool = false
+) async throws {
     let inner = ASREngine.make(named: engineName)
     let engine = TimedTranscriber(inner)
     let stages = StageLog()
@@ -253,8 +256,21 @@ func runLive(engineName: String, paths: [String], gapSeconds: Double, historyPat
                      row.realMs.map { "\($0) ms" } ?? "—",
                      row.backgroundWaitMs, row.finalDecodeMs, row.finalDecodes,
                      window, row.melMs, row.encoderMs, row.rnntMs, row.idleBeforeMs))
+        if json {
+            // The pasted text is included so a scoreboard can compare words
+            // across builds; it stays on this machine, nothing uploads it.
+            var object: [String: Any] = [
+                "file": id, "sec": row.seconds, "latencyMs": row.latencyMs,
+                "bgWaitMs": row.backgroundWaitMs, "finalMs": row.finalDecodeMs,
+                "text": entry.cleaned,
+            ]
+            if let real = row.realMs { object["realMs"] = real }
+            emitJSON(object)
+        }
         try? await Task.sleep(nanoseconds: UInt64(gapSeconds * 1e9))
     }
+
+    if json { return }
 
     print("\nSummary (release→paste ms; 'real' = what the app measured when you dictated it)")
     let buckets: [(String, ClosedRange<Double>)] = [

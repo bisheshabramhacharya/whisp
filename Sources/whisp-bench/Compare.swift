@@ -75,6 +75,10 @@ public struct EngineStats: Sendable {
     public let agreement: Double
     /// Files where this engine's words differed from baseline's.
     public let disagreements: [String]
+    /// Per file, in input order: the first run's transcript (--json output).
+    public let texts: [String]
+    /// Per file, in input order: mean warm decode time in ms.
+    public let fileMs: [Double]
     /// Mean stage profile over <=15 s files (nil when the engine isn't profiled).
     public let meanProfile: DecodeProfile?
 
@@ -135,14 +139,17 @@ public struct CompareRunner {
         var idleTimes = engines.map { _ in [Double]() }
         var texts = engines.map { _ in [String]() }
         var profiles = engines.map { _ in [DecodeProfile]() }
+        var fileTimes = engines.map { _ in [Double](repeating: 0, count: files.count) }
 
         // Warm runs, interleaved engine-per-iteration.
         for iteration in 0..<runs {
             for (e, engine) in engines.enumerated() {
-                for f in files {
+                for (i, f) in files.enumerated() {
                     let t0 = DispatchTime.now().uptimeNanoseconds
                     let text = try await engine.t.transcribe(f.samples)
-                    times[e].append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+                    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+                    times[e].append(ms)
+                    fileTimes[e][i] += ms
                     if iteration == 0 { texts[e].append(text) }
                     if let p = engine.t as? ProfiledTranscriber, let prof = p.lastProfile {
                         profiles[e].append(prof)
@@ -188,7 +195,10 @@ public struct CompareRunner {
                 warm: times[e].sorted(), idleRewarm: idleTimes[e].sorted(),
                 wer: werN > 0 ? werSum / Double(werN) : 0,
                 agreement: e == 0 ? 1.0 : agreeSum / Double(max(files.count, 1)),
-                disagreements: disagreements, meanProfile: meanProfile))
+                disagreements: disagreements,
+                texts: texts[e],
+                fileMs: fileTimes[e].map { $0 / Double(max(runs, 1)) },
+                meanProfile: meanProfile))
         }
         return stats
     }

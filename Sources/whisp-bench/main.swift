@@ -35,6 +35,8 @@ struct Options {
     var idleCurve = false
     var pauses = false
     var switchTest = false
+    /// One `{...}` JSON line per file/per dictation, for scripts/speed/scoreboard.sh.
+    var json = false
 }
 
 func parseArgs() -> Options {
@@ -104,6 +106,8 @@ func parseArgs() -> Options {
             opts.pauses = true
         case "--switch-test":
             opts.switchTest = true
+        case "--json":
+            opts.json = true
         case "--history":
             i += 1
             if i < args.count { opts.history = args[i] }
@@ -160,6 +164,9 @@ func printUsage() {
                        shows how much slower a cold decode is (--engine as for --live)
           --pauses     per file, how many 100 ms ticks would start a decode-ahead, and
                        the noise floor vs speech level that decides it
+          --json       print one {...} JSON line per file (and per dictation with
+                       --live; per engine per file with --compare) so a script can
+                       read numbers instead of scraping the tables
           --switch-test SHORT LONG  alternate a clip that fits the 5 s encoder
                        with one longer than 5 s (10 s window if that bundle is installed,
                        otherwise 15 s); compares encoder time right after a window
@@ -357,6 +364,17 @@ func systemMemoryDeltaLine(_ before: SystemMemorySample, _ after: SystemMemorySa
 
 func formatMB(_ bytes: UInt64) -> String {
     String(format: "%.1f MB", Double(bytes) / 1_048_576)
+}
+
+// MARK: - Machine-readable output (--json)
+
+/// One-line JSON to stdout. Scoreboard consumers read only lines starting with
+/// `{`, so every human line above can stay exactly as it was.
+func emitJSON(_ object: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+        let line = String(data: data, encoding: .utf8)
+    else { return }
+    print(line)
 }
 
 // MARK: - WER (simple word-level Levenshtein on normalized words)
@@ -557,7 +575,7 @@ if opts.live {
     do {
         try await runLive(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
                           paths: opts.files, gapSeconds: opts.gap > 0 ? opts.gap : 3,
-                          historyPath: opts.history)
+                          historyPath: opts.history, json: opts.json)
     } catch {
         print("live replay failed: \(error.localizedDescription)")
         exit(2)
@@ -581,12 +599,12 @@ if opts.profile || opts.replay || opts.compare != nil {
         }
         if let compare = opts.compare {
             let names = compare.split(separator: ",").map { String($0) }
-            guard names.count >= 2 else {
-                print("--compare needs >= 2 engine names (e.g. parakeet,profiled)")
+            guard names.count >= 1 else {
+                print("--compare needs >= 1 engine name (e.g. parakeet,profiled); agreement needs 2")
                 exit(1)
             }
             try await runCompare(names: names, runs: opts.runs, idleSeconds: opts.idle,
-                                 files: files, show: opts.show)
+                                 files: files, show: opts.show, json: opts.json)
         }
     } catch {
         print("bench failed: \(error.localizedDescription)")
