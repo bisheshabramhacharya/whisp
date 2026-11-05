@@ -409,8 +409,12 @@ def cmd_init(args):
             "librispeech_test_other": int(args["cap_other"]),
             "dictation": int(args["cap_dictation"]),
             "casual": int(args["cap_casual"]),
+            "reference": int(args["cap_reference"]),
         },
         "casual_set": args.get("casual_set") or "",
+        # BIS-20: the agreed reference set, built by scripts/speed/reference.py.
+        # Opt-in, and never part of the last-word gate.
+        "reference_set": args.get("reference_set") or "",
         # Wall clock from the shell's first line, so run_seconds covers the
         # build, one-time test-set setup and every replay in between.
         "started": float(args["started"]) if args.get("started") else time.time(),
@@ -638,6 +642,8 @@ def corpus_dirs(state):
     }
     if state.get("casual_set"):
         dirs["casual"] = state["casual_set"]
+    if state.get("reference_set"):
+        dirs["reference"] = state["reference_set"]
     return dirs
 
 
@@ -836,6 +842,9 @@ def render(state, out=sys.stdout):
     print("", file=out)
     print("accuracy", file=out)
     rows = []
+    if state.get("reference_set"):
+        rows.append(("reference set, agreed", accuracy.get("reference"),
+                     "   [two models agree]"))
     if state.get("casual_set"):
         rows.append(("casual set, real refs", accuracy.get("casual"), ""))
     for corpus, label, note in (

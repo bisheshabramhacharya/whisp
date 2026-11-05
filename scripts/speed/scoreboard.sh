@@ -25,6 +25,9 @@
 #   WHISP_SCOREBOARD_ENGINE=short     engine under test (see `whisp-bench --help`)
 #   WHISP_CASUAL_SET=<dir>            real casual set with <file>.wav + <file>.txt;
 #                                     when set its WER prints above the stand-in row
+#   WHISP_REFERENCE=<dir>             set/<id>.wav symlinks + agreed <id>.txt from
+#                                     scripts/speed/reference.py; prints its own row,
+#                                     clearly marked, and changes no gate
 #
 # Sampling: each bucket replays recordings in a stable hash order until it has
 # spent its audio budget, so a full run stays under 45 minutes. The numbers
@@ -62,6 +65,10 @@ CACHE="${WHISP_SCOREBOARD_CACHE:-$HOME/.whisp-scoreboard-cache}"
 DATA="${WHISP_DATA:-$HOME/whisp-data}"
 ENGINE="${WHISP_SCOREBOARD_ENGINE:-short}"
 CASUAL="${WHISP_CASUAL_SET:-}"
+# BIS-20: reference text built by scripts/speed/reference.py, two independent
+# models, agreed recordings only. Opt-in, printed as its own row, and it never
+# feeds the last-word gate.
+REFERENCE="${WHISP_REFERENCE:-}"
 STATE="$TMP/state.json"
 OUTDIR="$ROOT/docs/speed/scoreboard"
 BENCH="$ROOT/.build/release/whisp-bench"
@@ -81,6 +88,7 @@ CAP_CLEAN=300
 CAP_OTHER=300
 CAP_DICTATION=150
 CAP_CASUAL=150
+CAP_REFERENCE=300
 
 # --quick exists to prove the pipeline after touching it: a few seconds of audio
 # per bucket. Never recorded, and its numbers are not the scoreboard.
@@ -147,7 +155,9 @@ python3 "$ROOT/scripts/speed/scoreboard.py" init \
   --min-short "$MIN_SHORT" --min-average "$MIN_AVERAGE" --min-long "$MIN_LONG" \
   --cap-clean "$CAP_CLEAN" --cap-other "$CAP_OTHER" --cap-dictation "$CAP_DICTATION" \
   --cap-casual "$CAP_CASUAL" \
-  --casual-set "$CASUAL"
+  --casual-set "$CASUAL" \
+  --cap-reference "$CAP_REFERENCE" \
+  --reference-set "$REFERENCE"
 
 # --- sample the owner's recordings ------------------------------------------
 python3 "$ROOT/scripts/speed/scoreboard.py" sample --state "$STATE" --sample "$TMP/sample.json"
