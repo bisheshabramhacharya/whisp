@@ -88,6 +88,37 @@ a locally built bundle into the FluidAudio model cache, which is the directory
 the engine scans, and `WHISP_MODEL_DIR` points the bench at another folder of
 the same files.
 
+## Scoreboard
+
+One command, on the Mini, prints the wait, the accuracy and the last-word
+delta for whatever the tree currently builds:
+
+```sh
+scripts/speed/scoreboard.sh            # measure and print
+scripts/speed/scoreboard.sh --record   # also write docs/speed/scoreboard/
+```
+
+Wait is key release to text appearing, measured by real-time replay of the
+owner's own recordings through the app's dictation path (`whisp-bench --live`),
+bucketed by how long the speech is: short 1-10 s, average 10-60 s, long 5+ min.
+Replay runs in real time, so the buckets are sampled to fit a 45 minute run;
+the rule and the sample size are printed with the table. Each bucket's p50 is
+checked against its target (38 / 40 / 46 ms) and every bucket against 100 ms.
+
+Accuracy is WER on LibriSpeech test-clean and test-other and on the `say`-made
+dictation set, which is labelled a casual stand-in: `WHISP_CASUAL_SET=<dir>`
+swaps in a real casual set (one `<file>.wav` plus `<file>.txt` per clip). The
+last-word gate compares each recording's text against the recorded baseline
+build: same or better means no word the baseline heard went missing, and a new
+dropped last word is a recording whose last word changed. Zero is the gate.
+
+A run takes the benchmark lock first, so nothing else on the Mini can be
+measuring at the same time. Per-file results are cached by build sha and engine
+flags under `~/.whisp-scoreboard-cache`, so a repeat run on the same build and
+sample is near instant; `--force` ignores the cache. `--record` writes
+`baseline-<engine sha>.json`, `latest.json` and `latest.md`. Only aggregates
+land there: no audio, no transcripts, no recording names, ever.
+
 ## Reproduce
 
 ```sh

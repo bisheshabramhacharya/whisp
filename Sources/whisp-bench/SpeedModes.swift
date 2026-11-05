@@ -244,7 +244,7 @@ func runReplay(
 /// Interleaved A/B over the file set.
 func runCompare(
     names: [String], runs: Int, idleSeconds: Double,
-    files: [LoadedFile], show: Bool
+    files: [LoadedFile], show: Bool, json: Bool = false
 ) async throws {
     var engines: [(name: String, t: Transcribing)] = []
     var histograms: [WindowHistogram?] = []
@@ -259,6 +259,22 @@ func runCompare(
     let inputs = files.map { (name: $0.name, samples: $0.samples, ref: $0.ref) }
     let stats = try await CompareRunner.run(
         engines: engines, files: inputs, runs: runs, idleSeconds: idleSeconds)
+
+    if json {
+        for (e, engine) in engines.enumerated() {
+            for (i, f) in files.enumerated() where i < stats[e].texts.count {
+                var object: [String: Any] = [
+                    "engine": engine.name,
+                    "file": f.name,
+                    "sec": Double(f.samples.count) / 16_000,
+                    "ms": stats[e].fileMs[i],
+                    "text": stats[e].texts[i],
+                ]
+                if let ref = f.ref { object["ref"] = ref }
+                emitJSON(object)
+            }
+        }
+    }
 
     print("")
     print(String(format: "Compare (%d files, %d runs/file interleaved, idle %.0f s + rewarm):",
