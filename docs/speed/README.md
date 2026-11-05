@@ -131,24 +131,29 @@ a second.
 
 ### Which shape this was, and what it does to the design note
 
-The first shape measured here is the shape `design-tail-under-2s.md` proposes:
-hold back 1.0 s, commit the rest every 1.0 s at the quietest point, re-decode
-0.6 s behind each cut, and drop the repeated words at the join. That is the one
-that gave 5 distinct transcripts out of 10 phases, worst case 6 words lost and 3
-gained, so the design note's cadence cannot be built as written. What survives
-from that note is its cost model (one 5 s pass about 37 ms, one 15 s pass about
-160 ms) and its rule that a release never accepts an in-flight decode as final
-text. What does not survive is the cadence that was supposed to put a release
-under a second.
+Three shapes get talked about as one. Two were built and measured, and the one
+that was measured first is the one `design-tail-under-2s.md` proposes.
+
+- **Commit at the quietest point inside a 1 s bound, 0.6 s of audio re-decoded
+  behind each cut, repeated words dropped at the join.** This is the design
+  note's cadence, built as written, and it is the 5 distinct transcripts out of
+  10 phases with a worst case of 6 words lost and 3 gained. The note's plan is
+  therefore dead as written, not an untested proposal.
+- **Cut only where a quiet 100 ms window exists, allowing the tail to grow to a
+  4 s cap before forcing a cut, overlap and join unchanged.** 16 of 20 phases
+  identical, and the four that differ include two dropped words. It inherits the
+  same failure, less often, because the cut still lands inside speech whenever
+  the cap is reached.
+- **The shape nobody built:** cut only at a real pause and let the tail be as
+  long as it is. That is what ships today, and it is the 19 of 20.
 
 The count against main is 4 differing runs of 20 against 1 of 20, which on its own
 is p about 0.34 and proves nothing. The argument does not rest on it: it rests on
 the class of failure, two runs that dropped a word against one substitution on
-main, and a dropped word is the outcome this effort refuses. It is also worth
-separating two questions that look alike. Waiting for a pause and eating a long
-tail costs 160 ms and no words, which is what ships. Cutting on a cadence to keep
-the tail short is a different trade, and on this model it is the one that loses
-words.
+main, and a dropped word is the outcome this effort refuses. It also separates two
+questions that look alike: waiting for a pause and eating a long tail costs 160 ms
+and no words, while cutting on a cadence to keep the tail short is a different
+trade, and on this model it is the one that loses words.
 
 What ships instead is what ships today: cut at pauses, forced cut at 14 s, release
 decodes up to one 15 s window. The long bucket's 208 ms worst case is not made
