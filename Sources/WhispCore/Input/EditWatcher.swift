@@ -242,16 +242,27 @@ public final class EditWatcher: CorrectionWatching {
             span.element, kAXStringForRangeParameterizedAttribute as CFString,
             param, &value
         ) == .success, let window = value as? String {
-            return window
+            return windowText(ranged: window, whole: nil, location: location, length: length)
         }
         // Some editors refuse the parameterized read but still publish the whole
         // value. Slice that the same way, or a correction made in those apps is
         // silently never reviewed.
         var wholeValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(
+        let whole = AXUIElementCopyAttributeValue(
             span.element, kAXValueAttribute as CFString, &wholeValue
-        ) == .success, let text = wholeValue as? String else { return nil }
-        return slice(text, location: location, length: length)
+        ) == .success ? wholeValue as? String : nil
+        return windowText(ranged: nil, whole: whole, location: location, length: length)
+    }
+
+    /// The text to review: the editor's ranged answer when it gave one, else the
+    /// same span taken from its whole value. Needs no selected range, only the
+    /// location and length recorded at paste time.
+    public nonisolated static func windowText(
+        ranged: String?, whole: String?, location: Int, length: Int
+    ) -> String? {
+        if let ranged { return ranged }
+        guard let whole else { return nil }
+        return slice(whole, location: location, length: length)
     }
 
     /// `location ..< location+length` of `text` in UTF-16 units, clamped to its

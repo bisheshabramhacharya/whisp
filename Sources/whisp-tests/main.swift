@@ -810,19 +810,42 @@ do {
 // The data folder the app reads must be the one the owner edits: the first
 // installs lived in ~/whisp-data, and a double-clicked app has no environment
 // to say so.
+// Decided against real folders, because the rule asks the filesystem.
 do {
-    let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("whisp-home-\(UUID().uuidString)",
+                                                            isDirectory: true)
     let legacy = home.appendingPathComponent("whisp-data", isDirectory: true)
     let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
-    expect(AppPaths.chooseRoot(override: "/tmp/x", legacy: legacy, legacyExists: true,
-                               appSupport: support).path,
-           "/tmp/x", "WHISP_DATA_DIR wins over an existing first-install folder")
-    expect(AppPaths.chooseRoot(override: "", legacy: legacy, legacyExists: true,
-                               appSupport: support).path,
-           legacy.path, "an existing first-install folder is the data root")
-    expect(AppPaths.chooseRoot(override: nil, legacy: legacy, legacyExists: false,
-                               appSupport: support).path,
-           support.appendingPathComponent("Whisp").path, "a fresh install uses Application Support")
+    let firstInstall = support.appendingPathComponent("Whisp", isDirectory: true)
+    defer { try? fm.removeItem(at: home) }
+    func choose(_ override: String? = nil) -> URL {
+        var isDirectory: ObjCBool = false
+        let exists = fm.fileExists(atPath: legacy.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+        return AppPaths.chooseRoot(override: override, legacy: legacy, legacyExists: exists,
+                                   appSupport: support)
+    }
+    expect(choose().path, firstInstall.path, "no ~/whisp-data: a fresh install uses Application Support")
+    expect(choose("/tmp/x").path, "/tmp/x", "WHISP_DATA_DIR wins over everything")
+    expect(choose("").path, firstInstall.path, "an empty WHISP_DATA_DIR is not an override")
+    try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+    expect(choose().path, legacy.path, "an empty ~/whisp-data is still the data root")
+    try #"{"terms":["Vinted"],"replacements":[]}"#.write(
+        to: legacy.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "~/whisp-data holding a dictionary is the data root")
+    try fm.createDirectory(at: firstInstall, withIntermediateDirectories: true)
+    try #"{"terms":["Sol"],"replacements":[]}"#.write(
+        to: firstInstall.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "both folders present: the owner's data wins")
+    // The rule reads no file, so an unreadable dictionary inside must not move
+    // the root, and opening it must not take the reader down with it.
+    try "not json {{{".write(to: legacy.appendingPathComponent("dictionary.json"),
+                             atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "an unreadable dictionary inside does not move the root")
+    expect(PersonalDictionary(fileURL: legacy.appendingPathComponent("dictionary.json"))
+            .apply("We sell on vinted."),
+           "We sell on vinted.", "an unreadable dictionary applies nothing and does not crash")
 }
 
 // MARK: - A2 Reliability
@@ -1667,6 +1690,18 @@ do {
            "fallback window slice past the end reads nothing")
     expect(EditWatcher.slice("éclair 🤖 done", location: 10, length: 4) ?? "nil", "done",
            "fallback slice counts UTF-16 units like the AX range")
+    // The fallback as one function: the ranged read wins when the editor gives
+    // one, else the same span of its whole value. It takes no selected range,
+    // only the location and length recorded at paste time, which is what keeps
+    // review working in an editor that publishes a value and no selection.
+    expect(EditWatcher.windowText(ranged: "cde", whole: "ignored", location: 2, length: 3) ?? "nil",
+           "cde", "ranged read wins over the whole value")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 2, length: 3) ?? "nil",
+           "cde", "whole value and no selected range falls back to the slice")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 99, length: 3) == nil
+             ? "nil" : "text", "nil", "whole value with the cursor past its end reads nothing")
+    expect(EditWatcher.windowText(ranged: nil, whole: nil, location: 0, length: 3) == nil
+             ? "nil" : "text", "nil", "neither answer reads nothing and does not crash")
 }
 
 // Apply path: pending file + dictionary.json in a temp dir.
