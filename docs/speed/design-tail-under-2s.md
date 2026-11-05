@@ -174,7 +174,7 @@ Under the design neither fires: pending never exceeds `heldBack` plus one tick,
 so a 90 s no-pause take has the same release as a 5 s one, ~38 ms, and the cost
 moves to ~90 seams. Both backstops keep their tests and gain one where ticks stop
 being served, so they are exercised under the new cadence instead of only in
-theory. The piece gate is also being fixed separately (PR 65 skipped a quiet
+theory. The piece gate is also being fixed separately (PR #65 skipped a quiet
 piece that held a take's last five words); a starved tick still runs that path,
 so it has to be right regardless of the cadence.
 
