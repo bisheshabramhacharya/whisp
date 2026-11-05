@@ -163,16 +163,17 @@ expect(SpeechSegmenter.nextCut(in: tone(8)).map(String.init) ?? "nil", "nil", "n
 expect(SpeechSegmenter.nextCut(in: tone(15)) != nil ? "cut" : "nil", "cut", "forced cut")
 expect(SpeechSegmenter.plan(tone(5) + silence(0.6) + tone(5) + silence(0.6) + tone(5)).count.description, "2", "plan")
 
-// A take recorded under the absolute near-silence limits (RMS 0.0014 here) has
-// nothing louder to attach to, so there is nothing to lose by cutting. Refusing
-// every cut on one of these is what made a real 9 1/2 minute take decode whole at
-// release: 6103 ms, with no decode at all for the last 43 s of recording.
-expect(SpeechSegmenter.nextCut(in: tone(15, amplitude: 0.002)) != nil ? "cut" : "nil", "cut",
-       "quiet take gets its forced cut")
-expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(4, amplitude: 0.002))
-       != nil ? "cut" : "nil", "cut", "quiet take cuts at a pause")
-expect(SpeechSegmenter.plan(tone(120, amplitude: 0.002)).count >= 3 ? "cuts" : "starved", "cuts",
-       "quiet take keeps cutting")
+// A quiet chunk stays attached while the pending span is short — that is what keeps
+// quietly recorded words (under the absolute near-silence limits) alive.
+expect(SpeechSegmenter.nextCut(in: tone(15, amplitude: 0.002)).map(String.init) ?? "nil", "nil",
+       "quiet chunk stays attached below the limit")
+// Past a minute of uncut audio the guard gives way: leaving it pending is what a
+// release then decodes in 15 s windows. One real 9 1/2 minute take never cut at all,
+// so its release decoded 536 s and took 6103 ms.
+expect(SpeechSegmenter.nextCut(in: tone(70, amplitude: 0.002)) != nil ? "cut" : "nil", "cut",
+       "a minute of quiet pending is cut anyway")
+expect(SpeechSegmenter.nextCut(in: tone(4, amplitude: 0.002) + silence(0.6) + tone(58, amplitude: 0.3))
+       != nil ? "cut" : "nil", "cut", "a minute of pending cuts even next to loud speech")
 
 // Long release tails are split to fit the largest encoder window instead of
 // loading a second model set (a 30-75 s stall when Core ML recompiled it).

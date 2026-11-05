@@ -77,19 +77,25 @@ public enum SpeechSegmenter {
         return cutDropsQuietSpeech(samples, at: cut) ? nil : cut
     }
 
+    /// Never leave more than a minute of audio pending. A release past it decodes the
+    /// whole span in 15 s windows, one window per 15 s of audio: that is how one real
+    /// 9 1/2 minute take reached 6103 ms of decode in a single release, 6124 ms release
+    /// to paste, with no decode at all for the 43 s before the key came up.
+    static let pendingCutLimit = 60 * 16_000
+
     /// Whether cutting `samples` at `cut` would lose words: the audio before the cut
-    /// is quiet next to absolute levels while what follows is louder, so the
-    /// transcriber drops the quiet part on its own and keeps it only when it decodes
-    /// together with what follows.
+    /// is quiet next to absolute levels, so the transcriber drops it on its own and
+    /// keeps it only when it decodes together with what follows. Keeping a quiet chunk
+    /// attached is what makes quietly recorded words survive, and it is right while the
+    /// pending span is short.
     ///
-    /// False when the pending audio is quiet throughout. There is nothing louder to
-    /// attach to then, so cutting costs nothing — and never cutting is what makes a
-    /// release decode the whole take in 15 s windows: 6103 ms on a real 9 1/2 minute
-    /// recording whose level sits under the absolute test the whole way (6124 ms
-    /// release to paste, 43 s with no decode at all before the key came up).
+    /// Past `pendingCutLimit` the answer is no: leaving it pending is what makes a
+    /// release decode minutes of audio in 15 s windows (one real 9 1/2 minute take:
+    /// 6103 ms of decode in a single release, 6124 ms release to paste, no decode at
+    /// all for the 43 s before the key came up).
     static func cutDropsQuietSpeech(_ samples: [Float], at cut: Int) -> Bool {
-        guard cut > 0, cut < samples.count, isQuiet(samples[..<cut]) else { return false }
-        return !isQuiet(samples[cut...])
+        guard samples.count < pendingCutLimit, cut > 0, cut < samples.count else { return false }
+        return isQuiet(samples[..<cut])
     }
 
     /// Whether `samples` (audio pending since the last cut) holds speech and ends in a
