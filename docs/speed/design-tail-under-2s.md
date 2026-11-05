@@ -207,6 +207,40 @@ dropped last words on the owner's recordings.
    today. Check it does not show up as a slower release anywhere (the 8 GB box
    has form here).
 
+## Status: this design was built, measured, and it failed its own gate
+
+It is not a proposal. Both halves of it were implemented on the M1, run through
+the real `DictationController` path with `--live`, and judged by the cut-phase
+sweep this note asked for. The cadence as written here (hold back 1.0 s, commit
+at the quietest point inside that bound, re-decode 0.6 s behind each cut, drop the
+repeated words at the join) gave **5 distinct transcripts out of 10 phase shifts**
+of the same audio, worst case 6 words lost and 3 gained. Main's own build holds
+19 of 20 phases.
+
+A second shape, built after that one, cuts only where a quiet 100 ms window exists
+and lets the tail grow to a 4 s cap before forcing a cut. It does much better, 16
+of 20 phases identical, and it still drops a word in two of them, so it inherits
+the same failure less often: whenever the cap is reached the cut still lands
+inside speech.
+
+What that leaves of this note:
+
+- **Stands.** The cost model, which is measured and independent of any cut policy:
+  one 5 s window pass is about 37 ms at 1 s of audio, one 15 s window pass is about
+  160 ms, and a release cannot decode more than a few seconds and stay under
+  100 ms.
+- **Stands.** The rule that a release never accepts an in-flight decode as final
+  text, and the seam rules themselves: a seam may double a word, never delete one.
+- **Dead.** The held-back cadence, and with it the promise of a 1 s release tail.
+  A cut inside speech hands each half of a word to a different decode and the
+  model reads the halves differently, so the failure is upstream of the join and
+  no join rule can repair it. Nothing in this note reached that conclusion by
+  argument; the phase sweep did.
+
+What ships instead is the policy already in main: cut at pauses, forced cut at
+14 s, and a release that decodes up to one 15 s window. The numbers are in
+[docs/speed/README.md](README.md) under "Committing while you talk".
+
 ## What this design does not do
 
 It does not make the model cheaper. It moves work from release to during-speech,
