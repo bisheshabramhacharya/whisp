@@ -175,6 +175,15 @@ extension ShortWindowEngine {
         }
     }
 
+    /// Whether a piece of a buffer longer than every window is worth decoding. The
+    /// same gate `transcribe` applies to a whole buffer, applied per piece: one click
+    /// anywhere lifts a long tail's peak past `isNearSilent`, so a 536 s tail of near
+    /// silence used to decode window by window (976 ms on one real take) when 35 of
+    /// its 36 pieces hold nothing audible.
+    public static func pieceNeedsDecoding(_ piece: [Float]) -> Bool {
+        !SpeechSegmenter.isNearSilent(piece)
+    }
+
     /// Every usable encoder bundle in `dir`: the stock 15 s offline encoder
     /// (int8 preferred, fp16 accepted) plus any
     /// `parakeet_unified_encoder_w{ms}[_int8]` export, shortest first.
@@ -406,6 +415,7 @@ extension ShortWindowEngine {
             if let largest = variants.last {
                 var parts: [String] = []
                 for piece in SpeechSegmenter.split(samples, maxSamples: largest.windowSamples) {
+                    guard ShortWindowEngine.pieceNeedsDecoding(piece) else { continue }
                     parts.append(try transcribeWindow(piece, variant: variant(for: piece.count) ?? largest))
                 }
                 return SpeechSegmenter.join(parts)

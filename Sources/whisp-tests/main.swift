@@ -188,6 +188,13 @@ expect(abs(pieces[0].count - 12 * 16_000 - 3_200) <= 3_200 ? "in pause" : "at \(
 let pauseless = SpeechSegmenter.split(tone(40), maxSamples: window15)
 expect(pauseless.count >= 3 && pauseless.allSatisfy { $0.count <= window15 } ? "fits" : "\(pauseless.map(\.count))",
        "fits", "pause-free speech still splits")
+// Pieces of a buffer longer than every encoder window: the whole-buffer silence gate
+// can't catch a silent piece (one click anywhere lifts the whole buffer's peak), so a
+// 536 s tail of near-silence decoded window by window. Gate each piece instead.
+expect(ShortWindowEngine.pieceNeedsDecoding(silence(12)).description, "false", "silent piece is skipped")
+expect(ShortWindowEngine.pieceNeedsDecoding(tone(12)).description, "true", "speech piece still decodes")
+expect(ShortWindowEngine.pieceNeedsDecoding(silence(1) + tone(0.2, amplitude: 0.02)).description, "true",
+       "a quiet word in an otherwise silent piece still decodes")
 expect(SpeechSegmenter.join(["I went to", "The store and then.", "The end."]), "I went to the store and then. The end.")
 expect(SpeechSegmenter.join(["Hello", "", "Bishesha said hi."]), "Hello Bishesha said hi.")
 expect(SpeechSegmenter.join(["It stops.", "changing words."]), "It stops changing words.", "seam period dropped")
