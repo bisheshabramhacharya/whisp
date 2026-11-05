@@ -86,6 +86,8 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
         "moo", "woof", "meow", "vroom", "bam", "pow", "dee", "dum", "poo", "wee",
         "si", "oui", "ja", "da", "ma", "pa", "oink", "buzz", "hiss", "tweet",
         "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
+        // "dot dot dot" is an ellipsis someone said out loud, and a dot in a path.
+        "dot",
     ]
 
     /// Codes and counts ("4", "404", "3.14"), which people repeat on purpose.
@@ -241,7 +243,7 @@ public final class FillerCleaner: TextCleaning, @unchecked Sendable {
 // MARK: - Token
 
 /// A whitespace-delimited word split into leading punctuation, core, and trailing punctuation.
-private struct Token {
+struct Token {
     var leading: String
     var core: String {
         didSet { word = core.lowercased() }

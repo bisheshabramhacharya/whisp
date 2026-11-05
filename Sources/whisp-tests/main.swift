@@ -71,6 +71,7 @@ let cases: [(String, String)] = [
     ("She had had enough.", "She had had enough."),
     ("No no, that's wrong.", "No no, that's wrong."),
     ("It was very very good.", "It was very very good."),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped."),
     ("Go. Go.", "Go. Go."),
     // Restarted phrases
     ("Go to the go to desktop folder.", "Go to desktop folder."),
@@ -107,6 +108,159 @@ let cases: [(String, String)] = [
 ]
 for (input, output) in cases {
     expect(cleaner.clean(input), output, "clean(\"\(input)\")")
+}
+
+// MARK: - TextFormatter
+//
+// Fixed rules, no model: the same words, written the way he would write them.
+// Each case below is one rule; "must not fire" cases pin what has to be left alone.
+
+let formatter = TextFormatter()
+let formatCases: [(String, String, String)] = [
+    // Numbers twenty and up are written in digits; anything smaller stays a word.
+    ("Send twenty five dollars today.", "Send $25 today.", "number and money"),
+    ("Two hundred fifty units shipped.", "250 units shipped.", "hundreds"),
+    ("We need one hundred and five of them.", "We need 105 of them.", "and inside a number"),
+    ("It costs fifty bucks.", "It costs $50.", "slang money"),
+    ("That is twenty five percent off.", "That is 25% off.", "percentage"),
+    ("Wait twenty minutes.", "Wait 20 minutes.", "tens alone"),
+    ("Three hundred thousand records.", "300000 records.", "thousand"),
+    ("The twenty fifth of May.", "The 25th of May.", "ordinal"),
+    ("I have five apples.", "I have five apples.", "must not fire: small count"),
+    ("One thing at a time.", "One thing at a time.", "must not fire: one thing"),
+    ("I have told you a hundred times.", "I have told you a hundred times.", "must not fire: a hundred times"),
+    ("It costs five dollars.", "It costs five dollars.", "must not fire: small money stays words"),
+    ("The five of us are here.", "The five of us are here.", "must not fire: five of us"),
+    // A year or a price said the way people say it is not one number: half a
+    // reading would write a wrong number, so all of it stays words.
+    ("We met in twenty nineteen.", "We met in twenty nineteen.", "must not fire: spoken year"),
+    ("I said twenty ten.", "I said twenty ten.", "must not fire: spoken year"),
+    ("Twenty twelve was a good year.", "Twenty twelve was a good year.", "must not fire: spoken year"),
+    ("In twenty twenty four we shipped it.", "In twenty twenty four we shipped it.",
+     "must not fire: spoken year"),
+    ("Flight twenty five twenty.", "Flight twenty five twenty.", "must not fire: number read in pairs"),
+    ("That costs two fifty.", "That costs two fifty.", "must not fire: price read in pairs"),
+    ("Three ninety nine for the shirt.", "Three ninety nine for the shirt.",
+     "must not fire: price read in pairs"),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped.", "must not fire: spoken ellipsis"),
+    // Spoken clock times, only after a time word and only with a minute.
+    ("Meet me at five thirty.", "Meet me at 5:30.", "clock time"),
+    ("The call is at ten fifteen tomorrow.", "The call is at 10:15 tomorrow.", "clock time, teens"),
+    ("Let us meet at five oh five.", "Let us meet at 5:05.", "clock time, leading zero"),
+    ("Meet me at five.", "Meet me at five.", "must not fire: bare hour"),
+    ("At one point we agreed.", "At one point we agreed.", "must not fire: at one point"),
+    // Spoken file paths.
+    ("Open src slash main dot swift.", "Open src/main.swift.", "path"),
+    ("Open src slash components.", "Open src/components.", "single slash"),
+    ("Go to www dot example dot com.", "Go to www.example.com.", "web address"),
+    ("Dot env is the config file.", ".env is the config file.", "dot file at a sentence start"),
+    ("Edit dot env first.", "Edit dot env first.", "must not fire: one spoken dot alone"),
+    ("Check the package dot json file.", "Check the package dot json file.",
+     "must not fire: one spoken dot alone"),
+    ("We slash prices today.", "We slash prices today.", "must not fire: slash as a verb"),
+    ("We slash prices slash costs today.", "We slash prices slash costs today.",
+     "must not fire: two verbs, not a path"),
+    ("Put a dot of paint on it.", "Put a dot of paint on it.", "must not fire: a dot of paint"),
+    // Sentences: capital, closing stop, question mark, opener comma.
+    ("we should ship it", "We should ship it.", "closing stop and capital"),
+    ("is it working", "Is it working?", "question"),
+    ("do you want coffee", "Do you want coffee?", "question"),
+    ("where is the file", "Where is the file?", "question with wh-"),
+    ("it's fine, right.", "It's fine, right?", "tag question"),
+    ("what is done is done.", "What is done is done.", "must not fire: not a question"),
+    ("do not do that.", "Do not do that.", "must not fire: not a question"),
+    ("yes I think so.", "Yes, I think so.", "opener comma"),
+    ("no it isn't.", "No, it isn't.", "opener comma"),
+    ("okay let's go.", "Okay, let's go.", "opener comma"),
+    ("no no, that's wrong.", "No no, that's wrong.", "must not fire: doubled no"),
+    ("so we went home.", "So we went home.", "must not fire: no comma after so"),
+    ("we ship today. then we rest.", "We ship today. Then we rest.", "second sentence"),
+]
+for (input, expected, rule) in formatCases {
+    expect(formatter.format(input), expected, "format(\(input)) - \(rule)")
+}
+
+// A formatting pass may rewrite how a word is written, never drop one. The only
+// words it may remove are a number's money or percentage word, a spoken path
+// separator, and the "and" inside a spelled number.
+let absorbedWords: Set<String> = [
+    "dollars", "dollar", "bucks", "buck", "cents", "cent", "percent", "per", "slash",
+    "dot", "underscore", "backslash", "forward", "and",
+]
+
+// Spelled numbers become digits, so their words are allowed to disappear; every
+// other word has to survive.
+let numberWords: Set<String> = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty",
+    "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion", "oh",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+    "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth",
+    "seventeenth", "eighteenth", "nineteenth", "twentieth", "thirtieth", "fortieth",
+    "fiftieth", "sixtieth", "seventieth", "eightieth", "ninetieth", "hundredth",
+    "thousandth", "millionth",
+]
+
+func testWords(_ text: String) -> [String] {
+    var out: [String] = []
+    var current = ""
+    for ch in text.lowercased() {
+        if ch.isLetter || ch.isNumber {
+            current.append(ch)
+        } else if !current.isEmpty {
+            out.append(current)
+            current = ""
+        }
+    }
+    if !current.isEmpty { out.append(current) }
+    return out
+}
+
+for (input, _, rule) in formatCases {
+    // The real output, not the table's expectation: a wrong value written in digits
+    // is caught by the equality check above, and this one is for a lost word.
+    let actual = formatter.format(input)
+    var have: [String: Int] = [:]
+    for word in testWords(actual) { have[word, default: 0] += 1 }
+    for word in testWords(input) {
+        if word.contains(where: \.isNumber) || absorbedWords.contains(word) { continue }
+        if numberWords.contains(word) { continue }
+        if let count = have[word], count > 0 {
+            have[word] = count - 1
+        } else {
+            failures += 1
+            print("FAIL format lost a word: \(word) in \(rule): \(input) -> \(actual)")
+        }
+    }
+}
+
+// Real takes in his fast, casual style, through the whole pipeline in order:
+// clean first, then format. Printed so the before and after can be read side by side.
+let pipelineCases: [(String, String)] = [
+    ("um so I I was thinking we should, like, ship it today",
+     "So I was thinking we should ship it today."),
+    ("the the build takes twenty five minutes and it's, uh, at five thirty",
+     "The build takes 25 minutes and it's at 5:30."),
+    ("open src slash main dot swift and change the timeout to twenty five percent",
+     "Open src/main.swift and change the timeout to 25%."),
+    ("it costs two hundred fifty dollars, right",
+     "It costs $250, right?"),
+    ("is it working yet or do we need, you know, to restart it",
+     "Is it working yet or do we need to restart it?"),
+]
+print("before and after, fast casual dictation:")
+for (raw, expected) in pipelineCases {
+    let after = formatter.format(cleaner.clean(raw))
+    print("  before: \(raw)")
+    print("  after:  \(after)")
+    expect(after, expected, "pipeline(clean then format) \(raw)")
+}
+
+// Formatting twice must give the same text: the app may clean a take it already
+// formatted when a recovered take is re-read.
+for (_, expected, _) in formatCases {
+    expect(formatter.format(expected), expected, "format is idempotent: \(expected)")
 }
 
 // MARK: - PersonalDictionary
@@ -2198,6 +2352,33 @@ for _ in 0..<50 { _ = dictCleaner.clean(long) }
 let perCallMs = Date().timeIntervalSince(t0) * 1000 / 50
 print(String(format: "clean() on %d chars: %.2f ms", long.count, perCallMs))
 if perCallMs > 20 { failures += 1; print("FAIL clean() too slow") }
+
+// The format step's budget is 5 ms for a long take: five minutes of dictation is
+// about 750 words, so measure on more than that, including the parts that make the
+// rules work hardest (numbers, spoken paths, sentence ends).
+let longDictation = String(
+    repeating: "um so I I was thinking we should, like, ship the the build to src slash main dot swift at five thirty and it costs twenty five dollars. ",
+    count: 32)
+let longWords = longDictation.split(whereSeparator: \.isWhitespace).count
+// One take, both text steps, so the numbers line up: clean alone is where the
+// text step stood before the formatter existed, clean+format is where it stands
+// now, and format alone is what the new step costs.
+let t1 = Date()
+for _ in 0..<50 { _ = dictCleaner.clean(longDictation) }
+let beforeMs = Date().timeIntervalSince(t1) * 1000 / 50
+let t2 = Date()
+for _ in 0..<50 { _ = formatter.format(dictCleaner.clean(longDictation)) }
+let afterMs = Date().timeIntervalSince(t2) * 1000 / 50
+let longCleaned = dictCleaner.clean(longDictation)
+let t3 = Date()
+for _ in 0..<50 { _ = formatter.format(longCleaned) }
+let perFormatMs = Date().timeIntervalSince(t3) * 1000 / 50
+print(String(format: "text step on %d words / %d chars (%.0f s of speech): clean %.3f ms -> clean+format %.3f ms (format %.3f ms)",
+             longWords, longDictation.count, Double(longWords) / 2.5, beforeMs, afterMs, perFormatMs))
+if perFormatMs > 5 {
+    failures += 1
+    print("FAIL format() over the 5 ms budget")
+}
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
