@@ -22,11 +22,16 @@ Underneath those flags, the two engines are a median 13.6% of words apart
 (p25 9.5%, p75 19.7%, p90 30.0%). Real dictation has names, product spellings
 and half-swallowed words, and two engines do not transcribe that identically.
 The takes over five minutes were the worst: median 50.2% apart, and 18 of the
-21 are unusable as reference. A big swap did not rescue it either: whisper
-large-v3 full instead of turbo moved the gap from 13.6% to 12.1% on 40 identical
-files, and the app turned out to be closer to full on 19 of those 40 and closer
-to Apple on 21, a coin flip. Neither engine is ground truth. Exact agreement
-between two engines is simply not available on this audio.
+21 are unusable as reference.
+
+A bigger model does not rescue it either. On 40 identical files, three engines
+reading the same audio: turbo against Apple 11.1% of words apart, whisper
+large-v3 full against Apple 12.1%, and turbo against large-v3 full 3.3% (the two
+whisper models produce the same words on 11 of the 40). The app was closer to
+large-v3 full on 19 of those 40 and closer to Apple on 21, a coin flip. Neither
+engine is ground truth, and the full model is not worth four extra hours of
+rebuilding. Exact agreement between two engines is simply not available on this
+audio.
 
 ## So: one reference, one flag
 
@@ -54,9 +59,10 @@ loops, 6 with no second text, 1 with no reference text.
 | flag | the cross-check | Apple's on-device transcriber, macOS 26 | 0, part of the OS | a different vendor and architecture, so a wild gap means something |
 
 Whisper large-v3 full q5_0 (1.1 GB) is downloaded and one flag away
-(`--model large-v3`). It is not the default because on identical audio it
-measures within a point and a half of turbo, and switching means redoing the
-whole cache, about four hours on this Mini.
+(`--model large-v3`). It is not the default because on identical audio the two
+whisper models are 3.3% of words apart and full sits no closer to the
+cross-check than turbo does, while switching means redoing the whole cache,
+about four hours on this Mini.
 
 Parakeet is deliberately not used. It is the app's own engine family, so it
 could not serve as an outside opinion.
