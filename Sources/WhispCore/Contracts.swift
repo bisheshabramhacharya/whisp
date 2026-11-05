@@ -4,6 +4,42 @@ import Foundation
 // Shared contracts between modules. Each module's concrete type conforms to one of these,
 // and DictationController wires them together.
 
+/// One decoded word and the time its audio starts, in seconds from the start of
+/// the buffer handed to `transcribeTimed`. Callers add the buffer's own offset.
+public struct TimedWord: Sendable, Equatable {
+    public let text: String
+    public let start: TimeInterval
+    public init(text: String, start: TimeInterval) {
+        self.text = text
+        self.start = start
+    }
+}
+
+/// A transcript plus each word's start time, so a seam can be resolved by asking
+/// which window a word starts in instead of guessing from text.
+public struct TimedTranscript: Sendable, Equatable {
+    public let text: String
+    public let words: [TimedWord]
+    /// Seconds from the start of the buffer to the audio the word times refer to.
+    /// The decode trims leading silence, so without this a caller cannot map a
+    /// word back to the take. Zero when the engine did not trim.
+    public let audioStart: TimeInterval
+
+    public init(text: String, words: [TimedWord], audioStart: TimeInterval = 0) {
+        self.text = text
+        self.words = words
+        self.audioStart = audioStart
+    }
+
+    /// The words whose start falls in `from..<to`, in take or buffer seconds as the
+    /// caller's offset makes them, joined into text. Empty `words` means the engine
+    /// had no timings and the caller keeps the text-only path.
+    public func text(from: TimeInterval, to: TimeInterval) -> String {
+        words.filter { $0.start >= from && $0.start < to }
+            .map(\.text).joined(separator: " ")
+    }
+}
+
 /// Speech-to-text engine. Input is 16 kHz mono Float32 PCM in [-1, 1].
 public protocol Transcribing: AnyObject {
     /// Download (first run), load and warm up the model. Safe to call more than once.
@@ -21,6 +57,13 @@ public protocol Transcribing: AnyObject {
 public extension Transcribing {
     func rewarm() async {}
     func prewarm(forSamples samples: Int) async {}
+}
+
+/// An engine that can also say when each word starts, in buffer seconds. Engines
+/// that do not conform keep the text-only path, which is also the rollback: a
+/// bundle with no timings changes nothing.
+public protocol TimedTranscribing: Transcribing {
+    func transcribeTimed(_ samples: [Float]) async throws -> TimedTranscript
 }
 
 /// Engine that can report human-readable model status ("Downloading…", "Ready").

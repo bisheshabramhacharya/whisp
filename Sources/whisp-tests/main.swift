@@ -2476,5 +2476,110 @@ if perFormatMs > 5 {
     print("FAIL format() over the 5 ms budget")
 }
 
+// MARK: - Word-time partition (BIS-27)
+//
+// The seam used to be resolved by matching text: two windows disagreed about where a
+// word began ("and example" vs "example"), and the "and" was lost. Now a word belongs
+// to the piece whose span contains its start, and every window is decoded wider than
+// its span so it always hears the whole word. These tests use a decoder that hears
+// every word overlapping the window it was handed, which is the worst case for both
+// failure modes: a word at a seam is heard twice.
+
+final class TimedTruthDecoder: Transcribing, TimedTranscribing {
+    let truth: [TimedWord]
+    /// Where the buffer handed over starts in the take. The test sets it before each
+    /// call, because the samples carry no offset of their own.
+    var windowStart: TimeInterval = 0
+    let wordSeconds = 0.35
+
+    init(_ truth: [TimedWord]) { self.truth = truth }
+
+    func prepare() async throws {}
+    func transcribe(_ samples: [Float]) async throws -> String {
+        try await transcribeTimed(samples).text
+    }
+
+    func transcribeTimed(_ samples: [Float]) async throws -> TimedTranscript {
+        let start = windowStart
+        let end = start + Double(samples.count) / 16_000
+        let heard = truth.filter { $0.start < end && $0.start + wordSeconds > start }
+        let words = heard.map { TimedWord(text: $0.text, start: $0.start - start) }
+        return TimedTranscript(text: words.map(\.text).joined(separator: " "), words: words)
+    }
+}
+
+/// The live loop plus the release step, as DictationController runs them: commit what
+/// is older than the held-back bound, decoding left context behind the span and right
+/// context ahead of it, then decode a little behind the last commit at release.
+func partitionOfTheTake(
+    _ truth: [TimedWord], seconds: Double, releaseOverlap: TimeInterval
+) async throws -> (text: String, pieces: [SpeechSegmenter.Piece], decoder: TimedTruthDecoder) {
+    let decoder = TimedTruthDecoder(truth)
+    let samples = [Float](repeating: 0, count: Int(seconds * 16_000))
+    var pieces: [SpeechSegmenter.Piece] = []
+    var committed = 0
+    while true {
+        let pending = Array(samples[committed...])
+        guard let cut = SpeechSegmenter.nextHeldBackCut(in: pending) else { break }
+        let left = min(SpeechSegmenter.leftContextSamples, committed)
+        let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
+        decoder.windowStart = Double(committed - left) / 16_000
+        let decoded = try await decoder.transcribeTimed(Array(pending[(cut - left)..<(cut + right)]))
+        pieces.append(SpeechSegmenter.Piece(
+            spanStart: committed, spanEnd: committed + cut,
+            words: SpeechSegmenter.absoluteWords(decoded, windowStartSample: committed - left)))
+        committed += cut
+    }
+    let overlap = Int(releaseOverlap * 16_000)
+    decoder.windowStart = Double(max(0, committed - overlap)) / 16_000
+    let text = try await SpeechSegmenter.finish(
+        samples, pieces: pieces, committed: committed, releaseOverlap: overlap, transcriber: decoder)
+    return (text, pieces, decoder)
+}
+
+let takeWords = (0..<40).map {
+    TimedWord(text: "w\($0)", start: 0.4 + Double($0) * 0.5)
+}
+let wanted = takeWords.map(\.text).joined(separator: " ")
+
+var releaseTexts: [String] = []
+for tenths in 0...15 {
+    let result = try await partitionOfTheTake(takeWords, seconds: 21.5, releaseOverlap: Double(tenths) / 10)
+    releaseTexts.append(result.text)
+    // Every word is owned exactly once, across every piece and the release.
+    let owned = result.pieces.flatMap { $0.text.split(separator: " ").map(String.init) }
+    expect(owned.count == owned.filter { word in owned.filter { $0 == word }.count == 1 }.count ? "once" : "duplicate",
+           "once", "each committed word owned once at overlap \(tenths)/10")
+}
+expect(Set(releaseTexts).count.description, "1", "the release text does not depend on the release overlap")
+expect(releaseTexts.first ?? "", wanted, "the partition reproduces every word in order")
+
+// A genuine "that that" across a seam: one word starts before the seam, the next after.
+// Ownership by start keeps both; matching text at the seam is what ate one of them.
+let seamTruth = [
+    TimedWord(text: "and", start: 3.90),
+    TimedWord(text: "that", start: 3.98),
+    TimedWord(text: "that", start: 4.06),
+]
+let seamDecoder = TimedTruthDecoder(seamTruth)
+let seamSamples = [Float](repeating: 0, count: Int(8.2 * 16_000))
+seamDecoder.windowStart = 0
+let firstWindow = try await seamDecoder.transcribeTimed(Array(seamSamples[0..<(4 * 16_000 + 5_600)]))
+seamDecoder.windowStart = 3.5
+let secondWindow = try await seamDecoder.transcribeTimed(Array(seamSamples[Int(3.5 * 16_000)...]))
+let seamPieces = [
+    SpeechSegmenter.Piece(spanStart: 0, spanEnd: 4 * 16_000,
+                          words: SpeechSegmenter.absoluteWords(firstWindow, windowStartSample: 0)),
+    SpeechSegmenter.Piece(spanStart: 4 * 16_000, spanEnd: 8 * 16_000,
+                          words: SpeechSegmenter.absoluteWords(secondWindow, windowStartSample: 3 * 16_000 + 8_000)),
+]
+let seamOldStyle = ([firstWindow.text, secondWindow.text]).joined(separator: " ")
+expect(seamOldStyle, "and that that and that that",
+       "decoding wider makes both windows hear the seam words (why text matching failed)")
+seamDecoder.windowStart = 7.7
+let seamText = try await SpeechSegmenter.finish(
+    seamSamples, pieces: seamPieces, committed: 8 * 16_000, releaseOverlap: 8_000, transcriber: seamDecoder)
+expect(seamText, "and that that", "a genuine that-that across a seam survives, once each")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

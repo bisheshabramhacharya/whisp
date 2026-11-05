@@ -445,6 +445,10 @@ public final class DictationController: ObservableObject {
         }
         let pending = recorder.samples(from: chunks.committed)
         Task { [transcriber, count = pending.count] in await transcriber.prewarm(forSamples: count) }
+        if transcriber is TimedTranscribing {
+            commitTimed(pending, chunks)
+            return
+        }
         guard let cut = SpeechSegmenter.nextCut(in: pending) else {
             speculate(on: pending, chunks)
             return
@@ -455,6 +459,34 @@ public final class DictationController: ObservableObject {
         chunks.inFlight = Task { [transcriber] in
             do {
                 chunks.texts.append(try await transcriber.transcribe(chunk))
+            } catch {
+                chunks.failed = true
+            }
+            chunks.inFlight = nil
+        }
+    }
+
+    /// Commits the audio older than the held-back bound, decoding a window that starts
+    /// `leftContextSamples` before the span so a word straddling the previous seam is
+    /// heard whole and then owned by its start time alone.
+    private func commitTimed(_ pending: [Float], _ chunks: LiveChunks) {
+        guard let cut = SpeechSegmenter.nextHeldBackCut(in: pending) else { return }
+        let spanStart = chunks.committed
+        let spanEnd = spanStart + cut
+        let left = min(SpeechSegmenter.leftContextSamples, spanStart)
+        let right = min(SpeechSegmenter.rightContextSamples, pending.count - cut)
+        let window = Array(pending[(cut - left)..<(cut + right)])
+        chunks.committed = spanEnd
+        chunks.inFlight = Task { [transcriber] in
+            do {
+                guard let timed = transcriber as? TimedTranscribing else { throw CancellationError() }
+                let decoded = try await timed.transcribeTimed(window)
+                let piece = SpeechSegmenter.Piece(
+                    spanStart: spanStart, spanEnd: spanEnd,
+                    words: SpeechSegmenter.absoluteWords(decoded, windowStartSample: spanStart - left))
+                chunks.pieces.append(piece)
+                chunks.starts.append(spanStart)
+                if !piece.text.isEmpty { chunks.texts.append(piece.text) }
             } catch {
                 chunks.failed = true
             }
@@ -487,6 +519,13 @@ public final class DictationController: ObservableObject {
     /// ends up covering the tail.
     private func transcribe(_ samples: [Float], chunks: LiveChunks?) async throws -> String {
         guard let chunks else { return try await transcriber.transcribe(samples) }
+        if let timed = transcriber as? TimedTranscribing {
+            await chunks.inFlight?.value
+            guard !chunks.failed else { return try await transcriber.transcribe(samples) }
+            return try await SpeechSegmenter.finish(
+                samples, pieces: chunks.pieces, committed: chunks.committed,
+                releaseOverlap: SpeechSegmenter.releaseOverlapSamples, transcriber: timed)
+        }
         var earlyTail: Task<String, Error>?
         let parallel = ((transcriber as? ParakeetTranscriber)?.unifiedLanes ?? 1) > 1
         if parallel, chunks.inFlight != nil, !chunks.failed, chunks.committed < samples.count {
@@ -812,6 +851,9 @@ private final class LiveChunks {
     /// Where each chunk in `texts` began.
     var starts: [Int] = []
     var texts: [String] = []
+    /// The same chunks with word times, for engines that report them. Each piece
+    /// owns the words that start inside its span, so no text is matched at a seam.
+    var pieces: [SpeechSegmenter.Piece] = []
     var inFlight: Task<Void, Never>?
     var failed = false
     /// Transcript of the audio from `start` to `end`, made during a pause.

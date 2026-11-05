@@ -31,9 +31,89 @@ public enum SpeechSegmenter {
         Int(ProcessInfo.processInfo.environment["WHISP_SPEC_PAUSE_FRAMES"] ?? "") ?? 18
     static let frame = 160  // 10 ms
 
+    /// One decoded piece of a take: the span of audio it owns, in samples, and the
+    /// words the decode returned with take-absolute start times.
+    public struct Piece: Sendable {
+        public let spanStart: Int
+        public let spanEnd: Int
+        public let words: [TimedWord]
+        public init(spanStart: Int, spanEnd: Int, words: [TimedWord]) {
+            self.spanStart = spanStart
+            self.spanEnd = spanEnd
+            self.words = words
+        }
+        public var span: (start: TimeInterval, end: TimeInterval) {
+            (Double(spanStart) / 16_000, Double(spanEnd) / 16_000)
+        }
+        public var text: String {
+            words.filter { $0.start >= span.start && $0.start < span.end }
+                .map(\.text).joined(separator: " ")
+        }
+    }
+
+    /// Words from a decode that started at `windowStartSample`, moved to take time.
+    /// The transcript's own `audioStart` covers the silence the decode trimmed.
+    public static func absoluteWords(
+        _ transcript: TimedTranscript, windowStartSample: Int
+    ) -> [TimedWord] {
+        let shift = Double(windowStartSample) / 16_000 + transcript.audioStart
+        return transcript.words.map { TimedWord(text: $0.text, start: $0.start + shift) }
+    }
+
+    /// Release step for engines that report word times: decode a window that starts
+    /// `releaseOverlap` samples before the last commit, keep the words that start at
+    /// or after it, and append them to the pieces. Ownership is decided by start
+    /// time, so a word the last piece and the release window both heard is taken
+    /// once, whole, from the release.
+    public static func finish(
+        _ samples: [Float], pieces: [Piece], committed: Int,
+        releaseOverlap: Int, transcriber: TimedTranscribing
+    ) async throws -> String {
+        var texts = pieces.map(\.text).filter { !$0.isEmpty }
+        let windowStart = max(0, committed - releaseOverlap)
+        let tail = Array(samples[windowStart...])
+        guard !tail.isEmpty else { return join(texts) }
+        let decoded = try await transcriber.transcribeTimed(tail)
+        let words = absoluteWords(decoded, windowStartSample: windowStart)
+        let owned = words.filter { $0.start >= Double(committed) / 16_000 }
+            .map(\.text).joined(separator: " ")
+        guard !owned.isEmpty else { return join(texts) }
+        texts.append(owned)
+        return join(texts)
+    }
+
+    /// A window a release or a commit decodes, in samples, and the span inside it
+    /// whose words this decode owns. `span` is what the caller keeps; the extra audio
+    /// on either side is context, so no word is ever half-decoded.
+    public struct DecodeWindow: Sendable, Equatable {
+        public let windowStart: Int
+        public let spanStart: Int
+        public let spanEnd: Int
+        public init(windowStart: Int, spanStart: Int, spanEnd: Int) {
+            self.windowStart = windowStart
+            self.spanStart = spanStart
+            self.spanEnd = spanEnd
+        }
+    }
+
+    /// Ownership, in one place: a word belongs to the span whose times contain its
+    /// start. Nothing else decides, so nothing is duplicated and nothing is guessed.
+    public static func owned(
+        _ transcript: TimedTranscript, by span: (start: TimeInterval, end: TimeInterval)
+    ) -> String {
+        transcript.text(from: span.start, to: span.end)
+    }
+
     /// Where to cut `samples` (audio pending since the last cut), or nil to wait for more.
     /// Always returns an index in `minChunk / 2 ..< samples.count`.
     public static func nextCut(in samples: [Float]) -> Int? {
+        nextCutDetail(in: samples)?.index
+    }
+
+    /// The cut index and whether it landed in a pause. A cut in a pause needs no
+    /// context on either side; the forced cut lands inside speech, and that is the
+    /// case a seam has to be resolved by word start.
+    public static func nextCutDetail(in samples: [Float]) -> (index: Int, inPause: Bool)? {
         guard samples.count >= minChunk else { return nil }
         let energies = frameEnergies(samples)
         guard let loud = percentile(energies, 0.9), loud > 0 else { return nil }
@@ -59,7 +139,9 @@ public enum SpeechSegmenter {
         }
         // A chunk the transcriber would drop as silence may still hold quiet speech;
         // keep it attached to what follows, as whole-clip decoding would.
-        if let best, !cutDropsQuietSpeech(samples, at: best * frame) { return best * frame }
+        if let best, !cutDropsQuietSpeech(samples, at: best * frame) {
+            return (best * frame, true)
+        }
 
         guard samples.count >= forceChunk else { return nil }
         // Quietest 100 ms window in the last 5 s.
@@ -74,7 +156,39 @@ public enum SpeechSegmenter {
             i += 1
         }
         let cut = (quietest + window / 2) * frame
-        return cutDropsQuietSpeech(samples, at: cut) ? nil : cut
+        return cutDropsQuietSpeech(samples, at: cut) ? nil : (cut, false)
+    }
+
+    /// Longest audio a release leaves undecoded, and the audio each commit re-reads
+    /// behind its span. Decoding wider than the span is what lets a word that
+    /// straddles a seam be heard whole and then owned by start time alone.
+    public static let heldBackSamples = 16_000
+    public static let leftContextSamples = 16_000
+    public static let rightContextSamples = 16_000
+    public static let releaseOverlapSamples = 8_000
+
+    /// Where to commit when the audio pending since the last commit is older than
+    /// `heldBackSamples`: the quietest 100 ms of the window the bound allows, which
+    /// leaves at most `heldBackSamples` pending and at least that much right context
+    /// for the decode. Nil while the pending audio is short enough to wait for a pause.
+    public static func nextHeldBackCut(in samples: [Float]) -> Int? {
+        guard samples.count > heldBackSamples else { return nil }
+        let energies = frameEnergies(samples)
+        let earliest = (samples.count - heldBackSamples) / frame
+        let window = 10
+        var quietest = earliest
+        var quietestSum = Float.greatestFiniteMagnitude
+        var i = earliest
+        while i + window <= energies.count {
+            let sum = energies[i..<(i + window)].reduce(0, +)
+            if sum < quietestSum {
+                quietestSum = sum
+                quietest = i
+            }
+            i += 1
+        }
+        guard quietest + window <= energies.count else { return nil }
+        return (quietest + window / 2) * frame
     }
 
     /// Never leave more than a minute of audio pending. A release past it decodes the
@@ -124,6 +238,27 @@ public enum SpeechSegmenter {
     /// A frame counts as speech when its RMS exceeds `speechThreshold` of the clip's
     /// 90th-percentile frame — a percentile, not the max, so one cough or bump can't
     /// raise the bar past quiet edge words.
+    /// Where `trimSpeech` would cut, so a caller that maps token times back to
+    /// the untrimmed buffer knows how much the audio moved.
+    public static func trimSpeechBounds(_ samples: [Float]) -> (start: Int, end: Int)? {
+        let margin = 2400  // 150 ms
+        let frameCount = samples.count / frame
+        guard frameCount > 2 else { return nil }
+        let energies = frameEnergies(samples)
+        guard let peak = energies.max(), peak > 0 else { return nil }
+        let loud = percentile(energies, 0.9) ?? peak
+        let threshold = speechThreshold(peak: loud)
+        var first = 0
+        while first < frameCount, energies[first] < threshold { first += 1 }
+        var last = frameCount - 1
+        while last > first, energies[last] < threshold { last -= 1 }
+        guard first <= last else { return nil }
+        let start = max(0, first * frame - margin)
+        let end = min(samples.count, (last + 1) * frame + margin)
+        guard end > start else { return nil }
+        return (start, end)
+    }
+
     public static func trimSpeech(_ samples: [Float]) -> [Float] {
         let margin = 2400  // 150 ms
         let frameCount = samples.count / frame

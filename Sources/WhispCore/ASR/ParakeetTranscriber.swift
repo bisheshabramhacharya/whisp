@@ -23,7 +23,7 @@ public enum TranscriberError: Error, LocalizedError {
 /// model emits them — optionally passed through NeMo inverse text
 /// normalization ("twenty five dollars" -> "$25") and custom-vocabulary
 /// rescoring.
-public final class ParakeetTranscriber: Transcribing, StatusReporting {
+public final class ParakeetTranscriber: TimedTranscribing, StatusReporting {
 
     /// ASR model backend.
     public enum Model: String, Sendable, CaseIterable {
@@ -130,6 +130,53 @@ public final class ParakeetTranscriber: Transcribing, StatusReporting {
             text = normalizer.normalizeSentence(text)
         }
         return text
+    }
+
+    /// Same decode as `transcribe`, plus each word's start time in buffer seconds
+    /// and how far the buffer was trimmed. A seam is then resolved by asking which
+    /// window a word starts in rather than by matching text.
+    public func transcribeTimed(_ samples: [Float]) async throws -> TimedTranscript {
+        guard !samples.isEmpty else { throw TranscriberError.audioTooShort }
+        guard !SpeechSegmenter.isNearSilent(samples, rmsThreshold: silenceThreshold)
+        else { return TimedTranscript(text: "", words: []) }
+
+        let bounds = SpeechSegmenter.trimSpeechBounds(samples)
+        let speech = bounds.map { Array(samples[$0.start..<$0.end]) } ?? samples
+        let audioStart = Double(bounds?.start ?? 0) / 16_000
+
+        let minSamples = Int(0.3 * 16_000)
+        var input = speech
+        if input.count < minSamples {
+            input.append(contentsOf: [Float](repeating: 0, count: minSamples - input.count))
+        }
+
+        try await prepare()
+        let decoded = try await engine.transcribeTimed(input, vocabulary: vocabulary)
+        var text = Self.removingUnknownTokens(decoded.text)
+        if inverseTextNormalization, !text.isEmpty {
+            text = normalizer.normalizeSentence(text)
+        }
+        return TimedTranscript(
+            text: text,
+            words: Self.words(from: decoded.tokens),
+            audioStart: audioStart)
+    }
+
+    /// Groups Parakeet's subword tokens into words: a token that begins with a space
+    /// starts a new word, anything else continues the previous one, and a word starts
+    /// when its first token does.
+    static func words(from tokens: [(text: String, start: TimeInterval)]) -> [TimedWord] {
+        var words: [TimedWord] = []
+        for token in tokens {
+            let continues = !token.text.hasPrefix(" ") && !words.isEmpty
+            if continues, let last = words.popLast() {
+                words.append(TimedWord(text: last.text + token.text, start: last.start))
+            } else {
+                words.append(TimedWord(
+                    text: token.text.trimmingCharacters(in: .whitespaces), start: token.start))
+            }
+        }
+        return words.filter { !$0.text.isEmpty }
     }
 
     /// Drops the model's `<unk>` tokens ("Bis<unk>s." -> "Biss.") and the spacing they leave.
@@ -320,6 +367,40 @@ extension ParakeetTranscriber {
         /// Transcribe already-cleaned samples; returns post-rescored text.
         /// Unified decodes run on whichever lane is idle, so a tail decode can
         /// overlap an in-flight chunk/speculation decode when lanes > 1.
+        /// Same decode as `transcribe`, keeping each token's start time. Empty tokens
+        /// mean the caller has to use the text-only path.
+        func transcribeTimed(
+            _ samples: [Float], vocabulary: [String]
+        ) async throws -> (text: String, tokens: [(text: String, start: TimeInterval)]) {
+            defer { lastRun = DispatchTime.now().uptimeNanoseconds }
+            switch model {
+            case .unified:
+                guard !lanes.isEmpty, let manager = await awaitLane() else {
+                    throw TranscriberError.notPrepared
+                }
+                defer { releaseLane(manager) }
+                let result = try await manager.transcribeWithTimings(samples)
+                guard vocabulary.isEmpty else {
+                    let rescored = await rescoreIfNeeded(
+                        text: result.text, tokenTimings: result.tokenTimings,
+                        audioSamples: samples, vocabulary: vocabulary)
+                    return (rescored, [])
+                }
+                return (result.text, result.tokenTimings.map { ($0.token, $0.startTime) })
+            default:
+                guard let asrManager else { throw TranscriberError.notPrepared }
+                var state = TdtDecoderState.make(decoderLayers: decoderLayers)
+                let result = try await asrManager.transcribe(samples, decoderState: &state)
+                guard vocabulary.isEmpty else {
+                    let rescored = await rescoreIfNeeded(
+                        text: result.text, tokenTimings: result.tokenTimings ?? [],
+                        audioSamples: samples, vocabulary: vocabulary)
+                    return (rescored, [])
+                }
+                return (result.text, (result.tokenTimings ?? []).map { ($0.token, $0.startTime) })
+            }
+        }
+
         func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
             defer { lastRun = DispatchTime.now().uptimeNanoseconds }
             switch model {
