@@ -21,11 +21,14 @@ bench decode seemed to leave unaccounted for is not overhead: the live path
 decodes slower than a warm bench decode of the same work, and the sampled takes
 are longer.
 
-## Warming the window does not close that gap
+## Warming the window does not close the base gap, but it does cut the tail
 
-`--live` on 24 takes (16 of 1-3.5 s, 8 of 4-8 s), four prewarm settings, same
-takes and order. `WHISP_PREWARM_MS` and `WHISP_PREWARM=off` are bench knobs; the
-app's default is unchanged at 8 s.
+`--live` replays through `DictationController`, so each number below is the
+app's own key release to pasted text. `WHISP_PREWARM_MS` and `WHISP_PREWARM=off`
+are bench knobs; the app's default is unchanged at 8 s.
+
+**First pass, 24 takes** (16 of 1-3.5 s, 8 of 4-8 s), four settings, same takes
+and order:
 
 | prewarm | release->paste p50 (<=5 s) | wake-ups per take p50 | engine work per take p50 |
 |---|---|---|---|
@@ -34,29 +37,77 @@ app's default is unchanged at 8 s.
 | idle over 300 ms | 78 ms | 6 / 288 ms | 371 ms |
 | every tick | 89 ms | 23 / 1096 ms | 1237 ms |
 
-Read it twice: **the release decode is 77-88 ms in every configuration**, with
-the encoder at 36-37 ms whether anything was warmed or not. Warming costs 4x the
-engine work at a 300 ms threshold and 13x at every tick, and buys nothing: the
-one setting with a lower p50 (78 against 83) ran no wake-ups at all, so that
-difference is run-to-run noise, not the mechanism.
+At 24 takes this read as a clean no: the release decode was 77-88 ms in every
+setting with the encoder at 36-37 ms, so warming bought nothing. That sample was
+too small to see the tail. 33 sub-5 s takes is where the difference lives.
 
-`--idle-curve` on one 1.7 s clip does show an idle penalty in a bench process
-(0 ms 39, 100 ms 49, 500 ms 54, 1000 ms 58, 2000 ms 49, 4000 ms 50, 8000 ms 91),
-which is what made warming look promising. The live path does not behave that
-way: it pays ~36 ms of encoder on every release regardless. So the live-path
-encoder gap against a warm bench decode (36 against 22-23) is not ANE idle, and
-dummies do not touch it. Next thread should look at the live context instead:
-thread and QoS of the release decode task, and whatever the capture loop leaves
-running, not at the encoder's warmth.
+**Doubled sample, 47 takes** (33 under 5 s, 14 at 4-8 s), same order, short
+group only (`--json` per take, so these are per-take medians, not bucket rows):
 
-## The default is left alone on purpose
+| prewarm | release->paste p50 | p90 | takes over 100 ms | encoder p50 | encoder p90 | wake-ups / work per take |
+|---|---|---|---|---|---|---|
+| off | 85 ms | 139 ms | 14 of 33 | 46 ms | 68 ms | 0 / 0 ms |
+| default (8 s) | 88 ms | 132 ms | 14 of 33 | 37 ms | 68 ms | 0 / 0 ms |
+| idle over 300 ms | 74 ms | 101 ms | 5 of 33 | 36 ms | 37 ms | 5 / 247 ms |
+| every tick | 80 ms | 129 ms | 12 of 33 | 36 ms | 72 ms | 22 / 1009 ms |
 
-With the 8 s threshold, prewarm never fires for takes under about 5 s (0
-wake-ups measured), so it is dead code on the path this thread owns; forcing it
-on makes the wait worse. Where it does fire is long takes, which belong to
-BIS-18, and the notes there already record a 5 s dummy at ~100 ms and a 15 s
-dummy at ~115 ms competing with the window the release needs. That is the same
-result from the other side: a dummy is not cheap.
+The 300 ms setting is the first one that changes the shape of the wait: the
+slow takes mostly stop happening (5 over a tenth of a second against 14), and
+the encoder stops spiking (p90 37 ms against 68 ms). The median encoder barely
+moves, 37 to 36, so the win is entirely in the tail.
+
+**Repeat, 32 short takes, order reversed** (default, 300 ms, 300 ms, default), to
+test whether the third slot in the first pass explained it:
+
+| pass | release->paste p50 | mean | p90 | encoder p50 | wake-ups / work | engine work p50 |
+|---|---|---|---|---|---|---|
+| default | 84 ms | 86 ms | 131 ms | 37 ms | 0 / 0 ms | 109 ms |
+| 300 ms | 68 ms | 66 ms | 99 ms | 35 ms | 5.0 / 249 ms | 332 ms |
+| 300 ms again | 68 ms | 64 ms | 94 ms | 35 ms | 5.5 / 233 ms | 335 ms |
+| default again | 72 ms | 77 ms | 130 ms | 37 ms | 0 / 0 ms | 86 ms |
+
+So it is the setting, not the run order. 300 ms wins in both adjacent pairs
+(84 to 68, 72 to 68), the two 300 ms runs agree with each other (68 and 68) while
+the two default runs do not (84 and 72), and the p90 belongs to the warm runs
+(94-99) and never to the cold ones (130-131). Per take, the spread across all
+four passes has a 39 ms median, which is why no single-take comparison proves
+anything and why the 24 take sample missed it.
+
+The cost is real too: 332-335 ms of dummy work per take against 86-109 ms, about
+three times the engine work, for a tenth of a second off the slow takes. Warming
+harder is not better. Every tick runs 22 wake-ups and 1,009 ms of dummy work per
+take and lands back at 80 ms p50 with the encoder tail intact (p90 72 ms),
+because the dummies queue ahead of the decode the release is waiting for. 300 ms
+idle is the setting that keeps the window warm without competing with it.
+
+## The base gap is still not explained by warmth
+
+The live path pays 35-37 ms of encoder on a release against 22-23 ms for the
+same window in a warm `--stages` decode, and no prewarm setting closes that: the
+warm runs here sit at 35, not 22. Warming only removes the 68-72 ms outliers
+above it. So the 13-15 ms that a live decode costs over a bench decode is not
+ANE idle, and dummies do not touch it. `--idle-curve` on one 1.7 s clip does
+show an idle penalty in a bench process (0 ms 39, 100 ms 49, 500 ms 54, 1000 ms
+58, 2000 ms 49, 4000 ms 50, 8000 ms 91), which is what made warming look
+promising; the live path does not behave that way.
+
+That leaves the live context: the priority and thread the release decode task
+runs on (a plain `Task {}` inherits its priority from the main-actor call that
+starts it in `DictationController.stopCapture`), whatever the capture loop still
+has awake at the moment of release, and the second encoder lane the transcriber
+keeps for overlapping decodes. Next thread measures those, not the encoder's
+warmth. Implementation waits on BIS-19.
+
+## Nothing here changes the app
+
+With the stock 8 s threshold, no wake-up fires for a take under about 5 s (0
+measured), so what the app does today is the "default" row: zero cost and the
+slower tail. Changing the threshold to 300 ms is a real trade (a tenth of a
+second off the slow short takes, three times the engine work, on a machine that
+a tenth of a second off the slow short takes, three times the engine work, a
+warmer machine all day) and it belongs with the threshold itself in BIS-18, not
+with this measurement branch. This branch ships the bench flags, the per-take
+JSON and these notes. The default stays at 8 s.
 
 ## Weights cannot get smaller on this deployment target
 
