@@ -2006,7 +2006,11 @@ try """
 let watcher = EditWatcher(learner: learner, dictionaryFile: dictFile,
                           pendingFile: pendFile, isEnabled: { true })
 var saveNotices: [String] = []
-watcher.onDictionarySaved = { saveNotices.append($0) }
+var lastBatch: EditWatcher.LearnedBatch?
+watcher.onDictionarySaved = { batch in
+    lastBatch = batch
+    saveNotices.append(batch.entries.map { "\($0.from) → \($0.to)" }.joined(separator: ", "))
+}
 
 func dictHas(_ needle: String) -> Bool {
     (try? String(contentsOf: dictFile, encoding: .utf8).contains(needle)) ?? false
@@ -2021,8 +2025,7 @@ expect(dictHas("tail skill").description, "true", "a name fix writes on the firs
 expect(dictHas("tailscale").description, "true", "rule maps to tailscale")
 expect(watcher.lastSummary?.contains("tail skill → tailscale") ?? false ? "shown" : "hidden",
        "shown", "menu shows Learned: tail skill → tailscale")
-expect(saveNotices.last ?? "", "saved to dictionary: tail skill → tailscale",
-       "alert follows the dictionary write")
+expect(saveNotices.last ?? "", "tail skill → tailscale", "alert follows the dictionary write")
 // Saved now, used by the next dictation: the same file loads the rule back.
 expect(PersonalDictionary(fileURL: dictFile).apply("Help me set up tail skill."),
        "Help me set up tailscale.", "the next dictation uses the learned rule")
@@ -2032,7 +2035,7 @@ watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(dictHas("Pychy").description, "true", "junk fix writes at once")
 expect(dictHas("pi CLI").description, "true", "junk fix target saved")
-expect(saveNotices.last ?? "", "saved to dictionary: Pychy → pi CLI", "junk fix alerts after the write")
+expect(saveNotices.last ?? "", "Pychy → pi CLI", "junk fix alerts after the write")
 
 // The same fix again changes nothing, so it does not announce another save.
 let noticesAfterPychy = saveNotices.count
@@ -2050,8 +2053,7 @@ expect(String(saveNotices.count), String(noticesAfterPychy), "Filip→Phillip sh
 watcher.apply(learner.decide(pasted: "Email Filip today.",
                                    current: "Email Phillip today.", existingRules: []))
 expect(dictHas("Filip").description, "true", "second sighting writes the name swap")
-expect(saveNotices.last ?? "", "saved to dictionary: Filip → Phillip",
-       "name swap alerts on the second sighting")
+expect(saveNotices.last ?? "", "Filip → Phillip", "name swap alerts on the second sighting")
 
 // Undo of the learned batch restores the pre-learn state.
 watcher.undoLast()
@@ -2071,7 +2073,7 @@ expect(String(saveNotices.count), String(noticesAfterPychy + 1), "unlearning sho
 watcher.apply(learner.decide(pasted: "Meet priya today.",
                                    current: "Meet Priya today.", existingRules: []))
 expect(dictHas("Priya").description, "true", "unknown-name casing is saved")
-expect(saveNotices.last ?? "", "saved to dictionary: Priya", "term save alerts after the write")
+expect(saveNotices.last ?? "", "priya → Priya", "term save alerts after the write")
 
 // Fixes the gate can't see are pending once, then written the second time.
 @MainActor
@@ -2083,9 +2085,19 @@ func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: Strin
     watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
     expect(dictHas(from).description, "true", "\(label) second sighting saved")
     expect(dictHas(to).description, "true", "\(label) target saved")
-    expect(saveNotices.last ?? "", "saved to dictionary: \(from) → \(to)", "\(label) alerts after the second write")
+    expect(saveNotices.last ?? "", "\(from) → \(to)", "\(label) alerts after the second write")
 }
 learnTwice("Email Ellem today.", "Email LLM today.", "Ellem", "LLM", "Ellem→LLM")
+
+// Undo on the confirmation card reverses exactly the batch it announced.
+let noticesBeforeCardUndo = saveNotices.count
+watcher.apply(learner.decide(pasted: "Meet chamath today.",
+                                   current: "Meet Chamath today.", existingRules: []))
+expect(dictHas("Chamath").description, "true", "a card batch is announced for the new term")
+lastBatch?.undo()
+expect(dictHas("Chamath").description, "false", "card undo removes the announced term")
+expect(dictHas("Pychy").description, "true", "card undo leaves earlier saves alone")
+expect(String(saveNotices.count), String(noticesBeforeCardUndo + 1), "card undo shows no save alert")
 
 // Malformed dictionary.json: no write, no crash, no alert.
 let noticesBeforeFailure = saveNotices.count

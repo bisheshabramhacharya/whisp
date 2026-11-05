@@ -38,9 +38,10 @@ enum Composition {
             pendingFile: AppPaths.pendingCorrectionsFile
         ) { settings.learnFromCorrections }
         // Retained by the watcher for the life of the app. Fires only after a
-        // correction was written to dictionary.json.
+        // correction was written to dictionary.json, so the card, the chime and
+        // Undo exist exactly when there is something to confirm. Off the
+        // dictation path: the review runs after the paste, never during it.
         let savedNotice = DictionarySavedNotice()
-        learnWatcher.onDictionarySaved = { savedNotice.show($0) }
         paster.onInserted = { [weak learnWatcher] context, text, pid in
             learnWatcher?.record(context, text: text, pid: pid)
         }
@@ -63,6 +64,14 @@ enum Composition {
             recordings: recordings
         )
         controller.correctionWatcher = learnWatcher
+        learnWatcher.onDictionarySaved = { batch in
+            guard settings.learnConfirmation else { return }
+            savedNotice.show(batch)
+            // Quiet during a take: a chime inside someone's sentence, or one the
+            // mic can hear on a call, is worse than learning silently. The card
+            // still shows either way.
+            if controller.state == .idle { Sounds.playLearned() }
+        }
 
         // Status lines arrive on the main thread; the hop keeps the
         // @MainActor controller access explicit. Weak: the transcriber (which
