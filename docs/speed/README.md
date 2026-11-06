@@ -184,27 +184,69 @@ dropped the last word, so the segmenter is unchanged.
 On the VM (`short`, 330 files, release at +0 ms) those leftovers fall into two
 buckets: 5–10 s (11.8% of releases) waits p50 164 / p95 177 ms and 10–15 s
 (7.3%) 179 / 201 ms, both paying the 15 s encoder's flat cost. The 10 s window
-takes the first bucket to **130 / 161 ms** with transcripts identical to the
-15 s window, and the second to 168 / 175 ms. VM numbers only — the M1 verdict
-is `scripts/speed/m1-check.sh`. A piecewise alternative that decoded two
+took the first bucket to **130 / 161 ms** on the VM and the second to 168 / 175
+ms. VM numbers only, and the transcript-identity claim from that run did not
+survive the M1 replay below: on real recordings the 10 s window is faster and
+loses a last word. A piecewise alternative that decoded two
 overlapped 5 s pieces also measured faster on the 5–10 s bucket (164 → 150 ms
 VM) but was not shipped, so there is no `split` engine to pass to `--engine`
 (see [log-e](log-e-split-and-w10000.md)); 10–15 s has no cheaper option at the
 same weights either, because two pieces on any window cost more than one 15 s
 pass.
 
+### The 10 s bundle on the M1: faster, and it drops a last word
+
+Built on the Mini with `tools/convert/convert-short-window.py --windows 10` and
+the pinned NeMo commit, int8 quantized, then compiled with the CoreML framework
+(`MLModel.compileModel`) because `coremlcompiler` ships with a full Xcode this
+machine does not have. Twelve of the owner's recordings whose final speech run
+is 5 to 10 s, `--live`, engine `short`, both passes over the same clips:
+
+| | 15 s window | 10 s window |
+|---|---|---|
+| release to paste p50 | 223 ms | 158 ms |
+| release to paste worst | 285 ms | 276 ms |
+| release decode p50 | 200 ms | 158 ms |
+| clips word-identical | 11 of 12 | — |
+
+The one that differs is a 12.0 s recording whose tail is 6.4 s, and it loses its
+**last word**: kept on both 15 s runs, dropped on both 10 s runs, so the
+difference is the bundle and not run-to-run noise.
+
+Two things about how that was measured, because they matter to anyone repeating
+it. The bundle was installed into the live FluidAudio cache for the two passes
+and removed from it afterwards, which means the app on this machine was reading 5
+to 10 s tails on the 10 s window for those minutes. The app uses a bundle that is
+already on disk with no checksum, so **do not reinstall it** until the twelve clips
+pass: an installed bundle changes every 5 to 10 s release, not just a benchmark.
+
+It is not the frame accounting. Feeding the same 6.08 s of audio to both traces
+gives the same mel (608 frames), the same encoder output shape for each window
+(126 frames on the 10 s trace, 188 on the 15 s) and the same 76 valid frames the
+decoder reads, so nothing is truncated and neither trace is fed a wrong length.
+The difference is inside the encoder: full attention over a 1001-frame input
+against a 1501-frame one changes the representation of the last frames, and the
+last word is the one that tips. A shorter input window is therefore the wrong
+knob for this. If anyone wants to pursue it, a 12 or 14 s window is a different
+build, it would have to pass the same twelve clips, and nothing here says it
+would. The last word is the number this effort exists to
+protect, so the bundle stays unpublished and `middleBundle.sha256` stays empty.
+65 ms for a dropped last word on 1 of 12 clips is the same trade the per-piece
+silence gate offered, and it is refused for the same reason.
+
 `ShortWindowEngine` now also uses a 10 s encoder
 (`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
 the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
-full-attention pass, so the text matches the 15 s model; splitting it into
-5 s pieces would not. The window is prewarmed the same way: while you talk,
+full-attention pass, which the VM run measured as transcript-identical to the
+15 s model; the M1 replay above found the one take where it is not. The window is prewarmed the same way: while you talk,
 the engine wakes the size a release of the audio so far would use.
 
 It is a second int8 bundle, not one shared weight file. A multi-function
 Core ML model only loads on macOS 15, and this app is macOS 14. The int8
 quantizer also rejects multi-function models, and the constants baked at
 trace time differ per window, so two bundles cannot share `weight.bin`.
-One int8 window is about 560 MB on disk. Latency is pending a Mac run.
+One int8 window is about 560 MB on disk, and the M1 measurement above is the
+latency answer: 223 to 158 ms p50 on the 5 to 10 s bucket.
 Per-process `phys_footprint` (and `footprint -p`) does not include the Core ML
 encoders: with the 5 s and 15 s int8 encoders loaded, about 1.1 GB of weights,
 both read 74 MB. That memory sits outside the whisp process, most likely in
@@ -213,16 +255,18 @@ prints a system-wide `vm_stat` delta around model load (free, wired,
 anonymous, compressor). Compare that delta with the 10 s bundle installed and
 with it moved aside.
 
-The zip is not published yet, so `ShortWindowEngine.middleBundle.sha256` is
-empty and the app does not download the 10 s window; a bundle already on disk
-is used without a checksum. Follow-up: publish
-`parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on `models-v2` and paste
-its SHA-256 into `middleBundle` (see `tools/convert/RELEASE.md`). The number
-recorded for the drafted zip is
+The zip is not published, so `ShortWindowEngine.middleBundle.sha256` is empty
+and the app does not download the 10 s window; a bundle already on disk is used
+without a checksum. It stays unpublished after the M1 measurement above, and
+publishing it is blocked rather than pending: this trace is faster on the 5 to
+10 s bucket and it costs a last word, so no checksum should be pasted until the
+twelve clips pass, and they do not pass on this trace. What that needs is a
+different window length, 12 or 14 s, built and put through the same twelve clips.
+The number recorded for the drafted zip is
 `ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50` — re-hash
 it if the bundle is rebuilt, and do not paste a number you have not verified.
-Once that checksum lands the bundle is fetched on launch like the 5 s one, so
-the download is gated on publishing, not opt-in. Until then `--install` copies
+If a trace ever passes the twelve clips, that checksum makes the app fetch it on
+launch like the 5 s one, so the download is gated on publishing, not opt-in. Until then `--install` copies
 a locally built bundle into the FluidAudio model cache, which is the directory
 the engine scans, and `WHISP_MODEL_DIR` points the bench at another folder of
 the same files.
