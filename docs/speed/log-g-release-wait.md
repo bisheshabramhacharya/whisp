@@ -37,7 +37,7 @@ and order:
 | idle over 300 ms | 78 ms | 6 / 288 ms | 371 ms |
 | every tick | 89 ms | 23 / 1096 ms | 1237 ms |
 
-At 24 takes this read as a clean no: p50 77-89 ms across the four settings in no
+At 24 takes this read as a clean no: p50 78-89 ms across the four settings in no
 useful order (the setting with the most warming was the worst of them), so
 warming looked worthless. That sample was too small to see the tail, and it did
 not break out the encoder. 33 sub-5 s takes is where the difference lives.
@@ -94,7 +94,7 @@ encoder tail intact (p90 72 ms), because the dummies queue ahead of the decode
 the release is waiting for. 300 ms idle is the setting that keeps the window warm
 without competing with it.
 
-## The gap to a bench decode is the live context, not the encoder
+## The gap is one Core ML round trip, and it is not the encoder
 
 The live path pays 35-37 ms of encoder on a release, and a `--stages` loop that
 decodes files back to back pays 22-23 ms for the same window. Those are not the
@@ -112,24 +112,53 @@ separates the engine's state from the context the release decode runs in.
 | RNNT | 29.3 ms | 22.8 ms | not measured |
 | total | 70.7 ms | 55.9 ms | 53.7 ms |
 
-Two things fall out of it. First, warm-up saturates almost immediately: the
-second decode recovers 15 ms, the third only 4 more (pass 2 slower than pass 3
-on 14 of 16 takes, mean +3.9 ms). So an encoder idled for two seconds costs about
-30 ms, not 22; the 22 ms figure is a loop that never pauses. Second, and this is
-the part that matters: after warming has saturated, the live release decode is
-still 22 ms slower on the same audio, the same engine, and the same main-actor
-task (14 of 16 takes, median +20.8 ms). The cost is spread across all three
-stages, encoder +7, RNNT +6.5, mel +3.9, so it is not an encoder problem.
+What this table is for is the warm-up, and warm-up saturates almost
+immediately: the second decode recovers 15 ms, the third only 4 more (pass 2
+slower than pass 3 on 14 of 16 takes, mean +3.9 ms). So an encoder idled for two
+seconds costs about 30 ms, not 22; the 22 ms figure is a loop that never pauses.
+Its live column is not a measurement of the gap, because the 16 takes are a mix
+of two kinds of take that this file used to compare against each other. That
+comparison is withdrawn.
 
-What differs at release is what else is awake: the mic tap is still delivering
-its last chunk, the recorder is stopping, and the capture loop is unwinding.
-That is the thing to chase in BIS-19, not the encoder's warmth. A warm window
-does not help it (the 300 ms setting above leaves the base encoder time at 35-36
-ms), and no setting of the prewarm threshold will.
+**Split the sample by what the code does before comparing, not after.** On a
+take where the capture loop already decoded a chunk before the key came up, the
+release decode only has the tail left, while `--second-pass` decodes the whole
+clip again. Those two numbers are different amounts of work, so their difference
+is not a gap. 47 takes, split by whether a chunk ran before release:
+
+| takes | n | release decode p50 | second pass p50 |
+|---|---|---|---|
+| no chunk before release | 32 | 72.7 ms | 58.7 ms |
+| a chunk before release | 15 | 65.0 ms | 133.9 ms |
+
+The seam takes are the long ones, p50 6.0 s, which is why they read fast at
+release and slow on the second pass: the second pass pays for audio the release
+decode never touched. That negative gap is an artifact of the split, not a
+result, and nothing in this file should be read off that row.
+
+The per-stage split this note used to carry, encoder +7 ms, RNNT +6.5, mel
++3.9, came from the mixed 16-take sample, so there is no seam-free measurement
+behind it. It is withdrawn here rather than restated as a number.
+
+On the comparable takes the reading is simpler. The release decode is one Core
+ML round trip, and it answers 20 to 30 ms slower at release than the same
+request a moment later: 84.4 ms at release against 50.3 ms for the same audio on
+the same thread. It is deterministic, slower on 14 of 14 takes. And it is not our process doing extra work: across a 73.0 ms
+release window the whole process burns 2.4 ms of CPU, against 1.7 ms for the
+same decode a moment later. Warm-up, this file's own polling loop, priority and
+our own CPU are each measured out of it, so the wait is inside the model
+service.
+
+That leaves two jobs, tracked as BIS-21 and BIS-29. A warm window does not help
+it (the 300 ms setting above leaves the base encoder time at 35-36 ms), and no
+setting of the prewarm threshold will.
+The mic tap delivering its last chunk and the capture loop unwinding are not the
+cause; an earlier version of this section said they were, and that was wrong.
+What is left is the model service itself.
 
 One more suspect was this file's own harness: the waiting loop described in the
 next section. `--poll-ms` puts a number on it there, and it comes to a few
-milliseconds at most, so the 13-22 ms stands as the live context.
+milliseconds at most, so it cannot carry the 20 to 30 ms either.
 
 ## A bench that polls the thing it is timing, on the same actor, measures itself
 
@@ -139,7 +168,7 @@ release decode runs on. That is about 70 wake-ups inside a 70 ms decode, all of
 them competing with the decode they are waiting for. Any number this harness
 produces for the release decode carries an unknown share of its own checking
 loop, and the `--second-pass` figures above are measured with no such loop
-running, so part of the gap attributed to "what is still awake at release" may
+running, so part of the gap between the release decode and a second pass may
 be the harness. `--poll-ms` changes the interval so the share can be measured:
 same takes at 1 ms and at 20 ms, and the delta is what the loop costs.
 
@@ -153,8 +182,9 @@ same takes at 1 ms and at 20 ms, and the delta is what the loop costs.
 
 So the loop costs a few milliseconds at most, and it does not agree with itself
 between rounds: round 1 says nothing and round 2 says about 7 ms, both inside the
-12 ms this machine drifts between identical settings. It cannot carry the 13-22
-ms the live release decode pays over the second pass, so that gap survives. The
+12 ms this machine drifts between identical settings. It cannot carry the 20 to 30
+ms the live release decode pays over the same request a moment later, so that
+gap survives. The
 harness's own share is now measured at a few ms rather than assumed, which is the
 only honest way to keep quoting the rest.
 
