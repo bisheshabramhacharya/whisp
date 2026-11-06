@@ -43,6 +43,41 @@ WORST_TARGET_MS = 100
 AUDIO_EXT = (".wav", ".flac", ".aiff", ".m4a")
 SCHEMA = 1
 
+# Words a dictated number can be built from, and what each one is worth.
+NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+    "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+SCALE_WORDS = {"hundred": 100, "thousand": 1000, "million": 1000000, "billion": 1000000000}
+ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+    "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20, "thirtieth": 30, "fortieth": 40, "fiftieth": 50,
+    "sixtieth": 60, "seventieth": 70, "eightieth": 80, "ninetieth": 90,
+    "hundredth": 100, "thousandth": 1000, "millionth": 1000000,
+}
+# Words the formatter turns into symbols or drops when it joins a path. The
+# comparison drops them too, so writing "25 dollars" as "$25" or "src slash
+# main dot swift" as "src/main.swift" is never read as lost words.
+CURRENCY_WORDS = {"dollars", "dollar", "bucks", "buck", "cents", "cent"}
+# What the qualifier means once the number is written in digits: "fifty bucks" and
+# "$50" are the same, "twenty five cents" and "$25" are not.
+CURRENCY_QUALIFIER = {
+    "dollars": "dollars", "dollar": "dollars", "bucks": "dollars", "buck": "dollars",
+    "cents": "cents", "cent": "cents",
+}
+PERCENT_WORDS = {"percent", "per", "cent"}
+PATH_SEPARATORS = {"slash", "backslash", "dot", "underscore"}
+ORDINAL_SUFFIX = re.compile(r"^(\d+)(?:st|nd|rd|th)$")
+# What a fold appends to keep an ordinal an ordinal. It never reaches a person: it
+# only ever becomes a hash.
+ORDINAL_MARK = "ord"
+
 
 # ---------------------------------------------------------------- helpers
 
@@ -78,13 +113,184 @@ def word_hash(word):
     return hashlib.sha256(word.encode("utf-8")).hexdigest()[:16]
 
 
-def text_hashes(text):
-    """What a cache row keeps instead of the transcript."""
-    ws = words(text)
-    return {
+def number_run(ws, i):
+    """(digits, tokens used) when ws[i:] starts with a number, else None.
+
+    Strict on purpose: an order people don't say ("five six") ends the run, so
+    the words stay words.
+    """
+    total = current = 0
+    used = 0
+    last = ""
+    ordinal = False
+    while i + used < len(ws):
+        w = ws[i + used]
+        if w == "and" and last == "scale":
+            used += 1
+            last = "and"
+            continue
+        value = NUMBER_WORDS.get(w)
+        kind = ""
+        if value is not None:
+            kind = "unit" if value < 20 else "tens"
+        elif w in SCALE_WORDS:
+            value, kind = SCALE_WORDS[w], "scale"
+        elif w in ORDINAL_WORDS:
+            value = ORDINAL_WORDS[w]
+            kind = "unit" if value < 20 else ("tens" if value < 100 else "scale")
+            ordinal = True
+        else:
+            break
+        if kind == "unit" and last == "unit":
+            break
+        # "twenty nineteen" is a year, not 39.
+        if kind == "unit" and last == "tens" and value >= 10:
+            break
+        if kind == "tens" and last in ("unit", "tens"):
+            break
+        if kind == "scale":
+            if value == 100:
+                current = max(current, 1) * value
+            else:
+                total += max(current, 1) * value
+                current = 0
+            last = "scale"
+        else:
+            current += value
+            last = kind
+        used += 1
+    if not used:
+        return None
+    return str(total + current), used, ordinal
+
+
+CLOCK_PREPOSITIONS = {"at", "by", "around", "from", "before", "after", "until", "till",
+                      "past", "about"}
+
+
+def clock_pair(ws, i):
+    """(hour, minute, words used after the hour) when ws[i:] reads like a clock time.
+
+    Same shape and same context as the formatter: after a time word, with a minute
+    spoken, so "at five thirty" is a time and "two fifty" is a price.
+    """
+    if i < 1 or i >= len(ws) or ws[i - 1] not in CLOCK_PREPOSITIONS:
+        return None
+    hour = NUMBER_WORDS.get(ws[i])
+    if hour is None or not 1 <= hour <= 12 or i + 1 >= len(ws):
+        return None
+    nxt = ws[i + 1]
+    if nxt == "oh" and i + 2 < len(ws) and NUMBER_WORDS.get(ws[i + 2], 99) < 10:
+        return hour, NUMBER_WORDS[ws[i + 2]], 2
+    minute = NUMBER_WORDS.get(nxt)
+    if minute is None or minute < 10:
+        return None
+    if minute % 10 == 0 and i + 2 < len(ws) and NUMBER_WORDS.get(ws[i + 2], 99) < 10:
+        return hour, minute + NUMBER_WORDS[ws[i + 2]], 2
+    return hour, minute, 1
+
+
+def number_word_at(ws, i):
+    if i < 0 or i >= len(ws):
+        return False
+    return ws[i] in NUMBER_WORDS or ws[i] in SCALE_WORDS or ws[i] in ORDINAL_WORDS
+
+
+def spelled_symbols(text):
+    """Write $ and % as words, so the fold can compare a symbol with a word."""
+    text = re.sub(r"\$\s?([\d,]+(?:\.\d+)?)", r"\1 dollars", text or "")
+    return re.sub(r"([\d,]+(?:\.\d+)?)\s?%", r"\1 percent", text)
+
+
+def canonical_words(ws):
+    """The word list with number, money, percentage and path spellings folded.
+
+    "twenty five dollars" and "$25" both come out ["25"], and "src slash main
+    dot swift" and "src/main.swift" both come out ["src", "main", "swift"], so
+    the accuracy gate measures lost words rather than changed spelling.
+    """
+    out = []
+    i = 0
+    while i < len(ws):
+        w = ws[i]
+        clock = clock_pair(ws, i)
+        if clock:
+            hour, minute, extra = clock
+            out.append(str(hour))
+            out.append(f"{minute:02d}")
+            i += 1 + extra
+            continue
+        ordinal = ORDINAL_SUFFIX.match(w)
+        run = None if ordinal else number_run(ws, i)
+        # A number word touching another one is a year or a price read aloud ("we met
+        # in twenty nineteen", "two fifty"). The formatter leaves all of it as words,
+        # and so does the fold, so a half reading like "39" cannot compare equal.
+        if run and (number_word_at(ws, i - 1) or number_word_at(ws, i + run[1])):
+            run = None
+        if ordinal:
+            # "25th" keeps its marker: an ordinal is not the cardinal it looks like,
+            # so "the twenty fifth of May" cannot fold like "the 25 of May".
+            out.append(ordinal.group(1) + ORDINAL_MARK)
+            i += 1
+        elif run:
+            digits = run[0]
+            ordinal_run = run[2]
+            i += run[1]
+            # A number's money or percentage word belongs to the number, and stays
+            # with it: dollars and cents are not the same number.
+            if i < len(ws) and ws[i] in CURRENCY_QUALIFIER:
+                digits += CURRENCY_QUALIFIER[ws[i]]
+                i += 1
+            elif i + 1 < len(ws) and ws[i] == "per" and ws[i + 1] == "cent":
+                digits += "percent"
+                i += 2
+            elif i < len(ws) and ws[i] == "percent":
+                digits += "percent"
+                i += 1
+            out.append(digits + (ORDINAL_MARK if ordinal_run else ""))
+        elif w.isdigit():
+            digits = w
+            i += 1
+            if i < len(ws) and ws[i] in CURRENCY_QUALIFIER:
+                digits += CURRENCY_QUALIFIER[ws[i]]
+                i += 1
+            elif i + 1 < len(ws) and ws[i] == "per" and ws[i + 1] == "cent":
+                digits += "percent"
+                i += 2
+            elif i < len(ws) and ws[i] == "percent":
+                digits += "percent"
+                i += 1
+            out.append(digits)
+        else:
+            # Spoken path separators carry no words of their own once a path is joined.
+            if w not in PATH_SEPARATORS and not (w == "forward" and i + 1 < len(ws)
+                                                 and ws[i + 1] == "slash"):
+                out.append(w)
+            i += 1
+    return out
+
+
+def text_hashes(cleaned, pasted=None):
+    """What a cache row keeps instead of the transcript.
+
+    `words` / `lastWord` are the words cleanup produced, the measure this gate has
+    always used, so a recorded baseline stays comparable.
+
+    `formattedWords` / `formattedLastWord` are the take as it pasted, folded with
+    canonical_words: a number in digits, a money word, a percentage and a joined
+    path all count as the words they were said as. The gate uses this pair when
+    both sides have it, so formatting is covered once a baseline carries it.
+    """
+    ws = words(cleaned)
+    out = {
         "lastWord": word_hash(ws[-1]) if ws else "",
         "words": sorted(word_hash(w) for w in ws),
     }
+    if pasted is not None:
+        folded = canonical_words(words(spelled_symbols(pasted)))
+        out["formattedLastWord"] = word_hash(folded[-1]) if folded else ""
+        out["formattedWords"] = sorted(word_hash(w) for w in folded)
+    return out
 
 
 def file_key(name):
@@ -153,7 +359,16 @@ def wer_cache_path(state, corpus):
 
 
 def load_cache(path):
-    return read_json(path, {"schema": SCHEMA, "files": {}}) or {"schema": SCHEMA, "files": {}}
+    """A cache file for this schema, or an empty one.
+
+    A cache file for another schema is stale, so it is ignored rather than mixed.
+    """
+    data = read_json(path) or {}
+    if data.get("schema") != SCHEMA:
+        data = {}
+    data.setdefault("schema", SCHEMA)
+    data.setdefault("files", {})
+    return data
 
 
 # ---------------------------------------------------------------- init
@@ -361,7 +576,9 @@ def cmd_merge_live(args):
             "sec": round(float(sec), 3),
             "latencyMs": int(latency),
         }
-        record.update(text_hashes(text))
+        # Builds before the formatter existed have no preFormat: the take pasted
+        # as it was cleaned.
+        record.update(text_hashes(row.get("preFormat") or text, text))
         files[entry["key"]] = record
         merged += 1
     cache["build"] = state["build"]
@@ -487,8 +704,8 @@ def cmd_wer_merge(args):
 
 
 def wer_result(state, corpus):
-    cache = read_json(wer_cache_path(state, corpus))
-    if not cache or not cache.get("files"):
+    cache = load_cache(wer_cache_path(state, corpus))
+    if not cache.get("files"):
         return None
     err = sum(v["err"] for v in cache["files"].values())
     ref = sum(v["ref"] for v in cache["files"].values())
@@ -533,8 +750,8 @@ def baseline_comparison(state):
         return None
     base_path = os.path.join(
         state["cache"], baseline["bench"], f"live-{baseline['flags']}.json")
-    base_cache = read_json(base_path)
-    if not base_cache or not base_cache.get("files"):
+    base_cache = load_cache(base_path)
+    if not base_cache.get("files"):
         return None
     current = load_cache(live_cache_path(state)).get("files", {})
     base = base_cache["files"]
@@ -545,15 +762,21 @@ def baseline_comparison(state):
     had_last_word = kept = dropped = 0
     for k in common:
         b, c = base[k], current[k]
-        want = Counter(b.get("words", []))
-        have = Counter(c.get("words", []))
+        # Compare the pasted take against the pasted take once both builds kept it;
+        # otherwise the words cleanup produced, which is what older baselines hold.
+        if b.get("formattedWords") and c.get("formattedWords"):
+            want, have = Counter(b["formattedWords"]), Counter(c["formattedWords"])
+            base_last, current_last = b.get("formattedLastWord"), c.get("formattedLastWord")
+        else:
+            want, have = Counter(b.get("words", [])), Counter(c.get("words", []))
+            base_last, current_last = b.get("lastWord"), c.get("lastWord")
         lost = sum(max(0, n - have[w]) for w, n in want.items())
         if lost == 0:
             same_or_better += 1
         # Only a recording the baseline heard a last word in can keep one.
-        if b.get("lastWord"):
+        if base_last:
             had_last_word += 1
-            if b["lastWord"] == c.get("lastWord"):
+            if base_last == current_last:
                 kept += 1
             else:
                 dropped += 1
@@ -716,6 +939,70 @@ def cmd_record(args):
     return 0
 
 
+# ---------------------------------------------------------------- selftest
+
+
+SELFTEST_SAME = [
+    ("twenty five dollars", "$25"),
+    ("25 dollars", "$25"),
+    ("fifty bucks", "$50"),
+    ("twenty five percent", "25%"),
+    ("twenty five cents", "25 cents"),
+    ("the total is twenty five cents", "the total is 25 cents"),
+    ("the twenty fifth of May", "the 25th of May"),
+    ("two hundred fifty", "250"),
+    ("one hundred and five", "105"),
+    ("three hundred thousand", "300000"),
+    ("src slash main dot swift", "src/main.swift"),
+    ("www dot example dot com", "www.example.com"),
+    ("at five thirty", "at 5:30"),
+]
+
+SELFTEST_DIFFERENT = [
+    # a spoken year read as one number, and a spoken price read as one number
+    ("we met in twenty nineteen", "We met in 39."),
+    ("I said twenty ten", "I said 30."),
+    ("twenty twelve", "32"),
+    ("in twenty twenty four", "In 20 24."),
+    ("flight twenty five twenty", "flight 25 20"),
+    ("that costs two fifty", "that costs two 50"),
+    ("three ninety nine", "three 99"),
+    # an ordinal is not the cardinal it looks like
+    ("the twenty fifth of May", "the 25 of May"),
+    ("the first of May", "the 1 of May"),
+    ("first place", "1 place"),
+    # cents are not dollars, and a percentage is not a price
+    ("twenty five cents", "$25"),
+    ("twenty five percent", "$25"),
+    # real word loss still shows
+    ("send it now", "send it"),
+    ("the last word", "the last"),
+    ("update the readme", "update the"),
+]
+
+
+def cmd_selftest(args):
+    """Check the fold on the strings that matter, and exit non-zero when it is blind."""
+    bad = 0
+    for spoken, written in SELFTEST_SAME:
+        a = canonical_words(words(spelled_symbols(spoken)))
+        b = canonical_words(words(spelled_symbols(written)))
+        if a != b:
+            bad += 1
+            print(f"FAIL same words, folded differently: {spoken!r} {a} vs {written!r} {b}")
+    for spoken, wrong in SELFTEST_DIFFERENT:
+        a = canonical_words(words(spelled_symbols(spoken)))
+        b = canonical_words(words(spelled_symbols(wrong)))
+        if a == b:
+            bad += 1
+            print(f"FAIL different words, folded the same: {spoken!r} and {wrong!r} {a}")
+    same_n = len(SELFTEST_SAME)
+    diff_n = len(SELFTEST_DIFFERENT)
+    print(f"fold selftest: {same_n - bad if bad <= same_n else 0} same, "
+          f"{diff_n} different, {bad} failures")
+    return 1 if bad else 0
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -743,6 +1030,7 @@ def main(argv):
         "wer-plan": cmd_wer_plan,
         "wer-merge": cmd_wer_merge,
         "report": cmd_report,
+        "selftest": cmd_selftest,
         "record": cmd_record,
     }
     handler = handlers.get(command)

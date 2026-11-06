@@ -47,10 +47,31 @@ public final class EditWatcher: CorrectionWatching {
     public private(set) var lastSummary: String?
     /// The decisions that produced `lastSummary`, so Undo can reverse them.
     private var lastApplied: [CorrectionLearner.Decision] = []
-    /// "saved to dictionary: pychy → pi CLI". Called only after dictionary.json
-    /// gained that correction. Pending sightings, duplicates, removals, and
-    /// failed writes do not call it.
-    public var onDictionarySaved: ((String) -> Void)?
+    /// One correction that reached dictionary.json.
+    public struct LearnedEntry: Equatable, Sendable {
+        public let from: String
+        public let to: String
+        /// A casing entry in `terms` rather than a rule in `replacements`.
+        public let isTerm: Bool
+
+        public init(from: String, to: String, isTerm: Bool) {
+            self.from = from
+            self.to = to
+            self.isTerm = isTerm
+        }
+    }
+
+    /// Everything one take taught, plus the way back out of it.
+    public struct LearnedBatch {
+        public let entries: [LearnedEntry]
+        /// Removes exactly these entries. Held by the confirmation card, which
+        /// offers Undo for a few seconds.
+        public let undo: @MainActor () -> Void
+    }
+
+    /// Called only after dictionary.json gained a correction. Pending
+    /// sightings, duplicates, removals, and failed writes do not call it.
+    public var onDictionarySaved: ((LearnedBatch) -> Void)?
 
     public init(learner: CorrectionLearner, dictionaryFile: URL, pendingFile: URL,
                 isEnabled: @escaping () -> Bool) {
@@ -134,21 +155,21 @@ public final class EditWatcher: CorrectionWatching {
     public func apply(_ decisions: [CorrectionLearner.Decision]) {
         let pending = self.pending
         var learned: [String] = []
-        var saved: [String] = []
+        var saved: [LearnedEntry] = []
         var applied: [CorrectionLearner.Decision] = []
         for decision in decisions {
             do {
                 switch decision {
                 case .term(let term):
                     if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
-                        saved.append(term)
+                        saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                     }
                     learned.append(term)
                     applied.append(decision)
                 case .replacement(let from, let to):
                     let phrase = "\(from) → \(to)"
                     if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
-                        saved.append(phrase)
+                        saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                     }
                     learned.append(phrase)
                     applied.append(decision)
@@ -161,13 +182,13 @@ public final class EditWatcher: CorrectionWatching {
                     switch promoted {
                     case .term(let term):
                         if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
-                            saved.append(term)
+                            saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                         }
                         learned.append(term)
                     case .replacement(let from, let to):
                         let phrase = "\(from) → \(to)"
                         if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
-                            saved.append(phrase)
+                            saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                         }
                         learned.append(phrase)
                     default: break
@@ -191,7 +212,28 @@ public final class EditWatcher: CorrectionWatching {
         // After the writes have returned. `saved` holds only entries whose
         // dictionary call reported a real change.
         if !saved.isEmpty {
-            onDictionarySaved?("saved to dictionary: " + saved.joined(separator: ", "))
+            let entries = saved
+            onDictionarySaved?(LearnedBatch(entries: entries) { [weak self] in
+                self?.undo(entries)
+            })
+            let shown = entries.map { "\($0.from) → \($0.to)" }.joined(separator: ", ")
+            // Learned pairs only, never the take: this is the one line to look
+            // for when "it never learns anything" comes up again.
+            logger.notice("learn: saved \(shown, privacy: .public)")
+        }
+    }
+
+    /// Reverses exactly the entries a confirmation card announced, so Undo on
+    /// the card can never eat a later dictation's lesson.
+    @MainActor
+    public func undo(_ entries: [LearnedEntry]) {
+        for entry in entries {
+            if entry.isTerm {
+                try? PersonalDictionary.removeTerm(entry.to, fileURL: dictionaryFile)
+            } else {
+                try? PersonalDictionary.removeReplacement(from: entry.from, to: entry.to,
+                                                          fileURL: dictionaryFile)
+            }
         }
     }
 
@@ -235,11 +277,45 @@ public final class EditWatcher: CorrectionWatching {
         var range = CFRange(location: location, length: length)
         guard let param = AXValueCreate(.cfRange, &range) else { return nil }
         var value: AnyObject?
-        guard AXUIElementCopyParameterizedAttributeValue(
+        if AXUIElementCopyParameterizedAttributeValue(
             span.element, kAXStringForRangeParameterizedAttribute as CFString,
             param, &value
-        ) == .success else { return nil }
-        return value as? String
+        ) == .success, let window = value as? String {
+            return windowText(ranged: window, whole: nil, location: location, length: length)
+        }
+        // Some editors refuse the parameterized read but still publish the whole
+        // value. Slice that the same way, or a correction made in those apps is
+        // silently never reviewed.
+        var wholeValue: AnyObject?
+        let whole = AXUIElementCopyAttributeValue(
+            span.element, kAXValueAttribute as CFString, &wholeValue
+        ) == .success ? wholeValue as? String : nil
+        return windowText(ranged: nil, whole: whole, location: location, length: length)
+    }
+
+    /// The text to review: the editor's ranged answer when it gave one, else the
+    /// same span taken from its whole value. Needs no selected range, only the
+    /// location and length recorded at paste time.
+    public nonisolated static func windowText(
+        ranged: String?, whole: String?, location: Int, length: Int
+    ) -> String? {
+        if let ranged { return ranged }
+        guard let whole else { return nil }
+        return slice(whole, location: location, length: length)
+    }
+
+    /// `location ..< location+length` of `text` in UTF-16 units, clamped to its
+    /// end. nil when `location` is past the end of the text.
+    public nonisolated static func slice(_ text: String, location: Int, length: Int) -> String? {
+        let utf16 = text.utf16
+        guard location >= 0, location < utf16.count else { return nil }
+        let end = min(location + max(0, length), utf16.count)
+        guard let start = utf16.index(utf16.startIndex, offsetBy: location, limitedBy: utf16.endIndex),
+              let stop = utf16.index(start, offsetBy: end - location, limitedBy: utf16.endIndex),
+              let lower = start.samePosition(in: text),
+              let upper = stop.samePosition(in: text)
+        else { return nil }
+        return String(text[lower..<upper])
     }
 
     /// Index range of the anchor when it occurs exactly once in `window`.

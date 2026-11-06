@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "Whisp", targets: ["Whisp"]),
         .executable(name: "whisp-bench", targets: ["whisp-bench"]),
+        .executable(name: "whisp-learnprobe", targets: ["whisp-learnprobe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.4"),
@@ -29,6 +30,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "whisp-tests",
+            dependencies: ["WhispCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "whisp-learnprobe",
             dependencies: ["WhispCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

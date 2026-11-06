@@ -263,6 +263,10 @@ func runLive(
                 "file": id, "sec": row.seconds, "latencyMs": row.latencyMs,
                 "bgWaitMs": row.backgroundWaitMs, "finalMs": row.finalDecodeMs,
                 "text": entry.cleaned,
+                // What cleanup produced, before formatting wrote the same words
+                // differently. The scoreboard compares it with `text` to prove a
+                // formatting rule never removed a word from a real take.
+                "preFormat": FillerCleaner().clean(entry.raw),
             ]
             if let real = row.realMs { object["realMs"] = real }
             emitJSON(object)

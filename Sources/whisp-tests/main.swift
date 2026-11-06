@@ -5,6 +5,13 @@ import WhispCore
 // Plain executable test runner (Command Line Tools ship without XCTest/Testing).
 // Exits non-zero on any failure.
 
+// Never touch the owner's real dictations: the suite writes a history line, a
+// dictionary and a wav, so point AppPaths at a throwaway folder before the
+// first use of it. AppPaths.root is a lazy `let`, so this must run first.
+let testDataDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("whisp-tests-\(UUID().uuidString)", isDirectory: true)
+setenv("WHISP_DATA_DIR", testDataDir.path, 1)
+
 var failures = 0
 var passes = 0
 
@@ -71,6 +78,7 @@ let cases: [(String, String)] = [
     ("She had had enough.", "She had had enough."),
     ("No no, that's wrong.", "No no, that's wrong."),
     ("It was very very good.", "It was very very good."),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped."),
     ("Go. Go.", "Go. Go."),
     // Restarted phrases
     ("Go to the go to desktop folder.", "Go to desktop folder."),
@@ -109,6 +117,159 @@ for (input, output) in cases {
     expect(cleaner.clean(input), output, "clean(\"\(input)\")")
 }
 
+// MARK: - TextFormatter
+//
+// Fixed rules, no model: the same words, written the way he would write them.
+// Each case below is one rule; "must not fire" cases pin what has to be left alone.
+
+let formatter = TextFormatter()
+let formatCases: [(String, String, String)] = [
+    // Numbers twenty and up are written in digits; anything smaller stays a word.
+    ("Send twenty five dollars today.", "Send $25 today.", "number and money"),
+    ("Two hundred fifty units shipped.", "250 units shipped.", "hundreds"),
+    ("We need one hundred and five of them.", "We need 105 of them.", "and inside a number"),
+    ("It costs fifty bucks.", "It costs $50.", "slang money"),
+    ("That is twenty five percent off.", "That is 25% off.", "percentage"),
+    ("Wait twenty minutes.", "Wait 20 minutes.", "tens alone"),
+    ("Three hundred thousand records.", "300000 records.", "thousand"),
+    ("The twenty fifth of May.", "The 25th of May.", "ordinal"),
+    ("I have five apples.", "I have five apples.", "must not fire: small count"),
+    ("One thing at a time.", "One thing at a time.", "must not fire: one thing"),
+    ("I have told you a hundred times.", "I have told you a hundred times.", "must not fire: a hundred times"),
+    ("It costs five dollars.", "It costs five dollars.", "must not fire: small money stays words"),
+    ("The five of us are here.", "The five of us are here.", "must not fire: five of us"),
+    // A year or a price said the way people say it is not one number: half a
+    // reading would write a wrong number, so all of it stays words.
+    ("We met in twenty nineteen.", "We met in twenty nineteen.", "must not fire: spoken year"),
+    ("I said twenty ten.", "I said twenty ten.", "must not fire: spoken year"),
+    ("Twenty twelve was a good year.", "Twenty twelve was a good year.", "must not fire: spoken year"),
+    ("In twenty twenty four we shipped it.", "In twenty twenty four we shipped it.",
+     "must not fire: spoken year"),
+    ("Flight twenty five twenty.", "Flight twenty five twenty.", "must not fire: number read in pairs"),
+    ("That costs two fifty.", "That costs two fifty.", "must not fire: price read in pairs"),
+    ("Three ninety nine for the shirt.", "Three ninety nine for the shirt.",
+     "must not fire: price read in pairs"),
+    ("I said dot dot dot and stopped.", "I said dot dot dot and stopped.", "must not fire: spoken ellipsis"),
+    // Spoken clock times, only after a time word and only with a minute.
+    ("Meet me at five thirty.", "Meet me at 5:30.", "clock time"),
+    ("The call is at ten fifteen tomorrow.", "The call is at 10:15 tomorrow.", "clock time, teens"),
+    ("Let us meet at five oh five.", "Let us meet at 5:05.", "clock time, leading zero"),
+    ("Meet me at five.", "Meet me at five.", "must not fire: bare hour"),
+    ("At one point we agreed.", "At one point we agreed.", "must not fire: at one point"),
+    // Spoken file paths.
+    ("Open src slash main dot swift.", "Open src/main.swift.", "path"),
+    ("Open src slash components.", "Open src/components.", "single slash"),
+    ("Go to www dot example dot com.", "Go to www.example.com.", "web address"),
+    ("Dot env is the config file.", ".env is the config file.", "dot file at a sentence start"),
+    ("Edit dot env first.", "Edit dot env first.", "must not fire: one spoken dot alone"),
+    ("Check the package dot json file.", "Check the package dot json file.",
+     "must not fire: one spoken dot alone"),
+    ("We slash prices today.", "We slash prices today.", "must not fire: slash as a verb"),
+    ("We slash prices slash costs today.", "We slash prices slash costs today.",
+     "must not fire: two verbs, not a path"),
+    ("Put a dot of paint on it.", "Put a dot of paint on it.", "must not fire: a dot of paint"),
+    // Sentences: capital, closing stop, question mark, opener comma.
+    ("we should ship it", "We should ship it.", "closing stop and capital"),
+    ("is it working", "Is it working?", "question"),
+    ("do you want coffee", "Do you want coffee?", "question"),
+    ("where is the file", "Where is the file?", "question with wh-"),
+    ("it's fine, right.", "It's fine, right?", "tag question"),
+    ("what is done is done.", "What is done is done.", "must not fire: not a question"),
+    ("do not do that.", "Do not do that.", "must not fire: not a question"),
+    ("yes I think so.", "Yes, I think so.", "opener comma"),
+    ("no it isn't.", "No, it isn't.", "opener comma"),
+    ("okay let's go.", "Okay, let's go.", "opener comma"),
+    ("no no, that's wrong.", "No no, that's wrong.", "must not fire: doubled no"),
+    ("so we went home.", "So we went home.", "must not fire: no comma after so"),
+    ("we ship today. then we rest.", "We ship today. Then we rest.", "second sentence"),
+]
+for (input, expected, rule) in formatCases {
+    expect(formatter.format(input), expected, "format(\(input)) - \(rule)")
+}
+
+// A formatting pass may rewrite how a word is written, never drop one. The only
+// words it may remove are a number's money or percentage word, a spoken path
+// separator, and the "and" inside a spelled number.
+let absorbedWords: Set<String> = [
+    "dollars", "dollar", "bucks", "buck", "cents", "cent", "percent", "per", "slash",
+    "dot", "underscore", "backslash", "forward", "and",
+]
+
+// Spelled numbers become digits, so their words are allowed to disappear; every
+// other word has to survive.
+let numberWords: Set<String> = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty",
+    "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion", "oh",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+    "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth",
+    "seventeenth", "eighteenth", "nineteenth", "twentieth", "thirtieth", "fortieth",
+    "fiftieth", "sixtieth", "seventieth", "eightieth", "ninetieth", "hundredth",
+    "thousandth", "millionth",
+]
+
+func testWords(_ text: String) -> [String] {
+    var out: [String] = []
+    var current = ""
+    for ch in text.lowercased() {
+        if ch.isLetter || ch.isNumber {
+            current.append(ch)
+        } else if !current.isEmpty {
+            out.append(current)
+            current = ""
+        }
+    }
+    if !current.isEmpty { out.append(current) }
+    return out
+}
+
+for (input, _, rule) in formatCases {
+    // The real output, not the table's expectation: a wrong value written in digits
+    // is caught by the equality check above, and this one is for a lost word.
+    let actual = formatter.format(input)
+    var have: [String: Int] = [:]
+    for word in testWords(actual) { have[word, default: 0] += 1 }
+    for word in testWords(input) {
+        if word.contains(where: \.isNumber) || absorbedWords.contains(word) { continue }
+        if numberWords.contains(word) { continue }
+        if let count = have[word], count > 0 {
+            have[word] = count - 1
+        } else {
+            failures += 1
+            print("FAIL format lost a word: \(word) in \(rule): \(input) -> \(actual)")
+        }
+    }
+}
+
+// Real takes in his fast, casual style, through the whole pipeline in order:
+// clean first, then format. Printed so the before and after can be read side by side.
+let pipelineCases: [(String, String)] = [
+    ("um so I I was thinking we should, like, ship it today",
+     "So I was thinking we should ship it today."),
+    ("the the build takes twenty five minutes and it's, uh, at five thirty",
+     "The build takes 25 minutes and it's at 5:30."),
+    ("open src slash main dot swift and change the timeout to twenty five percent",
+     "Open src/main.swift and change the timeout to 25%."),
+    ("it costs two hundred fifty dollars, right",
+     "It costs $250, right?"),
+    ("is it working yet or do we need, you know, to restart it",
+     "Is it working yet or do we need to restart it?"),
+]
+print("before and after, fast casual dictation:")
+for (raw, expected) in pipelineCases {
+    let after = formatter.format(cleaner.clean(raw))
+    print("  before: \(raw)")
+    print("  after:  \(after)")
+    expect(after, expected, "pipeline(clean then format) \(raw)")
+}
+
+// Formatting twice must give the same text: the app may clean a take it already
+// formatted when a recovered take is re-read.
+for (_, expected, _) in formatCases {
+    expect(formatter.format(expected), expected, "format is idempotent: \(expected)")
+}
+
 // MARK: - PersonalDictionary
 
 let dict = PersonalDictionary(
@@ -142,6 +303,125 @@ expect(fileDict.apply("depop"), "Depop", "transiently missing file keeps last go
 try! #"{"terms": ["Grailed"], "replacements": [{"from": "depop", "to": "Depop App"}]}"#
     .write(to: tmp, atomically: true, encoding: .utf8)
 expect(fileDict.apply("grailed"), "Grailed", "recovers after the file returns")
+
+// MARK: - Coding word pack
+
+// Built in and always on: none of this needs a dictionary.json rule. Each row is
+// a sentence in fast casual dictation, then what has to reach the screen.
+let packCases: [(String, String)] = [
+    // File names, both spoken shapes
+    ("put the rules in agents dot md", "put the rules in AGENTS.md"),
+    ("update agents MD before you ship", "update AGENTS.md before you ship"),
+    ("read claude dot md first", "read CLAUDE.md first"),
+    ("put the rules in claude md", "put the rules in CLAUDE.md"),
+    ("the soul dot md is the personality", "the SOUL.md is the personality"),
+    ("add it to the readme", "add it to the README.md"),
+    ("copy the dot env and fill it in", "copy the .env and fill it in"),
+    ("bump package json and push", "bump package.json and push"),
+    ("the ts config needs another alias", "the tsconfig.json needs another alias"),
+    ("docker compose dot yaml has the ports", "docker-compose.yml has the ports"),
+    ("put node modules in git ignore", "put node modules in .gitignore"),
+    ("the make file has three targets", "the Makefile has three targets"),
+    // Harnesses and AI tools
+    ("claude code keeps rewriting my comments", "Claude Code keeps rewriting my comments"),
+    ("ask chat gpt to check it", "ask ChatGPT to check it"),
+    ("co-pilot wrote a worse version", "Copilot wrote a worse version"),
+    ("open cursor and run the tests", "open Cursor and run the tests"),
+    ("hermes is still running", "Hermes is still running"),
+    ("push it to github", "push it to GitHub"),
+    ("vs code is already open", "VS Code is already open"),
+    ("the windsurf tab is lagging", "the Windsurf tab is lagging"),
+    // Everyday words
+    ("the pr on git hub is red", "the PR on GitHub is red"),
+    ("put it in the jason file", "put it in the JSON file"),
+    ("parse the jason and print it", "parse the JSON and print it"),
+    ("run n p m install", "run npm install"),
+    ("it only works on local host", "it only works on localhost"),
+    ("use ssh to get in", "use SSH to get in"),
+    ("the sub agent blew up", "the sub-agent blew up"),
+    ("the mcp server is down", "the MCP server is down"),
+    ("ask grok about the llm", "ask Grok about the LLM"),
+    ("the gpu is pegged", "the GPU is pegged"),
+    ("the api key is missing", "the API key is missing"),
+    ("check the cli help", "check the CLI help"),
+    ("fix the json output", "fix the JSON output"),
+    ("it is a yaml thing", "it is a YAML thing"),
+    ("post gres keeps dropping it", "Postgres keeps dropping it"),
+    ("deploy it to vercel", "deploy it to Vercel"),
+    ("the supabase keys are in the vault", "the Supabase keys are in the vault"),
+    ("kube control rollout status", "kubectl rollout status"),
+    ("swift ui is fine here", "SwiftUI is fine here"),
+    ("it is core ml under the hood", "it is CoreML under the hood"),
+    ("it works on mac os but not i os", "it works on macOS but not iOS"),
+    ("typescript is fine, java script is not", "TypeScript is fine, JavaScript is not"),
+    ("the cli is written in rust", "the CLI is written in Rust"),
+    ("the cli is written in go", "the CLI is written in Go"),
+    ("write a python script for it", "write a Python script for it"),
+    ("open zed and paste it", "open Zed and paste it"),
+    ("join the slack channel", "join the Slack channel"),
+    ("the linear issue is stale", "the Linear issue is stale"),
+    ("the notion page is empty", "the Notion page is empty"),
+    ("figma has the new icons", "Figma has the new icons"),
+    ("docker is not running", "Docker is not running"),
+    ("ask capy to do it", "ask Capy to do it"),
+    ("the codync agent is stuck", "the Codync agent is stuck"),
+]
+for (input, output) in packCases {
+    expect(cleaner.clean(input), output, "pack: \"\(input)\"")
+}
+
+// The other half of the table: an English word that is also a product or language
+// name must stay English, and a file name already spelled out must not grow a
+// second extension.
+let packUntouched: [String] = [
+    "Jason called about the invoice.",
+    "Jason's car is outside.",
+    "I asked Jason to review the deploy.",
+    "move the cursor to the end of the line.",
+    "the cursor is blinking.",
+    "make file copies of everything.",
+    "a linear function of time.",
+    "linear regression is boring.",
+    "the notion of fairness matters.",
+    "there is slack in the rope.",
+    "the python was three meters long.",
+    "rust on the car door.",
+    "go to the store and get milk.",
+    "swift delivery at noon.",
+    "I bought yarn and a bun.",
+    "the letter zed sounds like zee.",
+    "we merged the commit and rebased the branch.",
+    "the apiary is full of bees.",
+    "she asked about Claude Monet.",
+    "README.md is the entry point.",
+    "the .gitignore file is fine.",
+    "the AGENTS.md file has the rules.",
+    "the package.json already has it.",
+    // Nothing inside a path, a URL, an email, a branch name or an identifier.
+    "open src/api/handler.ts and tell me what it says.",
+    "check https://api.example.com/v1 before you deploy.",
+    "send the invite to bob@api.com today.",
+    "the branch is feat/api-cleanup on origin.",
+    "rename api_key_for_user in the env file.",
+    // Ordinary English that only looks like a product name.
+    "we moved with swift action.",
+    "the calls came in swift succession.",
+    "coat it with rust protection.",
+    "read Jason the letter when it lands.",
+    "write Jason a note about it.",
+    "I need to go code for a while.",
+    "the wind surf was rough yesterday.",
+    "the local host of the party left early.",
+]
+for input in packUntouched {
+    expect(cleaner.clean(input), input, "pack leaves alone: \"\(input)\"")
+}
+
+// A hand-written rule still wins: the pack runs first, the dictionary last, so a
+// rule is written against the spelling Whisp shows you.
+let overrideDict = PersonalDictionary(terms: [], replacements: ["GitHub Enterprise": ["github"]])
+expect(FillerCleaner(dictionary: overrideDict).clean("push it to git hub"), "push it to GitHub Enterprise",
+       "dictionary beats the pack")
 
 // MARK: - SpeechSegmenter
 
@@ -794,9 +1074,8 @@ await sessionInterruptTests()
 // Dictation data is private: the data dir and every file in it must be
 // readable only by the owner (~/Library/Application Support is world-readable).
 do {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whisp-root-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: dir) }
-    setenv("WHISP_DATA_DIR", dir.path, 1)
+    // AppPaths.root is already pointed at the suite's throwaway folder at the
+    // top of this file.
     func perm(_ url: URL) -> String {
         let attrs = try! FileManager.default.attributesOfItem(atPath: url.path)
         return String(format: "%o", attrs[.posixPermissions] as! Int)
@@ -812,6 +1091,47 @@ do {
     let permArchive = RecordingArchive(directory: AppPaths.recordingsDir)
     _ = try! permArchive.save(samples: [0.1, 0.2], id: "t1")
     expect(perm(AppPaths.recordingsDir.appendingPathComponent("t1.wav")), "600", "wav is user-only")
+}
+
+// The data folder the app reads must be the one the owner edits: the first
+// installs lived in ~/whisp-data, and a double-clicked app has no environment
+// to say so.
+// Decided against real folders, because the rule asks the filesystem.
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("whisp-home-\(UUID().uuidString)",
+                                                            isDirectory: true)
+    let legacy = home.appendingPathComponent("whisp-data", isDirectory: true)
+    let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
+    let firstInstall = support.appendingPathComponent("Whisp", isDirectory: true)
+    defer { try? fm.removeItem(at: home) }
+    func choose(_ override: String? = nil) -> URL {
+        var isDirectory: ObjCBool = false
+        let exists = fm.fileExists(atPath: legacy.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+        return AppPaths.chooseRoot(override: override, legacy: legacy, legacyExists: exists,
+                                   appSupport: support)
+    }
+    expect(choose().path, firstInstall.path, "no ~/whisp-data: a fresh install uses Application Support")
+    expect(choose("/tmp/x").path, "/tmp/x", "WHISP_DATA_DIR wins over everything")
+    expect(choose("").path, firstInstall.path, "an empty WHISP_DATA_DIR is not an override")
+    try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+    expect(choose().path, legacy.path, "an empty ~/whisp-data is still the data root")
+    try #"{"terms":["Vinted"],"replacements":[]}"#.write(
+        to: legacy.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "~/whisp-data holding a dictionary is the data root")
+    try fm.createDirectory(at: firstInstall, withIntermediateDirectories: true)
+    try #"{"terms":["Sol"],"replacements":[]}"#.write(
+        to: firstInstall.appendingPathComponent("dictionary.json"), atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "both folders present: the owner's data wins")
+    // The rule reads no file, so an unreadable dictionary inside must not move
+    // the root, and opening it must not take the reader down with it.
+    try "not json {{{".write(to: legacy.appendingPathComponent("dictionary.json"),
+                             atomically: true, encoding: .utf8)
+    expect(choose().path, legacy.path, "an unreadable dictionary inside does not move the root")
+    expect(PersonalDictionary(fileURL: legacy.appendingPathComponent("dictionary.json"))
+            .apply("We sell on vinted."),
+           "We sell on vinted.", "an unreadable dictionary applies nothing and does not crash")
 }
 
 // MARK: - A2 Reliability
@@ -1499,16 +1819,10 @@ if ProcessInfo.processInfo.environment["WHISP_TEST_PASTEBOARD"] == "1" {
 
 // MARK: - Auto-learn
 
-// The learner's "real word" oracle is a set here. "Pychy" is unknown model
-// junk. Names like Priya, Filip, and Ellem are left out on purpose: the spell
-// checker doesn't know them, so they exercise the unknown-word gate.
-let knownWords: Set<String> = [
-    "soul", "use", "the", "model", "open", "now", "we", "sell", "on", "vinted",
-    "meet", "tuesday", "monday", "should", "ship", "it", "send", "to", "him",
-    "hello", "there", "with", "and", "more", "typed", "after", "pi", "cli",
-    "fully", "rewritten", "this", "is", "a", "different", "story", "today", "i",
-]
-let learner = CorrectionLearner(isKnownWord: { knownWords.contains($0.lowercased()) })
+// The learner's "real word" oracle comes from the app itself, through the same
+// factory Composition calls. No stub and no copy, because either one can make a
+// rule look right on a word the real checker already knows.
+let learner = SpellCheckOracle.learner()
 
 func checkLearn(_ pasted: String, _ current: String,
                 _ expected: [CorrectionLearner.Decision],
@@ -1519,18 +1833,36 @@ func checkLearn(_ pasted: String, _ current: String,
            "\(label) — got \(decisions)", line: line)
 }
 
-// The required table from the brief.
+// The required table from the brief. Expectations below are what the app's own
+// NSSpellChecker oracle produces; the words it happens to know decide the gate.
+// A real word fixed to something the checker does not know is the owner naming
+// a thing, so one sighting is saved.
+checkLearn("Help me set up tail skill.", "Help me set up tailscale.",
+           [.replacement(from: "tail skill", to: "tailscale")],
+           "known words fixed to a name save at once")
+checkLearn("Ship it to the knockout.", "Ship it to the nelko.",
+           [.replacement(from: "knockout", to: "nelko")],
+           "a product name the checker never saw saves at once")
+checkLearn("Open the agents MD now.", "Open the AGENTS.md now.",
+           [.replacement(from: "agents MD", to: "AGENTS.md")],
+           "an abbreviation the checker never saw saves at once")
+// The checker knows "Sol" and "Claude", so these two are not naming a new word:
+// they still wait for a second sighting. Kept as rows precisely because the
+// PR first claimed the opposite.
 checkLearn("I use the soul model.", "I use the Sol model.",
-           [.pending(from: "soul", to: "Sol", kind: .replacement)], "soul→Sol: pending")
+           [.pending(from: "soul", to: "Sol", kind: .replacement)],
+           "soul→Sol: the checker knows Sol, so it waits")
+checkLearn("Open cloud code now.", "Open Claude Code now.",
+           [.pending(from: "cloud code", to: "Claude Code", kind: .replacement)],
+           "cloud code→Claude Code: the checker knows Claude, so it waits")
 checkLearn("Open Pychy now.", "Open pi CLI now.",
            [.replacement(from: "Pychy", to: "pi CLI")], "junk from learns right away")
-checkLearn("Meet Priya today.", "Meet Anil today.",
-           [.pending(from: "Priya", to: "Anil", kind: .replacement)],
-           "priya→anil waits for a second sighting")
+checkLearn("Meet Priya today.", "Meet Anil today.", [],
+           "priya→anil is not a mishearing, so nothing is learned")
 checkLearn("Meet priya today.", "Meet Priya today.",
            [.term("Priya")], "casing an unknown name still learns")
 checkLearn("We sell on vinted.", "We sell on Vinted.",
-           [.pending(from: "vinted", to: "Vinted", kind: .term)], "case-only pending")
+           [.term("Vinted")], "casing a name the checker does not know saves at once")
 checkLearn("Meet on Tuesday.", "Meet on Monday.", [], "Tuesday→Monday never")
 checkLearn("We should ship it.", "We should not ship it.", [], "insertion ignored")
 checkLearn("Send it to him.", "Send it too him.", [], "stoplist ignored")
@@ -1552,15 +1884,14 @@ checkLearn("I use the Sol model.", "I use the soul model.",
            rules: [(["soul"], "Sol")], "undo removes the rule")
 checkLearn("Open Pychy now with vinted.", "Open pi CLI now with Vinted.",
            [.replacement(from: "Pychy", to: "pi CLI"),
-            .pending(from: "vinted", to: "Vinted", kind: .term)], "two fixes in one take")
+            .term("Vinted")], "two fixes in one take")
 
 // Review edge cases for the mishearing gate (PR #52).
 // "gonna" and "2nd" are unknown to this oracle and fail the gate, so they
 // wait for a second sighting instead of being dropped.
 checkLearn("Meet Priya today.", "Meet today.", [], "deleting an unknown name learns nothing")
-checkLearn("We gonna ship it.", "We will ship it.",
-           [.pending(from: "gonna", to: "will", kind: .replacement)],
-           "rewording slang is not a mishearing")
+checkLearn("We gonna ship it.", "We will ship it.", [],
+           "rewording slang is not a mishearing, so nothing is learned")
 checkLearn("Use 2nd copy.", "Use 3rd copy.",
            [.pending(from: "2nd", to: "3rd", kind: .replacement)],
            "digit-led words with no Soundex key do not match")
@@ -1570,8 +1901,8 @@ checkLearn("Email Filip today.", "Email Phillip today.",
            [.pending(from: "Filip", to: "Phillip", kind: .replacement)],
            "Filip→Phillip first sighting is pending")
 checkLearn("Email Katie today.", "Email Caty today.",
-           [.pending(from: "Katie", to: "Caty", kind: .replacement)],
-           "Katie→Caty first sighting is pending")
+           [.replacement(from: "Katie", to: "Caty")],
+           "Katie→Caty is close enough to the sound to save at once")
 checkLearn("Email Ellem today.", "Email LLM today.",
            [.pending(from: "Ellem", to: "LLM", kind: .replacement)],
            "Ellem→LLM first sighting is pending")
@@ -1590,7 +1921,7 @@ checkLearn("Open Pychy now.", "Open Pitchy Now.", [],
 // The same two fixes in separate sentence blocks each learn on their own.
 checkLearn("Open Pychy now. Meet tuesday.", "Open Pitchy now. Meet Tuesday.",
            [.replacement(from: "Pychy", to: "Pitchy"),
-            .pending(from: "tuesday", to: "Tuesday", kind: .term)],
+            .term("Tuesday")],
            "two fixes in separate blocks both learn")
 // Three real fixes in one take: the per-paste cap learns only the first two.
 checkLearn("I use the soul model. Open Pychy now. We sell on vinted.",
@@ -1635,6 +1966,28 @@ do {
     let empty = EditWatcher.singleOccurrence(of: "", in: "Sol model.")
     expect(empty != nil && String("Sol model."[empty!.upperBound...]) == "Sol model." ? "ok" : "bad",
            "ok", "empty anchor = document start")
+    // Whole-value fallback window: offsets are UTF-16, the tail clamps, and a
+    // cursor past the end reads nothing.
+    expect(EditWatcher.slice("abcdef", location: 2, length: 3) ?? "nil", "cde",
+           "fallback window slice")
+    expect(EditWatcher.slice("abcdef", location: 4, length: 99) ?? "nil", "ef",
+           "fallback window slice clamps at the end")
+    expect(EditWatcher.slice("abcdef", location: 6, length: 3) == nil ? "nil" : "text", "nil",
+           "fallback window slice past the end reads nothing")
+    expect(EditWatcher.slice("éclair 🤖 done", location: 10, length: 4) ?? "nil", "done",
+           "fallback slice counts UTF-16 units like the AX range")
+    // The fallback as one function: the ranged read wins when the editor gives
+    // one, else the same span of its whole value. It takes no selected range,
+    // only the location and length recorded at paste time, which is what keeps
+    // review working in an editor that publishes a value and no selection.
+    expect(EditWatcher.windowText(ranged: "cde", whole: "ignored", location: 2, length: 3) ?? "nil",
+           "cde", "ranged read wins over the whole value")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 2, length: 3) ?? "nil",
+           "cde", "whole value and no selected range falls back to the slice")
+    expect(EditWatcher.windowText(ranged: nil, whole: "abcdef", location: 99, length: 3) == nil
+             ? "nil" : "text", "nil", "whole value with the cursor past its end reads nothing")
+    expect(EditWatcher.windowText(ranged: nil, whole: nil, location: 0, length: 3) == nil
+             ? "nil" : "text", "nil", "neither answer reads nothing and does not crash")
 }
 
 // Apply path: pending file + dictionary.json in a temp dir.
@@ -1653,35 +2006,36 @@ try """
 let watcher = EditWatcher(learner: learner, dictionaryFile: dictFile,
                           pendingFile: pendFile, isEnabled: { true })
 var saveNotices: [String] = []
-watcher.onDictionarySaved = { saveNotices.append($0) }
+var lastBatch: EditWatcher.LearnedBatch?
+watcher.onDictionarySaved = { batch in
+    lastBatch = batch
+    saveNotices.append(batch.entries.map { "\($0.from) → \($0.to)" }.joined(separator: ", "))
+}
 
 func dictHas(_ needle: String) -> Bool {
     (try? String(contentsOf: dictFile, encoding: .utf8).contains(needle)) ?? false
 }
 
-// 1st sighting of a real-word fix: pending only, dictionary untouched.
-watcher.apply(learner.decide(pasted: "I use the soul model.",
-                                   current: "I use the Sol model.", existingRules: []))
-expect(dictHas("Sol").description, "false", "pending writes nothing to dictionary")
-expect((try? String(contentsOf: pendFile, encoding: .utf8))?
-        .contains("soul") == true ? "pending" : "empty", "pending", "fix counted in pending file")
-expect(String(saveNotices.count), "0", "pending sighting shows no save alert")
-
-// 2nd sighting: promoted into dictionary.json.
-watcher.apply(learner.decide(pasted: "I use the soul model.",
-                                   current: "I use the Sol model.", existingRules: []))
-expect(dictHas("soul").description, "true", "second sighting writes the rule")
-expect(dictHas("Sol").description, "true", "rule maps to Sol")
-expect(watcher.lastSummary?.contains("soul → Sol") ?? false ? "shown" : "hidden",
-       "shown", "menu shows Learned: soul → Sol")
-expect(saveNotices.last ?? "", "saved to dictionary: soul → Sol", "alert follows the dictionary write")
+// A real word fixed to a name the checker does not know saves on the first
+// sighting: the owner is naming something, and that name is what the
+// dictionary is for.
+watcher.apply(learner.decide(pasted: "Help me set up tail skill.",
+                                   current: "Help me set up tailscale.", existingRules: []))
+expect(dictHas("tail skill").description, "true", "a name fix writes on the first sighting")
+expect(dictHas("tailscale").description, "true", "rule maps to tailscale")
+expect(watcher.lastSummary?.contains("tail skill → tailscale") ?? false ? "shown" : "hidden",
+       "shown", "menu shows Learned: tail skill → tailscale")
+expect(saveNotices.last ?? "", "tail skill → tailscale", "alert follows the dictionary write")
+// Saved now, used by the next dictation: the same file loads the rule back.
+expect(PersonalDictionary(fileURL: dictFile).apply("Help me set up tail skill."),
+       "Help me set up tailscale.", "the next dictation uses the learned rule")
 
 // Junk fix writes immediately.
 watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(dictHas("Pychy").description, "true", "junk fix writes at once")
 expect(dictHas("pi CLI").description, "true", "junk fix target saved")
-expect(saveNotices.last ?? "", "saved to dictionary: Pychy → pi CLI", "junk fix alerts after the write")
+expect(saveNotices.last ?? "", "Pychy → pi CLI", "junk fix alerts after the write")
 
 // The same fix again changes nothing, so it does not announce another save.
 let noticesAfterPychy = saveNotices.count
@@ -1689,30 +2043,37 @@ watcher.apply(learner.decide(pasted: "Open Pychy now.",
                                    current: "Open pi CLI now.", existingRules: []))
 expect(String(saveNotices.count), String(noticesAfterPychy), "duplicate rule is not announced again")
 
-// A different person is not saved the first time: pending only, no alert.
-watcher.apply(learner.decide(pasted: "Meet Priya today.",
-                                   current: "Meet Anil today.", existingRules: []))
-expect(dictHas("Priya").description, "false", "priya→anil is not written the first time")
-expect(dictHas("Anil").description, "false", "anil is not written the first time")
-expect(String(saveNotices.count), String(noticesAfterPychy), "priya→anil shows no save alert")
+// A fix the checker can see through but does not consider a mishearing waits
+// for a second sighting, then is written.
+watcher.apply(learner.decide(pasted: "Email Filip today.",
+                                   current: "Email Phillip today.", existingRules: []))
+expect(dictHas("Filip").description, "false", "Filip→Phillip is not written the first time")
+expect(dictHas("Phillip").description, "false", "Phillip is not written the first time")
+expect(String(saveNotices.count), String(noticesAfterPychy), "Filip→Phillip shows no save alert")
+watcher.apply(learner.decide(pasted: "Email Filip today.",
+                                   current: "Email Phillip today.", existingRules: []))
+expect(dictHas("Filip").description, "true", "second sighting writes the name swap")
+expect(saveNotices.last ?? "", "Filip → Phillip", "name swap alerts on the second sighting")
 
 // Undo of the learned batch restores the pre-learn state.
 watcher.undoLast()
-expect(dictHas("Pychy").description, "false", "undo removes the junk fix")
-expect(String(saveNotices.count), String(noticesAfterPychy), "undo shows no save alert")
+expect(dictHas("Filip").description, "false", "undo removes the promoted name swap")
+expect(dictHas("Pychy").description, "true", "undo leaves earlier saves alone")
+expect(String(saveNotices.count), String(noticesAfterPychy + 1), "undo shows no save alert")
 
-// Undo: owner corrects a pasted Sol back to soul — the from is removed.
+// Undo: owner corrects a pasted Sol back to soul — the rule loses that source.
+try PersonalDictionary.addReplacement(from: "soul", to: "Sol", fileURL: dictFile)
 watcher.apply(learner.decide(pasted: "I use the Sol model.",
                                    current: "I use the soul model.",
                                    existingRules: PersonalDictionary.loadPairs(fileURL: dictFile)))
 expect(dictHas("soul").description, "false", "undone rule loses its from")
-expect(String(saveNotices.count), String(noticesAfterPychy), "unlearning shows no save alert")
+expect(String(saveNotices.count), String(noticesAfterPychy + 1), "unlearning shows no save alert")
 
 // Casing an unknown name is a real dictionary write, so it does announce.
 watcher.apply(learner.decide(pasted: "Meet priya today.",
                                    current: "Meet Priya today.", existingRules: []))
 expect(dictHas("Priya").description, "true", "unknown-name casing is saved")
-expect(saveNotices.last ?? "", "saved to dictionary: Priya", "term save alerts after the write")
+expect(saveNotices.last ?? "", "priya → Priya", "term save alerts after the write")
 
 // Fixes the gate can't see are pending once, then written the second time.
 @MainActor
@@ -1724,11 +2085,19 @@ func learnTwice(_ pasted: String, _ current: String, _ from: String, _ to: Strin
     watcher.apply(learner.decide(pasted: pasted, current: current, existingRules: []))
     expect(dictHas(from).description, "true", "\(label) second sighting saved")
     expect(dictHas(to).description, "true", "\(label) target saved")
-    expect(saveNotices.last ?? "", "saved to dictionary: \(from) → \(to)", "\(label) alerts after the second write")
+    expect(saveNotices.last ?? "", "\(from) → \(to)", "\(label) alerts after the second write")
 }
-learnTwice("Email Filip today.", "Email Phillip today.", "Filip", "Phillip", "Filip→Phillip")
-learnTwice("Email Katie today.", "Email Caty today.", "Katie", "Caty", "Katie→Caty")
 learnTwice("Email Ellem today.", "Email LLM today.", "Ellem", "LLM", "Ellem→LLM")
+
+// Undo on the confirmation card reverses exactly the batch it announced.
+let noticesBeforeCardUndo = saveNotices.count
+watcher.apply(learner.decide(pasted: "Meet chamath today.",
+                                   current: "Meet Chamath today.", existingRules: []))
+expect(dictHas("Chamath").description, "true", "a card batch is announced for the new term")
+lastBatch?.undo()
+expect(dictHas("Chamath").description, "false", "card undo removes the announced term")
+expect(dictHas("Pychy").description, "true", "card undo leaves earlier saves alone")
+expect(String(saveNotices.count), String(noticesBeforeCardUndo + 1), "card undo shows no save alert")
 
 // Malformed dictionary.json: no write, no crash, no alert.
 let noticesBeforeFailure = saveNotices.count
@@ -2029,12 +2398,83 @@ expect(String(describing: type(of: ASREngine.make(named: "typo"))), "ShortWindow
 
 // MARK: - Speed
 
+// The formatting step has a 5 ms per-dictation budget. Two corpora: ordinary
+// sentences, and sentences full of the words the coding pack rewrites.
+let plainDictations = [
+    "so I think we should ship it today and see what happens with the rest of the batch",
+    "the meeting moved to three thirty and nobody told the other team about it",
+    "can you send me the numbers from last week when you get a second",
+]
+let codingDictations = [
+    "so I told claude code to fix the agents dot md file and it broke the jason config again",
+    "the pr on git hub is red so post gres and vercel both need another look before we ship it",
+    "open cursor and run n p m install, then check the linear issue and put the notes in notion",
+]
+func medianMs(_ texts: [String], _ iterations: Int) -> Double {
+    var samples: [Double] = []
+    for _ in 0..<iterations {
+        let start = Date()
+        for text in texts { _ = cleaner.clean(text) }
+        samples.append(Date().timeIntervalSince(start) * 1000 / Double(texts.count))
+    }
+    return samples.sorted()[samples.count / 2]
+}
+// The longest real dictation on this machine is 8,815 characters, and 23 of 2,445
+// are over 2,880, so the budget has to hold at the long end too. Two long texts:
+// one shaped like his real dictation (ordinary talk with a coding word every few
+// sentences, which is what the budget is measured on), and one that is nothing but
+// coding words, printed for the worst case and not asserted.
+let longestLength = 8_815
+func repeated(_ sentence: String, to length: Int) -> String {
+    var text = ""
+    while text.count < length { text += sentence }
+    return String(text.prefix(length))
+}
+let longestDictation = repeated("so I think we should ship it today and see what happens with the rest of the batch and then we can look at the numbers from last week and tell me what you think about the whole thing ", to: longestLength)
+let codingHeavy = repeated("so I told claude code to fix the agents dot md file and check the jason config on local host again ", to: longestLength)
+let longestMs = medianMs([longestDictation], 20)
+let codingHeavyMs = medianMs([codingHeavy], 20)
+let plainMs = medianMs(plainDictations, 200)
+let codingMs = medianMs(codingDictations, 200)
+print(String(format: "formatting step: %.3f ms ordinary, %.3f ms coding, %.3f ms at %d chars (budget 5 ms)",
+             plainMs, codingMs, longestMs, longestDictation.count))
+print(String(format: "  worst case at %d chars of nothing but coding words: %.3f ms (printed, not asserted)",
+             codingHeavy.count, codingHeavyMs))
+if Swift.max(plainMs, codingMs, longestMs) > 5 { failures += 1; print("FAIL formatting step over the 5 ms budget") }
+
 let long = String(repeating: "Um, so I I was, like, thinking we should, you know, ship the the thing. ", count: 40)
 let t0 = Date()
 for _ in 0..<50 { _ = dictCleaner.clean(long) }
 let perCallMs = Date().timeIntervalSince(t0) * 1000 / 50
 print(String(format: "clean() on %d chars: %.2f ms", long.count, perCallMs))
 if perCallMs > 20 { failures += 1; print("FAIL clean() too slow") }
+
+// The format step's budget is 5 ms for a long take: five minutes of dictation is
+// about 750 words, so measure on more than that, including the parts that make the
+// rules work hardest (numbers, spoken paths, sentence ends).
+let longDictation = String(
+    repeating: "um so I I was thinking we should, like, ship the the build to src slash main dot swift at five thirty and it costs twenty five dollars. ",
+    count: 32)
+let longWords = longDictation.split(whereSeparator: \.isWhitespace).count
+// One take, both text steps, so the numbers line up: clean alone is where the
+// text step stood before the formatter existed, clean+format is where it stands
+// now, and format alone is what the new step costs.
+let t1 = Date()
+for _ in 0..<50 { _ = dictCleaner.clean(longDictation) }
+let beforeMs = Date().timeIntervalSince(t1) * 1000 / 50
+let t2 = Date()
+for _ in 0..<50 { _ = formatter.format(dictCleaner.clean(longDictation)) }
+let afterMs = Date().timeIntervalSince(t2) * 1000 / 50
+let longCleaned = dictCleaner.clean(longDictation)
+let t3 = Date()
+for _ in 0..<50 { _ = formatter.format(longCleaned) }
+let perFormatMs = Date().timeIntervalSince(t3) * 1000 / 50
+print(String(format: "text step on %d words / %d chars (%.0f s of speech): clean %.3f ms -> clean+format %.3f ms (format %.3f ms)",
+             longWords, longDictation.count, Double(longWords) / 2.5, beforeMs, afterMs, perFormatMs))
+if perFormatMs > 5 {
+    failures += 1
+    print("FAIL format() over the 5 ms budget")
+}
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
