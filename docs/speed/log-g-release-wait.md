@@ -1,4 +1,4 @@
-# Release-to-text on short takes: where the wait is, and why warming it does not help
+# Release-to-text on short takes: where the wait is, and what warming buys
 
 Measured on the Mac Mini (M1, 8 GB, real Neural Engine), one benchmark at a
 time, `whisp-bench --live --engine short` replaying the owner's own recordings
