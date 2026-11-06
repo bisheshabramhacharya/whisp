@@ -20,21 +20,47 @@ two independent transcribers do not agree closely enough to serve as exact
 references: `whisper turbo` and Apple's transcriber agree on only 0.8 percent of 650
 recordings strictly.
 
-## What has been measured so far
+## What was measured, and why nothing displaced unified
 
-Twelve owner recordings with a 5 to 10 s final speech run, whole clip, warm-up pass
-on this M1:
+Twelve owner recordings whose final speech run is 5 to 10 s, 204 s of audio in
+total, whole clip through the Parakeet path, one process per model, warm-up then one
+measured decode per clip. `--model` aliases as on `bis25`, and `ultra` from the probe
+branch, because the shipped enum does not carry it.
 
-| model | p50 | worst | words |
-|---|---|---|---|
-| unified (shipped) | 136 ms | 628 ms | 502 |
-| v3 | 143 ms | 726 ms | 508 |
-| 110m | 51 ms | 105 ms | 499 |
+| model | p50 | worst | last word kept | words disagreeing with unified |
+|---|---|---|---|---|
+| unified (shipped) | 139 ms | 636 ms | **11 of 11** | baseline |
+| v3 | 137 ms | 740 ms | 9 of 11 | 68 of 525 |
+| 110m | **51 ms** | **112 ms** | 8 of 11 | 105 of 525 |
+| ultra | 128 ms | 730 ms | 8 of 11 | 66 of 525 |
 
-WER on a 25-clip `say` slice (1455 words): unified 1.03 percent, v3 0.69, 110m
-0.41. That ranking inverts the real picture, because the slice is synthetic: 110m
-produces visibly worse text on real takes while winning there. Do not use it to
-pick.
+A first decode after load gives 143, 166, 51 and 144 ms in the same order, so the
+ordering is not a cold-start artifact; 110m is 2.7 times faster at p50 and 5.7 times
+at worst in both runs.
+
+Three cautions, because the table is easy to over-read:
+
+- These are whole-clip decodes on the 15 s window path. The shipped default decodes a
+  release on the 5 s window at 30 to 40 ms, so this table compares the models with
+  each other and not with what a person feels at release.
+- "Words disagreeing with unified" is not accuracy. Unified is not truth. It says
+  these two engines disagree on a fifth of the words for 110m, which is a reason to
+  distrust 110m only together with the real-speech examples that follow.
+- Every candidate drops the last word on the same three clips, 2, 5 and 11, and
+  unified keeps it on all three. Clip 6 loses it for all four including unified. Those
+  four clips are where the twelve-clip gate earns its keep, and they are the reason
+  the set exists.
+
+110m is the only candidate that is faster, and it pays with the last word on three
+clips where the shipped model keeps it, plus a fifth of the words. v3 and ultra are
+slower than unified and drop the last word on three clips each. `ultra` needed a
+download and first load of 58 seconds, and is not faster than the shipped model
+despite the name.
+
+**Verdict: the shipped model stays.** No WER run was taken, deliberately: a candidate
+has to survive the twelve clips first, and none did, so 110 minutes of reference WER
+would not have changed the answer. If 110m is ever re-traced at 5 s, the twelve clips
+are the first thing it has to pass again.
 
 ## The structural constraint
 
