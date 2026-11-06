@@ -133,10 +133,12 @@ The row prints as `reference set, whisper   [ref errs ~1 word in 8]`, next to
 the last-word gate, not instead of it. First real reading, `--quick` on this
 branch: reference set WER 8.06 (n=6), casual set 8.80 (n=7), with the older rows
 unmoved at LibriSpeech test-clean 2.21 and test-other 3.98. Six and seven files
-is a smoke test, not a measurement: the full run samples 40 and 16. It samples 40 recordings by default (about
-20 minutes of replay) and 6 under `--quick`, so the row never quietly turns the
-scoreboard into a marathon. The last-word gate and the per-bucket wait numbers
-are computed exactly as before, whether or not these variables are set.
+is a smoke test, not a measurement: the full run samples 40 reference recordings
+and 16 casual ones, 6 of the reference under `--quick`, so the row never quietly
+turns the scoreboard into a marathon. Those 40 are one offline decode of about
+33.5 minutes of audio, not a replay in real time. The last-word gate and the
+per-bucket wait numbers are computed exactly as before, whether or not these
+variables are set.
 
 ## Rules for anyone changing this
 
