@@ -15,9 +15,15 @@ window prints one row per window from its last run, because the split points are
 the same in every run, and those files stay out of the summary mean.
 
 `ShortWindowEngine.DecodeTimings` gained
-`jointMs`/`decoderMs`/`jointCalls`/`decoderCalls` for it. The four counters are
-recorded on every decode the app runs, not only when the bench reads them, and
-they cost about 0.03 us per call against a 200-600 us call.
+`jointMs`/`decoderMs`/`jointCalls`/`decoderCalls` for it. Those counters cost
+about 0.03 us per call (measurement kept for the record only), and the app runs
+the loop hundreds of times per take, so they are **not** paid on the shipping
+path any more: the split is collected only while an observer is attached, and
+only `Sources/whisp-bench` ever attaches one. With no observer the engine passes
+`collectStats: false`, the RNNT loop takes no timestamps, no counter moves off
+zero, and the tokens are identical to a collecting run of the same window
+(`whisp-tests` decodes one window both ways and checks that). So the four
+numbers below are bought by the bench and cost the app nothing.
 
 ## Stage split (warm, `say` clips, one file per row)
 
