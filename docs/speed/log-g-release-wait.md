@@ -55,8 +55,9 @@ group only (`--json` per take, so these are per-take medians, not bucket rows):
 Start with the floor, because it decides how much of this is real. `off` and the
 stock 8 s default both fire zero wake-ups: they are the same configuration
 measured twice. They read 83 against 78 at 24 takes, 85 against 88 here, and 84
-against 72 in the reversed-order repeat below. That is 5 to 12 ms of drift on the
-median with nothing changed. The encoder shows it too: `off` pays 46 ms p50 in
+against 72 in the reversed-order repeat below. That is 5, 3 and 12 ms on those
+three pairs, so 3 to 12 ms of drift on the median with nothing changed. The
+encoder shows it too: `off` pays 46 ms p50 in
 this table against 37 for the default, and with no wake-ups in either there is
 nothing but session warm-up to explain the difference, because `off` ran first.
 
@@ -81,14 +82,18 @@ test whether the third slot in the first pass explained it:
 So it is the setting, not the run order, and the proof is the p90, not the
 median. The two identical default passes disagree by 12 ms on p50 (84 against
 72) and by 1 ms on p90 (131 against 130). The two 300 ms passes agree on both
-(68 and 68, 99 against 94). The p90 separates cold from warm by 30 ms while the
-machine's own p50 drift is 12 ms, so that is the number to build on. Per take,
+(68 and 68, 99 against 94). The p90 separates cold from warm by 31 to 37 ms
+across those four pairings (131 against 99 is 32, 131 against 94 is 37, and 130
+against the same two is 31 and 36) while the machine's own p50 drift is 12 ms, so
+that is the number to build on. Per take,
 the spread across all four passes has a 39 ms median, which is why no
 single-take comparison proves anything and why the 24 take sample missed it.
 
 The cost is real too: 332-335 ms of dummy work per take against 86-109 ms, about
-three times the engine work, for 30 ms off the p90 and the takes over a tenth of
-a second cut from 14 of 33 to 5. Warming harder is not better. Every tick runs 22
+three times the engine work, for roughly 30 ms off the p90 (31 ms on the 47-take
+table above, 132 to 101, and 31 to 37 across the repeat's pairings) and the takes
+over a tenth of a second cut from 14 of 33 to 5. Warming harder is not better.
+Every tick runs 22
 wake-ups and 1,009 ms of dummy work per take and lands back at 80 ms p50 with the
 encoder tail intact (p90 72 ms), because the dummies queue ahead of the decode
 the release is waiting for. 300 ms idle is the setting that keeps the window warm
@@ -112,9 +117,17 @@ separates the engine's state from the context the release decode runs in.
 | RNNT | 29.3 ms | 22.8 ms | not measured |
 | total | 70.7 ms | 55.9 ms | 53.7 ms |
 
+The three stage rows are medians over the same 16 takes, so they do not add up to
+the total row's median: 7.7 plus 36.6 plus 29.3 is 73.6 against a total of 70.7,
+and 3.8 plus 31.8 plus 22.8 is 58.4 against 55.9. A sum of medians is not the
+median of a sum, because the take that is slow in one stage is not the take that
+is slow in the next.
+
 What this table is for is the warm-up, and warm-up saturates almost
-immediately: the second decode recovers 15 ms, the third only 4 more (pass 2
-slower than pass 3 on 14 of 16 takes, mean +3.9 ms). So an encoder idled for two
+immediately: the total falls from 70.7 ms to 55.9, so the second decode recovers
+14.8 ms, and the third recovers 2.2 ms more, to 53.7. Per take the
+pass-two-minus-pass-three mean is 3.9 ms, slower on 14 of 16 takes, which is a
+different quantity from the 2.2 ms the medians move. So an encoder idled for two
 seconds costs about 30 ms, not 22; the 22 ms figure is a loop that never pauses.
 Its live column is not a measurement of the gap, because the 16 takes are a mix
 of two kinds of take that this file used to compare against each other. That
@@ -140,11 +153,14 @@ The per-stage split this note used to carry, encoder +7 ms, RNNT +6.5, mel
 +3.9, came from the mixed 16-take sample, so there is no seam-free measurement
 behind it. It is withdrawn here rather than restated as a number.
 
-On the comparable takes the gap is real, and what this note can say about it is
-narrower than what it used to say. The release decode does the same work as a
-decode a moment later and takes longer to do it: 84.4 ms at release against 50.3
-ms for the same audio on the same thread, 20 to 30 ms slower, on 14 of 14 takes.
-So the gap is not a per-stage cost, and its cause is not established here.
+On the comparable takes the gap is real, and it is smaller than a stage-by-stage
+story would need it to be. Two measurements agree on the shape and not on the
+size: on the 32 seam-free takes in the table above the release decode takes
+72.7 ms p50 against 58.7 ms for a second decode of the same audio a moment later,
+a 14 ms gap; a second pass on 35 seam-free takes puts the whole-decode difference
+at 21.6 ms median, slower on 34 of 35 (BIS-29). The same work, measured the same
+way, on different samples: 14 to 22 ms. That is not a per-stage cost. The cause
+is not established here.
 
 Finding the cause is BIS-29's job, and the open question there is why the same
 thread runs the same work slower at release. A warm window does not help it (the
@@ -153,7 +169,7 @@ of the prewarm threshold will.
 
 One more suspect was this file's own harness: the waiting loop described in the
 next section. `--poll-ms` puts a number on it there, and it comes to a few
-milliseconds at most, so it cannot carry the 20 to 30 ms either.
+milliseconds at most, so it cannot carry a gap of 14 to 22 ms either.
 
 ## A bench that polls the thing it is timing, on the same actor, measures itself
 
@@ -177,7 +193,7 @@ same takes at 1 ms and at 20 ms, and the delta is what the loop costs.
 
 So the loop costs a few milliseconds at most, and it does not agree with itself
 between rounds: round 1 says nothing and round 2 says about 7 ms, both inside the
-12 ms this machine drifts between identical settings. It cannot carry the 20 to 30
+12 ms this machine drifts between identical settings. It cannot carry the 14 to 22
 ms the live release decode pays over the same request a moment later, so that
 gap survives. The
 harness's own share is now measured at a few ms rather than assumed, which is the
@@ -189,13 +205,16 @@ that share before blaming the code.
 
 ## Nothing here changes the app
 
-With the stock 8 s threshold, no wake-up fires for a take under about 5 s (0
-measured), so what the app does today is the "default" row: zero cost and the
-slower tail. Changing the threshold to 300 ms is a real trade (30 ms off the p90,
-the slow takes mostly gone, three times the engine work, a warmer machine all
-day) and it belongs with the threshold itself in BIS-18, not with this
-measurement branch. This branch ships the bench flags, the per-take
-JSON and these notes. The default stays at 8 s.
+What decides a wake-up is how long the engine has been idle, not how long the
+take is. With the stock 8 s threshold nothing fires until the engine has sat idle
+for 8 s, and this bench replayed with a 3 s gap between takes, so 0 fired. In the
+app a pause of 8 s or more between dictations does fire one today, on a take of
+any length, so what today's settings give a short dictation is the "default" row:
+zero cost and the slower tail. Changing the threshold to 300 ms is a real trade
+(about 30 ms off the p90, the slow takes mostly gone, three times the engine
+work, a warmer machine all day) and it belongs with the threshold itself in
+BIS-18, not with this measurement branch. This branch ships the bench flags, the
+per-take JSON and these notes. The default stays at 8 s.
 
 ## Weights cannot get smaller on this deployment target
 
@@ -210,5 +229,7 @@ Both routes to fewer weight bytes are refused by Core ML on a macOS 14 target:
 
 `per_tensor` palettization is allowed at iOS17 and is far too coarse for these
 weights. So encoder, decoder and joint stay int8/fp16 until the OS floor moves,
-and the remaining decode terms are the ones already measured: ~23 ms fixed
-encoder pass on the 5 s window, 0.21 ms per joint call, 0.6 ms per decoder call.
+and the remaining decode terms are the ones already measured: the encoder pass on
+the 5 s window, which costs 35 to 37 ms on the live release path (22 to 23 ms is
+the back-to-back loop measured above, a loop that never idles), 0.21 ms per joint
+call, 0.6 ms per decoder call.
