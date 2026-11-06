@@ -2396,6 +2396,36 @@ do {
 expect(ASREngine.defaultName, "short", "default engine is the short-window one")
 expect(String(describing: type(of: ASREngine.make(named: "typo"))), "ShortWindowEngine", "unknown engine name falls back")
 
+// MARK: - Decode counters cost nothing when nothing listens
+
+// The RNNT loop reads the clock twice per Core ML call to feed the bench's
+// --stages split. That has to cost the shipping path nothing: only the bench
+// attaches an observer, so the app decodes with collection off. Decode the same
+// window both ways: same tokens, and the silent run recorded nothing while the
+// collecting one counted every call it made.
+do {
+    if let probe = try await ShortWindowEngine.decodeStatsProbe() {
+        expect(probe.identical ? "same" : "different", "same",
+               "counters on and off emit identical tokens")
+        expect("\(probe.jointCalls)", "\(probe.frames)",
+               "collecting counts one joint call per encoder frame")
+        expect("\(probe.decoderCalls >= 1)", "true", "collecting counts the decoder steps")
+        expect(probe.silentStatsAreZero ? "zero" : "non-zero", "zero",
+               "collection off records no timings and no call counts")
+        if probe.tokenCount == 0 {
+            // Synthetic features never make the joint emit: only real encoder
+            // output does. The 40 decisions above are still compared, one per
+            // frame, and both runs agree on every one.
+            print("note: probe window emits no symbols (the joint answers blank on synthetic features)")
+        }
+    } else {
+        print("skip: decode-stats probe needs the joint and decoder bundles")
+    }
+} catch {
+    failures += 1
+    print("FAIL decode-stats probe threw: \(error)")
+}
+
 // MARK: - Speed
 
 // The formatting step has a 5 ms per-dictation budget. Two corpora: ordinary

@@ -35,6 +35,7 @@ struct Options {
     var idleCurve = false
     var pauses = false
     var switchTest = false
+    var stages = false
     /// One `{...}` JSON line per file/per dictation, for scripts/speed/scoreboard.sh.
     var json = false
 }
@@ -106,6 +107,8 @@ func parseArgs() -> Options {
             opts.pauses = true
         case "--switch-test":
             opts.switchTest = true
+        case "--stages":
+            opts.stages = true
         case "--json":
             opts.json = true
         case "--history":
@@ -142,6 +145,12 @@ func printUsage() {
                        model in 100 ms buffers (the mic cadence) and time the release step.
           --profile    per-file stage profile (mel / encoder / joint / decoder ms, call
                        counts) of one <=15 s window via the profiled engine
+          --stages     per-file stage split through the app's own engine (--engine,
+                       default the app's): mel, encoder, RNNT split by joint and
+                       decoder with Core ML call counts, on the encoder window it
+                       really uses. A file that needs more than one window prints
+                       one row per window, since the whole-file time and one
+                       window's stages are different scopes
           --replay     release replay: run the real chunk/speculate/finish loop over each
                        file and simulate key release at --offsets ms after the last word;
                        prints wait p50/p95/mean, no-wait share, last-word survival
@@ -584,7 +593,7 @@ if opts.live {
 }
 
 // Track A speed modes dispatch before the standard bench loop.
-if opts.profile || opts.replay || opts.compare != nil {
+if opts.profile || opts.replay || opts.compare != nil || opts.stages {
     let files = loadFiles(opts.files)
     guard !files.isEmpty else { exit(1) }
     do {
@@ -592,6 +601,11 @@ if opts.profile || opts.replay || opts.compare != nil {
             // --profile defaults to the profiled engine; --engine overrides.
             let name = opts.engineSet ? opts.engine : "profiled"
             try await runProfile(engineName: name, runs: opts.runs, files: files, show: opts.show)
+        }
+        if opts.stages {
+            try await runStages(
+                engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
+                runs: opts.runs, files: files)
         }
         if opts.replay {
             try await runReplay(engineName: opts.engine, files: files,
