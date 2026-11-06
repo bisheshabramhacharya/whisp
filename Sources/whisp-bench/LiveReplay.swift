@@ -137,6 +137,26 @@ struct LiveRow {
     let melMs: Double
     let encoderMs: Double
     let rnntMs: Double
+    /// Encoder wake-ups (prewarm dummies) that finished before the release,
+    /// and the chunk/speculation decodes the capture loop ran meanwhile. Their
+    /// work is off the critical path but it still occupies the engine, so a
+    /// prewarm A/B has to read them next to the wait.
+    let wakeups: Int
+    let wakeupMs: Double
+    let chunkDecodes: Int
+    let chunkMs: Double
+    /// Same audio decoded again in the same process, right after the take, on
+    /// the bench's own task. When this is much faster than the release decode
+    /// it was the live context that cost the time, not the engine's state.
+    var secondPassMs: Double?
+    var secondMelMs: Double?
+    var secondEncoderMs: Double?
+    var secondRnntMs: Double?
+    /// A third decode of the same audio, the pass after the second. If it costs
+    /// what the second cost, one repeat was enough to warm everything and the
+    /// gap to the release decode is the live context, not warm-up.
+    var thirdPassMs: Double?
+    var thirdEncoderMs: Double?
 }
 
 /// Stage timings reported by the short engine, stamped with when they ended.
@@ -179,7 +199,7 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 @MainActor
 func runLive(
     engineName: String, paths: [String], gapSeconds: Double, historyPath: String?,
-    json: Bool = false
+    json: Bool = false, secondPass: Bool = false, pollMs: Int = 1
 ) async throws {
     let inner = ASREngine.make(named: engineName)
     let engine = TimedTranscriber(inner)
@@ -224,21 +244,26 @@ func runLive(
         try? await Task.sleep(nanoseconds: UInt64(samples.count) * 62_500)
         let releaseNs = DispatchTime.now().uptimeNanoseconds
         hotkey.onEvent?(.stop)
+        // The wait runs on the main actor, the same thread the release decode
+        // runs on, so `--poll-ms` is also a measurement of what a 1 ms check
+        // loop costs the thing it is checking for.
         var waitedMs = 0
         while controller.lastResult?.id == before, waitedMs < 120_000 {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-            waitedMs += 1
+            try? await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
+            waitedMs += pollMs
         }
         guard let entry = controller.lastResult, entry.id != before else {
             print("  \(id.prefix(8)): no result after 120 s")
             continue
         }
         let calls = engine.drain()
+        let wakeups = calls.filter { $0.samples == -1 }
+        let chunkCalls = calls.filter { $0.samples > 0 && $0.start < releaseNs }
         let overlapping = calls.filter { $0.start < releaseNs && $0.end > releaseNs }
         let after = calls.filter { $0.start >= releaseNs && $0.samples >= 0 }
         let lastEnd = calls.filter { $0.end <= releaseNs }.map(\.end).max()
         let finalStages = stages.drain().filter { $0.end > releaseNs }.map(\.t)
-        let row = LiveRow(
+        var row = LiveRow(
             seconds: Double(samples.count) / 16_000,
             latencyMs: entry.latencyMs,
             realMs: real[id],
@@ -248,20 +273,46 @@ func runLive(
             idleBeforeMs: overlapping.isEmpty ? lastEnd.map { Double(releaseNs - $0) / 1e6 } ?? -1 : 0,
             melMs: finalStages.map(\.melMs).reduce(0, +),
             encoderMs: finalStages.map(\.encoderMs).reduce(0, +),
-            rnntMs: finalStages.map(\.rnntMs).reduce(0, +))
+            rnntMs: finalStages.map(\.rnntMs).reduce(0, +),
+            wakeups: wakeups.count,
+            wakeupMs: wakeups.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +),
+            chunkDecodes: chunkCalls.count,
+            chunkMs: chunkCalls.map { Double($0.end - $0.start) / 1e6 }.reduce(0, +))
+        if secondPass, let short = inner as? ShortWindowEngine {
+            _ = stages.drain()
+            let start = DispatchTime.now().uptimeNanoseconds
+            _ = try? await short.transcribe(samples)
+            let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+            let again = stages.drain().map(\.t)
+            row.secondPassMs = took
+            row.secondMelMs = again.map(\.melMs).reduce(0, +)
+            row.secondEncoderMs = again.map(\.encoderMs).reduce(0, +)
+            row.secondRnntMs = again.map(\.rnntMs).reduce(0, +)
+            _ = stages.drain()
+            let thirdStart = DispatchTime.now().uptimeNanoseconds
+            _ = try? await short.transcribe(samples)
+            row.thirdPassMs = Double(DispatchTime.now().uptimeNanoseconds - thirdStart) / 1e6
+            row.thirdEncoderMs = stages.drain().map(\.t.encoderMs).reduce(0, +)
+        }
         rows.append(row)
         let window = finalStages.last.map { "\($0.windowSamples / 16_000)s" } ?? "-"
-        print(String(format: "  %@ %6.1f s  release→paste %4d ms (real: %@)  bg wait %4.0f  final %4.0f ms x%d [%@ mel %3.0f enc %4.0f rnnt %4.0f]  idle before %5.0f ms",
+        print(String(format: "  %@ %6.1f s  release→paste %4d ms (real: %@)  bg wait %4.0f  final %4.0f ms x%d [%@ mel %3.0f enc %4.0f rnnt %4.0f]  wake-ups %d/%3.0f ms  chunks %d/%4.0f ms  idle before %5.0f ms",
                      String(id.prefix(8)), row.seconds, row.latencyMs,
                      row.realMs.map { "\($0) ms" } ?? "—",
                      row.backgroundWaitMs, row.finalDecodeMs, row.finalDecodes,
-                     window, row.melMs, row.encoderMs, row.rnntMs, row.idleBeforeMs))
+                     window, row.melMs, row.encoderMs, row.rnntMs,
+                     row.wakeups, row.wakeupMs, row.chunkDecodes, row.chunkMs, row.idleBeforeMs))
         if json {
             // The pasted text is included so a scoreboard can compare words
             // across builds; it stays on this machine, nothing uploads it.
             var object: [String: Any] = [
                 "file": id, "sec": row.seconds, "latencyMs": row.latencyMs,
                 "bgWaitMs": row.backgroundWaitMs, "finalMs": row.finalDecodeMs,
+                "wakeups": row.wakeups, "wakeupMs": row.wakeupMs,
+                "chunks": row.chunkDecodes, "chunkMs": row.chunkMs,
+                // The release decode's own split, so an A/B can compare the
+                // encoder against the wait it produces instead of only totals.
+                "melMs": row.melMs, "encMs": row.encoderMs, "rnntMs": row.rnntMs,
                 "text": entry.cleaned,
                 // What cleanup produced, before formatting wrote the same words
                 // differently. The scoreboard compares it with `text` to prove a
@@ -269,6 +320,14 @@ func runLive(
                 "preFormat": FillerCleaner().clean(entry.raw),
             ]
             if let real = row.realMs { object["realMs"] = real }
+            if let again = row.secondPassMs {
+                object["secondMs"] = again
+                object["secondMelMs"] = row.secondMelMs ?? 0
+                object["secondEncMs"] = row.secondEncoderMs ?? 0
+                object["secondRnntMs"] = row.secondRnntMs ?? 0
+                object["thirdMs"] = row.thirdPassMs ?? 0
+                object["thirdEncMs"] = row.thirdEncoderMs ?? 0
+            }
             emitJSON(object)
         }
         try? await Task.sleep(nanoseconds: UInt64(gapSeconds * 1e9))
@@ -286,11 +345,17 @@ func runLive(
         let live = group.map { Double($0.latencyMs) }
         let realMs = group.compactMap { $0.realMs.map(Double.init) }
         let bg = group.map(\.backgroundWaitMs), fin = group.map(\.finalDecodeMs)
-        print(String(format: "  %@ n=%3d  now p50 %4.0f p90 %4.0f max %5.0f | real p50 %4.0f p90 %4.0f | bg wait p50 %3.0f, final decode p50 %3.0f (enc %3.0f, rnnt %3.0f)",
+        let work = group.map { $0.wakeupMs + $0.chunkMs + $0.finalDecodeMs }
+        print(String(format: "  %@ n=%3d  now p50 %4.0f p90 %4.0f max %5.0f | real p50 %4.0f p90 %4.0f | bg wait p50 %3.0f, final decode p50 %3.0f (enc %3.0f, rnnt %3.0f) | wake-ups p50 %4.1f/%3.0f ms, chunks p50 %4.1f/%3.0f ms, engine work p50 %5.0f ms",
                      label.padding(toLength: 8, withPad: " ", startingAt: 0), group.count,
                      percentile(live, 0.5), percentile(live, 0.9), live.max() ?? 0,
                      percentile(realMs, 0.5), percentile(realMs, 0.9),
                      percentile(bg, 0.5), percentile(fin, 0.5),
-                     percentile(group.map(\.encoderMs), 0.5), percentile(group.map(\.rnntMs), 0.5)))
+                     percentile(group.map(\.encoderMs), 0.5), percentile(group.map(\.rnntMs), 0.5),
+                     percentile(group.map { Double($0.wakeups) }, 0.5),
+                     percentile(group.map(\.wakeupMs), 0.5),
+                     percentile(group.map { Double($0.chunkDecodes) }, 0.5),
+                     percentile(group.map(\.chunkMs), 0.5),
+                     percentile(work, 0.5)))
     }
 }
