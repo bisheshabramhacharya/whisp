@@ -94,7 +94,7 @@ encoder tail intact (p90 72 ms), because the dummies queue ahead of the decode
 the release is waiting for. 300 ms idle is the setting that keeps the window warm
 without competing with it.
 
-## The gap is one Core ML round trip, and it is not the encoder
+## The gap is real on seam-free takes, and it is not the encoder
 
 The live path pays 35-37 ms of encoder on a release, and a `--stages` loop that
 decodes files back to back pays 22-23 ms for the same window. Those are not the
@@ -140,21 +140,16 @@ The per-stage split this note used to carry, encoder +7 ms, RNNT +6.5, mel
 +3.9, came from the mixed 16-take sample, so there is no seam-free measurement
 behind it. It is withdrawn here rather than restated as a number.
 
-On the comparable takes the reading is simpler. The release decode is one Core
-ML round trip, and it answers 20 to 30 ms slower at release than the same
-request a moment later: 84.4 ms at release against 50.3 ms for the same audio on
-the same thread. It is deterministic, slower on 14 of 14 takes. And it is not our process doing extra work: across a 73.0 ms
-release window the whole process burns 2.4 ms of CPU, against 1.7 ms for the
-same decode a moment later. Warm-up, this file's own polling loop, priority and
-our own CPU are each measured out of it, so the wait is inside the model
-service.
+On the comparable takes the gap is real, and what this note can say about it is
+narrower than what it used to say. The release decode does the same work as a
+decode a moment later and takes longer to do it: 84.4 ms at release against 50.3
+ms for the same audio on the same thread, 20 to 30 ms slower, on 14 of 14 takes.
+So the gap is not a per-stage cost, and its cause is not established here.
 
-That leaves two jobs, tracked as BIS-21 and BIS-29. A warm window does not help
-it (the 300 ms setting above leaves the base encoder time at 35-36 ms), and no
-setting of the prewarm threshold will.
-The mic tap delivering its last chunk and the capture loop unwinding are not the
-cause; an earlier version of this section said they were, and that was wrong.
-What is left is the model service itself.
+Finding the cause is BIS-29's job, and the open question there is why the same
+thread runs the same work slower at release. A warm window does not help it (the
+300 ms setting above leaves the base encoder time at 35-36 ms), and no setting
+of the prewarm threshold will.
 
 One more suspect was this file's own harness: the waiting loop described in the
 next section. `--poll-ms` puts a number on it there, and it comes to a few
