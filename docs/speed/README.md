@@ -81,6 +81,7 @@ by window. Gating each window of a split tail instead would take the remaining
 | Cut as soon as the audio looks quiet (first version of the fix above) | long bucket worst 9329 → 151 ms, but 3 of 78 owner recordings changed text and one 35.9 s take went 74 → 68 words vs baseline | reverted: the guard gives way only past a minute of pending audio |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
 | Skipping near-silent pieces of a long release tail (PR #65) | 977 → 208 ms on the 9 1/2 minute take by skipping 34 of its 38 pieces, and identical text on every other long take, but one 258.89 s recording ends in a 3.89 s piece with RMS 0.00065 and peak 0.0090, and the model returns that take's last five words from it: 33 words on main, 28 with the gate, at every release offset. Cut the gate back to skipping only digitally silent pieces and it skips nothing: none of 1295 owner recordings over one window holds an all-zero piece | closed: this model reads 15 dB below the gate, so no level above zero is safe |
+| Committing the tail every second while you talk, so a release decodes one window | Release decode 160 → 38 ms on paper, and the phase sweep says no: shifting the same audio in 100 ms steps gave 4 different transcripts across 10 phases with text-repaired seams and up to 14 doubled words, and still 3 of 20 phases differing with quiet-window cuts and a 4 s cap, against 1 of 20 on main. Every one of those three dropped a word. Any cut inside speech splits a word, and the model reads the two halves differently | closed: chunking continuous speech costs words on this model |
 
 ### How quiet still counts as speech
 
@@ -101,6 +102,77 @@ none of the 1295 owner recordings longer than one encoder window contains a piec
 of all zeros, because the recorder always writes a noise floor. What that leaves
 is the buffer-level test, which is what main does, and the 60 s cut bound, which
 is what keeps a release from decoding minutes of audio.
+
+### Committing while you talk
+
+The largest single win left on the table is that a release decodes whatever audio
+is pending, and continuous speech leaves a lot pending: 12 s of speech with no
+pause decodes 12 s on the 15 s window, 160 ms. A 1 s held-back tail would turn
+that into one 5 s pass, about 38 ms.
+
+Both shapes of it were built and measured against the test that decides them: take
+one take, shift it by 0, 100, ... 900 ms so every tick lands somewhere different,
+and require the same words every time. Main holds 19 of 20 phases; anything that
+adds cuts has to do at least as well.
+
+- Committing every second with text-level seam repair (drop the words the two
+  decodes repeat, or repair a cut word from its stub): on the take the design was
+  built against, its 10 phase shifts produce 4 different transcripts where main
+  produces 1. Against main's own text for the same phase it loses no word and
+  carries up to 14 extra: the repair guesses wrong and doubles words, which is the
+  failure that killed it.
+- Committing only in a quiet 100 ms window, with the tail allowed to grow to 4 s
+  before forcing a cut: 17 of the 20 phase shifts match main's text. Take 1 gives 2
+  different transcripts across its 10 phases with no word lost and 2 extra; take 2
+  gives 3, losing 1 to 2 words and carrying 2 to 3 extra. Release decode p50 54 to
+  61 ms, which is the number that made it worth trying.
+
+Reproduce either one with `whisp-bench --live --json --engine short --gap 1` on
+`~/.capy/work/stall/sweep/unbroken-{1,2}.wav` and their `-p1` to `-p9` 100 ms
+shifts, then compare each phase with main's row for the same phase; the rows from
+both runs are kept on this machine in `~/.capy/work/stall/sweep{,2,-main}.jsonl`.
+
+The cause is not the join. A cut inside speech hands each half of a word to a
+different decode, and the model reads the two halves differently depending on the
+context on either side. Silence is the only place a cut costs nothing and leaves
+the words intact, and real speech does not offer enough of it to keep a tail near
+a second.
+
+### Which shape this was, and what it does to the design note
+
+Three shapes get talked about as one. Two were built and measured, and the one
+that was measured first is the one `design-tail-under-2s.md` proposes.
+
+- **Commit at the quietest point inside a 1 s bound, 0.6 s of audio re-decoded
+  behind each cut, repeated words dropped at the join.** This is the design
+  note's cadence, built as written, and it is the one that doubles words: 4
+  different transcripts across 10 phase shifts where main gives 1, and up to 14
+  extra words against main's text. The note's plan is therefore dead as written,
+  not an untested proposal.
+- **Cut only where a quiet 100 ms window exists, allowing the tail to grow to a
+  4 s cap before forcing a cut, overlap and join unchanged.** 16 of 20 phases
+  identical, and the four that differ include two dropped words. It inherits the
+  same failure, less often, because the cut still lands inside speech whenever
+  the cap is reached.
+- **The shape nobody built:** cut only at a real pause, with the two bounds that
+  ship inside a long stretch of speech, the forced cut at 14 s and the 60 s pending
+  limit from #61, and otherwise let the tail be as long as it is. That is what
+  ships today, and it is the 19 of 20.
+
+The count against main is 3 differing runs of 20 against 1 of 20, which on its own
+is p about 0.34 and proves nothing. The argument does not rest on it: it rests on
+the class of failure, runs that dropped a word against one substitution on main,
+and a dropped word is the outcome this effort refuses. It also separates two
+questions that look alike: waiting for a pause and eating a long tail costs 160 ms
+and no words, while cutting on a cadence to keep the tail short is a different
+trade, and on this model it is the one that loses words.
+
+What ships instead is what ships today: cut at pauses, forced cut at 14 s, release
+decodes up to one 15 s window. The long bucket's 208 ms worst case is not made
+better by cutting more often; it is made better by making that window pass cheaper,
+which is the live-path overhead work, or by never letting a release inherit more
+than one window, which needs a cut policy this model tolerates and none has been
+found yet.
 
 ## 10 s window
 
