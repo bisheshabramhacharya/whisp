@@ -13,8 +13,13 @@ import WhispCore
 final class ClipRecorder: AudioRecording {
     var onLevel: ((Float) -> Void)?
     let lostInput = false
-    /// Input IO quantum of the built-in mic on the M1 (100 ms at 16 kHz).
-    static let quantum = 1_600
+    /// How often new audio shows up, in 16 kHz samples. The app's sink node
+    /// delivers every ~10.7 ms; the old input tap delivered every 100 ms
+    /// (`WHISP_MIC_QUANTUM_MS=100` replays that).
+    static let quantum: Int = {
+        let ms = Int(ProcessInfo.processInfo.environment["WHISP_MIC_QUANTUM_MS"] ?? "") ?? 10
+        return 16 * min(max(ms, 1), 1000)
+    }()
     private let lock = NSLock()
     private var clip: [Float] = []
     private var startedNs: UInt64 = 0

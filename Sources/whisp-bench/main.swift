@@ -31,6 +31,7 @@ struct Options {
     var idle: Double = 30
     var show = false
     var live = false
+    var mic = false
     var secondPass = false
     var pollMs = 1
     var history: String?
@@ -106,6 +107,8 @@ func parseArgs() -> Options {
             opts.show = true
         case "--live":
             opts.live = true
+        case "--mic":
+            opts.mic = true
         case "--second-pass":
             opts.secondPass = true
         case "--idle-curve":
@@ -174,6 +177,9 @@ func printUsage() {
                        the mic at real speed, the key is released at its end, and the
                        app's own release→paste time is reported (--engine, default the
                        app's; --gap S between dictations, default 3)
+          --mic        real microphone check (needs mic permission): --runs short takes,
+                       printing how often audio arrives, how long stop() waits for the
+                       last piece, and how much audio is missing at the end
           --poll-ms N  with --live, how often the replay loop checks for the pasted
                        text (default 1 ms, on the main actor). Raising it shows how
                        much of a release decode the loop's own checking costs.
@@ -559,6 +565,10 @@ func runStreaming(tier: String, files: [String]) async {
 // Long runs are usually redirected to a log; flush per line so progress shows.
 setvbuf(stdout, nil, _IOLBF, 0)
 let opts = parseArgs()
+if opts.mic {
+    runMicProbe(takes: max(opts.runs, 3))
+    exit(0)
+}
 guard !opts.files.isEmpty else {
     printUsage()
     exit(1)

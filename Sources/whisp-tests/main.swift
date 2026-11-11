@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import WhispCore
 
@@ -1355,6 +1356,73 @@ do {
     expect(got.isEmpty && !drained ? "ok" : "?", "ok", "finish() without a take is empty")
 }
 
+// AudioRing: what the IO thread writes comes back in order, across the wrap
+// point, and each write counts as one quantum.
+do {
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+    let ring = AudioRing(channels: 1, capacity: 1000)
+    let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
+    func write(_ values: [Float]) {
+        let src = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(values.count))!
+        src.frameLength = AVAudioFrameCount(values.count)
+        for (i, v) in values.enumerated() { src.floatChannelData![0][i] = v }
+        ring.write(src.audioBufferList, frames: values.count)
+    }
+    var next: Float = 0
+    var got: [Float] = []
+    var want: [Float] = []
+    for _ in 0..<7 {                       // 7 x 512 frames through a 1000-frame ring
+        let block = (0..<512).map { _ -> Float in next += 1; return next }
+        want += block
+        write(block)
+        let (frames, _, empty) = ring.read(into: out)
+        got += UnsafeBufferPointer(start: out.floatChannelData![0], count: frames)
+        expect(empty.description, "true", "ring is empty after a full read")
+    }
+    expect((got == want).description, "true", "ring returns every frame in order across the wrap")
+    expect("\(ring.quanta)", "7", "ring counts one quantum per write")
+    write([Float](repeating: 1, count: 600))
+    write([Float](repeating: 2, count: 600))  // no room: dropped, not corrupted
+    expect("\(ring.droppedFrames)", "600", "a full ring drops the new quantum and counts it")
+    let (frames, quanta, _) = ring.read(into: out)
+    expect("\(frames) \(quanta)", "600 9", "the ring keeps what it had when full")
+}
+
+// CapturePipeline: 48 kHz audio fed in 512-frame quanta comes out as the same
+// 16 kHz signal a one-shot conversion gives (no gaps or repeats at the seams).
+do {
+    let inFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+    let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    let total = 48_000
+    let tone = (0..<total).map { Float(sin(2 * Double.pi * 440 * Double($0) / 48_000)) * 0.5 }
+    func run(quantum: Int) -> [Float] {
+        let pipe = CapturePipeline(inputFormat: inFormat, outputFormat: outFormat)!
+        var out: [Float] = []
+        var at = 0
+        while at < total {
+            let n = min(quantum, total - at)
+            let src = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(n))!
+            src.frameLength = AVAudioFrameCount(n)
+            for i in 0..<n { src.floatChannelData![0][i] = tone[at + i] }
+            pipe.ring.write(src.audioBufferList, frames: n)
+            pipe.drain { out += $0 }
+            at += n
+        }
+        return out
+    }
+    let small = run(quantum: 512)
+    let big = run(quantum: 4800)
+    expect(abs(small.count - 16_000) < 200 ? "ok" : "\(small.count)", "ok", "1 s at 48 kHz gives ~16000 samples")
+    let n = min(small.count, big.count)
+    var worst: Float = 0
+    for i in 0..<n { worst = max(worst, abs(small[i] - big[i])) }
+    expect(abs(small.count - big.count) < 64 && worst < 0.01 ? "same" : "diff \(small.count) \(big.count) \(worst)",
+           "same", "512-frame quanta convert the same as 100 ms buffers")
+    var jump: Float = 0
+    for i in 1..<small.count { jump = max(jump, abs(small[i] - small[i - 1])) }
+    expect(jump < 0.12 ? "smooth" : "\(jump)", "smooth", "no clicks at quantum seams")
+}
+
 // Cancel path: audio and the recording flag are dropped at once, late buffers
 // are refused, and a new take starts clean (the double-tap second press).
 do {
@@ -2569,6 +2637,14 @@ do {
 } catch {
     failures += 1
     print("FAIL decode-stats probe threw: \(error)")
+}
+
+// The mel shortcut (speech frames only) must feed the encoder the same bits
+// as computing the whole padded window.
+for (window, valid) in [(80_000, 0), (80_000, 159), (80_000, 6_400), (80_000, 41_237), (80_000, 80_000),
+                        (240_000, 100_000), (240_000, 239_999), (240_000, 240_000)] {
+    expect(UnifiedMelProbe.shortcutMatchesWholeWindow(windowSamples: window, validCount: valid) ? "same" : "different",
+           "same", "mel of speech frames only matches the whole window (\(valid) of \(window) samples)")
 }
 
 // MARK: - Speed

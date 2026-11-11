@@ -13,9 +13,11 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.4"),
     ],
     targets: [
+        // Hand-tuned matrix kernels for the native RNNT decode loop.
+        .target(name: "WhispKernels"),
         .target(
             name: "WhispCore",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")],
+            dependencies: ["WhispKernels", .product(name: "FluidAudio", package: "FluidAudio")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(

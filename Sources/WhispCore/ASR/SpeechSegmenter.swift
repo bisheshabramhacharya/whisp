@@ -10,7 +10,11 @@ import Foundation
 public enum SpeechSegmenter {
 
     /// How often the live loop looks for a cut or a pause to speculate in.
-    public static let tick = 16_000 / 10  // 100 ms
+    /// Env-overridable for bench sweeps (`WHISP_TICK_MS`); default 100 ms.
+    public static let tick: Int = {
+        let ms = Int(ProcessInfo.processInfo.environment["WHISP_TICK_MS"] ?? "") ?? 100
+        return 16 * min(max(ms, 10), 1000)
+    }()
     /// Don't cut before this much new audio — short chunks give the model too little context.
     public static let minChunk = 6 * 16_000
     /// With no pause found, cut anyway once this much audio is pending. Kept under the

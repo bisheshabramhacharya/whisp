@@ -351,9 +351,15 @@ public final class DictationController: ObservableObject {
         let chunks = stopChunkLoop()
 
         let startedAt = recordingStartedAt ?? Date()
+        let loopMs = Self.ms(since: releasedAt)
         let target = paster.target()
+        let targetMs = Self.ms(since: releasedAt) - loopMs
         let samples = recorder.stop()
         let stopMs = Self.ms(since: releasedAt)
+        if stopMs > 20 {
+            // The mic wait is ~5 ms; anything past that is worth seeing by part.
+            logger.notice("slow stop: \(stopMs)ms (loop=\(loopMs)ms target=\(targetMs)ms mic=\(stopMs - loopMs - targetMs)ms)")
+        }
         if recorder.lostInput {
             statusMessage = "Microphone disconnected mid-recording — only the audio before it was used"
         }
