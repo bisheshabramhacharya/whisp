@@ -630,6 +630,11 @@ public final class DictationController: ObservableObject {
         if duration >= 1, raw.isEmpty {
             raw = await recoverSilentTake(
                 samples, duration: duration, chunks: chunks ?? 0, transcribeMs: transcribeMs)
+            // The retry is a second wait; Esc during it must still drop the take.
+            guard id > cancelledThrough else {
+                logger.notice("dictation \(id) cancelled during the silent-take retry")
+                return
+            }
         }
 
         let cleaned = cleaner.clean(raw)

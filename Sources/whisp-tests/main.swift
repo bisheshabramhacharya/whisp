@@ -900,6 +900,47 @@ func silentTakeTests() async {
         expect((controller.statusMessage?.contains("speech") ?? false).description, "true",
                "over-cap silent take still reports itself")
     }
+
+    // Esc while the retry is decoding drops the take like any other cancelled
+    // one: no "didn't hear any speech" warning, no error sound, no history row.
+    do {
+        final class SilentThenSlow: Transcribing {
+            var calls = 0
+            func prepare() async throws {}
+            func transcribe(_ samples: [Float]) async throws -> String {
+                calls += 1
+                if calls > 1 { try? await Task.sleep(nanoseconds: 300_000_000) }
+                return ""
+            }
+        }
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let recorder = FakeRecorder(), hotkey = FakeHotkey(), paster = FakePaster(), sounds = CountingSounds()
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "whisp-tests-\(UUID().uuidString)")!)
+        settings.autoMute = false
+        settings.keepRecordings = false
+        settings.sounds = true
+        let history = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+        let transcriber = SilentThenSlow()
+        let controller = DictationController(
+            transcriber: transcriber, recorder: recorder, hotkey: hotkey, paster: paster,
+            cleaner: FillerCleaner(), muter: NoMuter(), sounds: sounds, settings: settings,
+            history: history, recordings: RecordingArchive(directory: dir.appendingPathComponent("rec")))
+        try! controller.startHotkey()
+        recorder.next = tone(3)
+        hotkey.onEvent?(.start)
+        hotkey.onEvent?(.stop)
+        for _ in 0..<200 where transcriber.calls < 2 { try? await Task.sleep(nanoseconds: 5_000_000) }
+        hotkey.onEvent?(.cancel)
+        for _ in 0..<400 where controller.state != .idle { try? await Task.sleep(nanoseconds: 10_000_000) }
+        controller.flushPersistence()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        expect(transcriber.calls.description, "2", "the retry was running when Esc landed")
+        expect(sounds.log.filter { $0 == "cancel" }.count.description, "1", "Esc during the retry plays cancel")
+        expect(sounds.log.contains("error").description, "false", "cancelled retry plays no error sound")
+        expect((controller.statusMessage == nil).description, "true", "cancelled retry shows no warning")
+        expect(history.loadLast(1).count.description, "0", "cancelled retry writes no history row")
+    }
 }
 await silentTakeTests()
 

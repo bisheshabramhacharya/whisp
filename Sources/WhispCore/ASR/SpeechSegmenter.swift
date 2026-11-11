@@ -163,6 +163,11 @@ public enum SpeechSegmenter {
     /// judges on, reported on their own so a take that decoded to nothing can
     /// say which side of the gate it was on.
     public static func levels(_ samples: [Float]) -> (rms: Float, peak: Float) {
+        levels(samples[...])
+    }
+
+    /// The same two numbers over a view of the audio, without copying it.
+    public static func levels(_ samples: ArraySlice<Float>) -> (rms: Float, peak: Float) {
         guard !samples.isEmpty else { return (0, 0) }
         var rms: Float = 0
         var peak: Float = 0
