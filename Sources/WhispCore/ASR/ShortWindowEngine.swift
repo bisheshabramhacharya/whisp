@@ -286,7 +286,21 @@ extension ShortWindowEngine {
         /// even if the other window kept the Neural Engine busy meanwhile. On
         /// the 8 GB M1: 5 s window after ~60 s of 15 s-only use 329 ms vs
         /// 27-54 ms warm; after 3-6 s of disuse only ~30 ms extra.
-        private static let staleNs: UInt64 = 8_000_000_000
+        ///
+        /// WHISP_PREWARM_MS overrides it and WHISP_PREWARM=off disables the
+        /// wake-up entirely, so a bench run can A/B the trade without changing
+        /// what the app does by default.
+        private static let staleNs: UInt64 = {
+            if let raw = ProcessInfo.processInfo.environment["WHISP_PREWARM_MS"],
+                let ms = Int(raw)
+            {
+                return UInt64(max(0, ms)) * 1_000_000
+            }
+            return 8_000_000_000
+        }()
+
+        private static let prewarmDisabled =
+            ProcessInfo.processInfo.environment["WHISP_PREWARM"] == "off"
 
         /// Sorted by windowSamples ascending. Always ends with the stock 15 s
         /// bundle when present, so the engine works with zero extra downloads.
@@ -464,6 +478,7 @@ extension ShortWindowEngine {
         }
 
         private func warmIfStale(_ variant: WindowVariant?) {
+            guard !Self.prewarmDisabled else { return }
             guard prepared, let variant,
                 DispatchTime.now().uptimeNanoseconds - (lastRun[variant.windowSamples] ?? 0) > Self.staleNs
             else { return }
