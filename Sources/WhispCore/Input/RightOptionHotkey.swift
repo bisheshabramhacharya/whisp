@@ -49,6 +49,10 @@ public final class RightOptionHotkey: HotkeyMonitoring {
         return watchdog
     }()
 
+    /// The missed-key-up watchdog — exposed for tests, which drive reset-then-poll
+    /// without a live event tap.
+    public var keyUpWatchdogForTesting: KeyUpWatchdog { keyUpWatchdog }
+
     /// Union of every modifier bit in CGEventFlags — device-independent masks
     /// (maskShift…maskSecondaryFn) AND the per-side device bits (NX_DEVICE*KEYMASK).
     /// The device bits matter: pressing Left Option while Right Option is held does
@@ -139,6 +143,7 @@ public final class RightOptionHotkey: HotkeyMonitoring {
         machine = HotkeyStateMachine()
         isOurKeyDown = false
         previousFlags = 0
+        keyUpWatchdog.disarm()
     }
 
     // MARK: - Event plumbing

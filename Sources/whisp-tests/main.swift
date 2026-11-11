@@ -639,6 +639,23 @@ do {
     expect(releases.description, "1", "disarmed watchdog is inert")
 }
 
+// reset() ends a hold like stop() does, so the watchdog must not outlive it:
+// a poll after reset fires nothing even with the key physically up.
+do {
+    var physical = true
+    var releases = 0
+    let hotkey = RightOptionHotkey()
+    hotkey.isRightOptionDown = { physical }
+    hotkey.keyUpWatchdogForTesting.onMissedRelease = { releases += 1 }
+    hotkey.keyUpWatchdogForTesting.arm()
+    expect(hotkey.keyUpWatchdogForTesting.armed.description, "true", "watchdog watches a hold")
+    physical = false
+    hotkey.reset()
+    hotkey.keyUpWatchdogForTesting.checkNow()
+    expect((releases == 0 && !hotkey.keyUpWatchdogForTesting.armed).description, "true",
+           "reset disarms: the post-reset poll fires no release")
+}
+
 // MARK: - DictationController pipeline (fakes)
 
 final class FakeRecorder: AudioRecording {
