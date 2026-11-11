@@ -31,6 +31,7 @@ struct Options {
     var idle: Double = 30
     var show = false
     var live = false
+    var mic = false
     var history: String?
     var idleCurve = false
     var pauses = false
@@ -101,6 +102,8 @@ func parseArgs() -> Options {
             opts.show = true
         case "--live":
             opts.live = true
+        case "--mic":
+            opts.mic = true
         case "--idle-curve":
             opts.idleCurve = true
         case "--pauses":
@@ -167,6 +170,9 @@ func printUsage() {
                        the mic at real speed, the key is released at its end, and the
                        app's own release→paste time is reported (--engine, default the
                        app's; --gap S between dictations, default 3)
+          --mic        real microphone check (needs mic permission): --runs short takes,
+                       printing how often audio arrives, how long stop() waits for the
+                       last piece, and how much audio is missing at the end
           --history PATH  with --live, show the latency the app recorded for each file
                        (files named <history id>.wav, e.g. Whisp's recordings folder)
           --idle-curve  decode the first file after 0-8 s of engine idle, --runs rounds;
@@ -546,6 +552,10 @@ func runStreaming(tier: String, files: [String]) async {
 // Long runs are usually redirected to a log; flush per line so progress shows.
 setvbuf(stdout, nil, _IOLBF, 0)
 let opts = parseArgs()
+if opts.mic {
+    runMicProbe(takes: max(opts.runs, 3))
+    exit(0)
+}
 guard !opts.files.isEmpty else {
     printUsage()
     exit(1)

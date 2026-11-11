@@ -354,6 +354,17 @@ extension ShortWindowEngine {
                 vocabPath: dir.appendingPathComponent(ModelNames.ParakeetUnified.vocab))
             rnnt = try UnifiedGreedyRnnt(
                 decoderModel: decoder!, jointModel: joint!, config: config)
+            // WHISP_NATIVE_RNNT=0 keeps the Core ML decode loop, for A/B runs.
+            if ProcessInfo.processInfo.environment["WHISP_NATIVE_RNNT"] != "0" {
+                let reason = rnnt!.adoptNative(
+                    decoderBundle: dir.appendingPathComponent(ModelNames.ParakeetUnified.decoderFile),
+                    jointBundle: dir.appendingPathComponent(ModelNames.ParakeetUnified.jointDecisionFile))
+                if let reason {
+                    asrLogger.error("Native decode loop off: \(reason, privacy: .public)")
+                } else {
+                    asrLogger.info("Native decode loop on")
+                }
+            }
 
             // WHISP_MODEL_DIR lets the M1 check point at a scratch dir of
             // downloaded candidate bundles instead of touching the cache.
@@ -543,6 +554,12 @@ final class UnifiedGreedyRnnt {
     private var cState: MLMultiArray
     private var lastToken: Int32
 
+    /// Set once the Accelerate port has matched Core ML at load; `decode`
+    /// then never calls the two Core ML models.
+    private var native: NativeRnnt?
+    private var nativeState: NativeRnnt.State?
+    var usesNative: Bool { native != nil }
+
     /// Timing and call counts of the last `decode`.
     struct Stats {
         var jointMs = 0.0
@@ -571,9 +588,154 @@ final class UnifiedGreedyRnnt {
     }
 
     func reset() throws {
+        lastToken = Int32(config.blankIdx)
+        nativeState = native?.zeroState()
         hState = try Self.zeroState(config: config)
         cState = try Self.zeroState(config: config)
-        lastToken = Int32(config.blankIdx)
+    }
+
+    /// Loads the Accelerate port from the same bundles and switches to it only
+    /// if it reproduces Core ML: the decoder's numbers over a chain of tokens,
+    /// and the token ids of a whole decode. Returns nil on success, else why
+    /// the Core ML loop stays in use.
+    func adoptNative(decoderBundle: URL, jointBundle: URL) -> String? {
+        do {
+            let candidate = try NativeRnnt(decoderBundle: decoderBundle, jointBundle: jointBundle)
+            guard candidate.hidden == config.decoderHidden, candidate.vocab == config.blankIdx + 1
+            else { return "model shape differs from config" }
+
+            // Chain a few tokens through both decoders and compare h and c;
+            // after each step, score one pseudo-random encoder frame with both
+            // joints and compare Core ML's top 64 scores with ours.
+            var stats = Stats()
+            var h = try Self.zeroState(config: config)
+            var c = try Self.zeroState(config: config)
+            var state = candidate.zeroState()
+            var worst: Float = 0
+            var worstScore: Float = 0
+            var scoreSize: Float = 0
+            var seed: UInt32 = 12345
+            let frame = try MLMultiArray(
+                shape: [1, NSNumber(value: candidate.encoderDim), 1], dataType: .float32)
+            let frameValues = frame.dataPointer.bindMemory(to: Float.self, capacity: frame.count)
+            for token in [Int32(config.blankIdx), 7, 311, 7, 1000, 42] {
+                let reference = try runDecoder(token: token, h: h, c: c, stats: &stats, collectStats: false)
+                let step = candidate.decoderStep(token: token, state: state)
+                h = reference.h
+                c = reference.c
+                state = step.state
+                for (array, values) in [(reference.h, state.h), (reference.c, state.c)] {
+                    guard array.dataType == .float32, array.count == values.count
+                    else { return "decoder state layout differs" }
+                    let p = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+                    for i in 0..<values.count { worst = max(worst, abs(p[i] - values[i])) }
+                }
+
+                for i in 0..<frame.count {
+                    seed = seed &* 1_664_525 &+ 1_013_904_223
+                    frameValues[i] = Float(seed >> 8) / Float(1 << 24) * 2 - 1
+                }
+                let joint = try jointModel.prediction(
+                    from: JointFeatureProvider(encoderStep: frame, decoderStep: reference.output))
+                guard let ids = joint.featureValue(for: "top_k_ids")?.multiArrayValue,
+                      let top = joint.featureValue(for: "top_k_logits")?.multiArrayValue,
+                      let best = joint.featureValue(for: "token_id")?.multiArrayValue,
+                      ids.count == top.count, ids.count > 0
+                else { return "joint outputs differ from the expected set" }
+                let row = candidate.projectEncoder(frame, frames: 0..<1)
+                let ours = row.withUnsafeBufferPointer {
+                    candidate.scores(encoderRow: $0.baseAddress!, decoder: step.projected)
+                }
+                for k in 0..<ids.count {
+                    let id = ids[k].intValue
+                    guard id >= 0, id < ours.count else { return "joint token id out of range" }
+                    worstScore = max(worstScore, abs(top[k].floatValue - ours[id]))
+                    scoreSize = max(scoreSize, abs(ours[id]))
+                }
+                let ourBest = row.withUnsafeBufferPointer {
+                    candidate.bestToken(encoderRow: $0.baseAddress!, decoder: step.projected)
+                }
+                guard ourBest == best[0].int32Value else { return "joint picks a different token" }
+            }
+            // Core ML runs these weights in half precision, so the two drift
+            // apart a little: about 0.015 on state, and on scores about half a
+            // percent of the largest score (the made-up frames here give far
+            // bigger scores than speech does). A wrong gate order or weight is
+            // off by as much as the values themselves.
+            guard worst < 0.05 else { return "decoder differs from Core ML by \(worst)" }
+            guard worstScore < max(0.05, 0.02 * scoreSize) else {
+                return "joint scores differ from Core ML by \(worstScore) of \(scoreSize)"
+            }
+            asrLogger.info(
+                "Native decode check: state within \(worst, privacy: .public), scores within \(worstScore, privacy: .public) of \(scoreSize, privacy: .public)")
+
+            // Whole loop: the same pseudo-random frames through both paths.
+            let frames = 60
+            let encoded = try MLMultiArray(
+                shape: [1, NSNumber(value: candidate.encoderDim), NSNumber(value: frames)], dataType: .float32)
+            let values = encoded.dataPointer.bindMemory(to: Float.self, capacity: encoded.count)
+            for i in 0..<encoded.count {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                values[i] = Float(seed >> 8) / Float(1 << 24) * 2 - 1
+            }
+            try reset()
+            let reference = try decode(encoded: encoded, frameRange: 0..<frames, collectStats: false).tokens
+            native = candidate
+            try reset()
+            let ours = try decode(encoded: encoded, frameRange: 0..<frames, collectStats: false).tokens
+            guard ours == reference else {
+                native = nil
+                try reset()
+                return "tokens differ from Core ML (\(ours.count) vs \(reference.count))"
+            }
+            try reset()
+            return nil
+        } catch {
+            native = nil
+            return "\(error)"
+        }
+    }
+
+    private func decodeNative(
+        _ native: NativeRnnt, encoded: MLMultiArray, frameRange: Range<Int>, collectStats: Bool
+    ) -> (tokens: [Int], stats: Stats) {
+        var stats = Stats()
+        let blank = Int32(config.blankIdx)
+        let hidden = native.hidden
+        var state = nativeState ?? native.zeroState()
+        var currentToken = lastToken
+        var tokens: [Int] = []
+
+        let start = collectStats ? DispatchTime.now().uptimeNanoseconds : 0
+        let projected = native.projectEncoder(encoded, frames: frameRange)
+        var step = native.decoderStep(token: currentToken, state: state)
+        stats.decoderCalls = 1
+        projected.withUnsafeBufferPointer { rows in
+            guard let base = rows.baseAddress else { return }
+            for index in 0..<frameRange.count {
+                for _ in 0..<config.maxSymbolsPerFrame {
+                    stats.jointCalls += 1
+                    let token = native.bestToken(encoderRow: base + index * hidden, decoder: step.projected)
+                    if token == blank { break }
+                    tokens.append(Int(token))
+                    currentToken = token
+                    state = step.state
+                    step = native.decoderStep(token: token, state: state)
+                    stats.decoderCalls += 1
+                }
+            }
+        }
+        if collectStats {
+            // One clock pair for the whole loop: a per-call pair would cost
+            // about as much as the call. Reported under the joint.
+            stats.jointMs = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+        } else {
+            stats.jointCalls = 0
+            stats.decoderCalls = 0
+        }
+        lastToken = currentToken
+        nativeState = state
+        return (tokens, stats)
     }
 
     /// `collectStats` costs two clock reads per Core ML call, so callers pass
@@ -582,6 +744,11 @@ final class UnifiedGreedyRnnt {
     func decode(
         encoded: MLMultiArray, frameRange: Range<Int>, collectStats: Bool
     ) throws -> (tokens: [Int], stats: Stats) {
+        if let native, encoded.dataType == .float32, encoded.shape.count == 3,
+           encoded.shape[1].intValue == native.encoderDim
+        {
+            return decodeNative(native, encoded: encoded, frameRange: frameRange, collectStats: collectStats)
+        }
         var stats = Stats()
         var currentToken = lastToken
         var currentH = hState

@@ -129,10 +129,15 @@ func runStages(engineName: String, runs: Int, files: [LoadedFile]) async throws 
         for run in 0..<runs {
             _ = stages.drain()
             let t0 = DispatchTime.now().uptimeNanoseconds
-            _ = try await engine.transcribe(f.samples)
+            let text = try await engine.transcribe(f.samples)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             let drained = stages.drain()
             guard run > 0 || runs == 1 else { continue }
+            // WHISP_STAGES_TEXT=1 adds the transcript, to diff two builds or
+            // two decode loops word for word.
+            if run == runs - 1, ProcessInfo.processInfo.environment["WHISP_STAGES_TEXT"] == "1" {
+                print("text \(f.name): \(text)")
+            }
             perRun.append(drained.map(\.t))
             totals.append(ms)
         }

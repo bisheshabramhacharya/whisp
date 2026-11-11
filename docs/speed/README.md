@@ -24,6 +24,48 @@ paid for 15 s of encoder work.
 | FluidAudio 0.15.7 → 0.17.4 | same speed | identical on 40 recordings |
 | Wake the encoder size the release will need, while you talk | real-time replay of the last 40 dictations: p50 147 → 92 ms, p90 350 → 176, worst 504 → 221 | same decode, earlier wake-up |
 | A quiet take may not stay uncut past a minute (see [quiet takes](#quiet-takes-a-quiet-take-may-not-stay-uncut-past-a-minute)) | long bucket worst 9329 → 977 ms; 9 1/2 min take 6124 → 984 ms; pieces cut 2 → 10 | WER identical on all three sets, owner recordings 100% same-or-better, 0 new dropped last words |
+| Mic audio through a sink node and a ring instead of a tap (see [mic tail](#mic-tail)) | wait for the last audio at release: timed out at 30 ms on about 65% of takes, now 0.5 to 6.5 ms | same audio, nothing held back |
+| Decoder and joint run natively instead of through Core ML (see [native decode loop](#native-decode-loop)) | 300 owner recordings: decode 115.9 → 84.8 ms, token loop 49.9 → 16.7 ms. A 10.4 s take with no pause: 182 → 123 ms | LibriSpeech test-clean: 948 errors in 52,576 words both ways (1.80%), 16 of 2,620 clips differ. Owner recordings: 297 of 300 identical |
+| Spectrogram of the speech frames only, not the padded window | about 3 ms on short takes | bit-identical encoder input (tested), identical text on 300 recordings |
+
+## Mic tail
+
+`installTap` hands over 4800 frames every 100 ms whatever buffer size is asked
+for, and `AVAudioConverter` keeps back part of any buffer over 4096 frames until
+more arrives. So the newest audio sat up to 85 ms inside the converter and the
+30 ms wait at release timed out on about two takes in three. Capture now uses an
+`AVAudioSinkNode` (512 frames, 10.7 ms), a ring buffer, and a converter thread
+that never feeds more than 4096 frames (`CapturePipeline.swift`).
+`whisp-bench --mic` checks the real microphone.
+
+## Native decode loop
+
+After the encoder, the model picks tokens one at a time: a two-layer LSTM
+(decoder) and a small joint network, called once per token. Through Core ML
+each call cost about 0.5 ms of overhead around very little math, and that loop
+was 40% of the decode. `NativeRnnt.swift` reads the same weights out of the
+model bundle and does the math directly.
+
+What made it fast was memory, not arithmetic. The LSTM matrices are 20 MB as
+32-bit floats and the M1's L2 cache is 12 MB, so three products in a row took
+470 µs where one alone took 78. Keeping the weights as the 16-bit floats they
+ship as (10 MB), widening them as they are read in a NEON kernel
+(`Sources/WhispKernels/gemv.c`) and running the independent products side by
+side brought the three to about 150 µs. Widening is exact, so the result equals
+a 32-bit copy of the weights.
+
+It is not bit-identical to Core ML, and cannot be: Core ML rounds to 16 bits
+between steps, the native loop keeps 32. Rounding at step boundaries did not
+close the gap (state stays within 0.015 either way), so now and then a near-tie
+between two tokens falls the other way. On LibriSpeech test-clean that is 16
+clips of 2,620 with the same error count (948). On 300 owner recordings it is
+three: an added comma, "Tail Scale" → "Tailscale", and one "number two is
+seven" → "number two seven".
+
+At load the app runs both loops on the same inputs and keeps Core ML if the
+decoder state differs by 0.05 or the joint scores by 2% of their size. The log
+says `Native decode loop on` or `off: <reason>`. `WHISP_NATIVE_RNNT=0` turns it
+off.
 
 ## Quiet takes: a quiet take may not stay uncut past a minute
 
