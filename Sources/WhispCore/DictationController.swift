@@ -109,6 +109,9 @@ public final class DictationController: ObservableObject {
     private var isRecording = false
     private var systemMuted = false
     private var pendingTranscriptions = 0
+    /// Takes this launch that decoded to nothing. Named in the log line so a
+    /// silent take is a number you can search for, not a missing row.
+    private var silentTakes = 0
     /// Optional auto-learn watcher (nil in tests/fakes).
     public var correctionWatcher: CorrectionWatching?
     private var recordingStartedAt: Date?
@@ -136,6 +139,14 @@ public final class DictationController: ObservableObject {
     public var minimumDuration: TimeInterval = 0.05
     /// Hard safety cap so a stuck key can never record forever.
     public var maximumDuration: TimeInterval = 10 * 60
+    /// Longest take the empty-transcript retry re-decodes. Every empty take
+    /// longer than this that has been measured turned out to be continuous
+    /// noise rather than speech (52.00 s and 124.86 s), and paying ~1 s to
+    /// confirm nothing on a take the person already waited through is a worse
+    /// trade than leaving it empty. Below the cap the retry costs one encoder
+    /// window and buys a real chance at text, which is the case it exists for.
+    /// A refusal is logged, never silent, so the cap stays falsifiable.
+    public static let emptyRetryCapSeconds: TimeInterval = 30
     /// Assumed sample rate delivered by AudioRecording (per contract: 16 kHz mono).
     public let sampleRate = 16_000
 
@@ -594,7 +605,8 @@ public final class DictationController: ObservableObject {
         let pendingTakes = self.pendingTakes
         defer { persistQueue.async { pendingTakes.remove(pendingFile) } }
         let transcribedAt = DispatchTime.now()
-        let raw: String, transcribeMs: Int
+        var raw: String
+        let transcribeMs: Int
         switch result {
         case .success(let value):
             (raw, transcribeMs) = value
@@ -608,6 +620,21 @@ public final class DictationController: ObservableObject {
         guard id > cancelledThrough else {
             logger.notice("dictation \(id) cancelled before paste")
             return
+        }
+
+        // A take that decoded to nothing is a defect, not a result: the models
+        // return nothing on some audible windows. Name it, then spend one decode
+        // on the clip as captured — a take that would paste nothing can only
+        // gain. Never runs on a take that produced text, so no wait it adds can
+        // land on a release that was going to paste something.
+        if duration >= 1, raw.isEmpty {
+            raw = await recoverSilentTake(
+                samples, duration: duration, chunks: chunks ?? 0, transcribeMs: transcribeMs)
+            // The retry is a second wait; Esc during it must still drop the take.
+            guard id > cancelledThrough else {
+                logger.notice("dictation \(id) cancelled during the silent-take retry")
+                return
+            }
         }
 
         let cleaned = cleaner.clean(raw)
@@ -666,6 +693,47 @@ public final class DictationController: ObservableObject {
         )
         lastResult = entry
         persist(entry, samples: settings.keepRecordings ? samples : nil)
+    }
+
+    /// A take that decoded to nothing. Writes one self-naming line carrying the
+    /// numbers that separate the possible causes, then, for an audible take
+    /// under the cap, spends one decode on the clip as captured and returns what
+    /// it found. "" back means the take really did hold no words.
+    private func recoverSilentTake(_ samples: [Float], duration: TimeInterval,
+                                   chunks: Int, transcribeMs: Int) async -> String {
+        silentTakes += 1
+        let levels = SpeechSegmenter.levels(samples)
+        let kept = SpeechSegmenter.trimSpeech(samples).count
+        let keptPercent = samples.isEmpty ? 0 : 100 * kept / samples.count
+        let audible = !SpeechSegmenter.isNearSilent(samples)
+        logger.notice("""
+            silent take #\(self.silentTakes): audio=\(duration, format: .fixed(precision: 2))s \
+            rms=\(Double(levels.rms), format: .fixed(precision: 4)) \
+            peak=\(Double(levels.peak), format: .fixed(precision: 3)) kept=\(keptPercent)% \
+            chunks=\(chunks) decode=\(transcribeMs)ms audible=\(audible)
+            """)
+        // Dead air is a muted or missing input, not a lost take: a retry would
+        // decode the same silence, so none is spent.
+        guard audible else { return "" }
+        guard duration <= Self.emptyRetryCapSeconds else {
+            logger.notice("""
+                silent take #\(self.silentTakes): over the \(Int(Self.emptyRetryCapSeconds))s retry cap, \
+                skipped (audio=\(duration, format: .fixed(precision: 2))s \
+                rms=\(Double(levels.rms), format: .fixed(precision: 4)) \
+                peak=\(Double(levels.peak), format: .fixed(precision: 3)))
+                """)
+            return ""
+        }
+        guard let text = try? await transcriber.transcribe(samples), !text.isEmpty else {
+            logger.notice("""
+                silent take #\(self.silentTakes): retried the clip as captured, still nothing
+                """)
+            return ""
+        }
+        logger.notice("""
+            silent take #\(self.silentTakes): retried the clip as captured, rescued \(text.count) chars
+            """)
+        return text
     }
 
     /// Writes history and the WAV off the main thread, in order.
