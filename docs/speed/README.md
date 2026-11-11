@@ -23,6 +23,51 @@ paid for 15 s of encoder work.
 | Cleaner + dictionary warmed at launch | first dictation no longer pays 46–67 ms | same code, earlier |
 | FluidAudio 0.15.7 → 0.17.4 | same speed | identical on 40 recordings |
 | Wake the encoder size the release will need, while you talk | real-time replay of the last 40 dictations: p50 147 → 92 ms, p90 350 → 176, worst 504 → 221 | same decode, earlier wake-up |
+| A quiet take may not stay uncut past a minute (see [quiet takes](#quiet-takes-a-quiet-take-may-not-stay-uncut-past-a-minute)) | long bucket worst 9329 → 977 ms; 9 1/2 min take 6124 → 984 ms; pieces cut 2 → 10 | WER identical on all three sets, owner recordings 100% same-or-better, 0 new dropped last words |
+
+## Quiet takes: a quiet take may not stay uncut past a minute
+
+The scoreboard's first real run found the worst number in the product: the long
+bucket (5+ minute takes) p50 167 ms but a worst case of 9329 ms. It is one
+9 1/2 minute recording, which reproduces at 6124 ms through the app's own
+dictation path (`--live`) and shows 6429 ms in the app's own history.
+
+That recording sits under the segmenter's absolute near-silence test the whole
+way (RMS 0.0027, peak 0.011, apart from one click). `nextCut` refuses a cut when
+the audio before it fails that test, and it has to: a quiet chunk sent to the
+transcriber alone comes back empty, so the segmenter keeps it attached to what
+follows. On a take recorded quietly from start to finish nothing ever gets
+committed: the live loop stopped after the first 28 s, the release had 536 s
+left, and it decoded that in 15 s windows. 6103 ms of decode in one release, the
+9329 ms in the scoreboard, and the app's own log agrees — `transcribe=9328ms`,
+`chunks=2`, no decode at all for the 43 s before the key came up.
+
+The guard is unchanged for a short span and gives way once `pendingCutLimit`
+(a minute) of audio is pending. Cutting as soon as the audio goes quiet was
+measured and rejected: it took the long bucket to 151 ms, but it changed text on
+three real recordings and one 35.9 s take went from 74 words to 68 against the
+baseline build (two `--live` passes each, alternating, clean machine). Losing a
+minute of audio to the release is recoverable at 1 s; losing words is not.
+
+| | before | after |
+|---|---|---|
+| scoreboard long bucket (5+ min, n=3) | p50 167, p95 9329, worst 9329 ms | p50 190, p95 977, worst 977 ms |
+| 9 1/2 min take, release to paste (`--live`) | 6124 ms (app: 6429 ms) | 984 ms |
+| pieces cut during that take | 2 | 10 |
+| audio one release decodes | 536 s in 15 s windows | at most 60 s |
+| decode inside that release | 6103 ms | 976 ms |
+
+The scoreboard's whole table after the change, same sample as the recorded
+baseline: short p50 90 / p95 220 / worst 250 ms (was 88 / 461 / 795), average
+p50 100 / 246 / 246 (was 100 / 247 / 247), long as above. Accuracy is unchanged:
+WER 1.70 test-clean, 3.19 test-other, 4.55 dictation (the same 150 clips), owner
+recordings 100.0% same-or-better, last word kept 100.0%, 0 new dropped last
+words, `whisp-tests` 497/497.
+
+Next lever, not in this change: the release tail is gated as one buffer, so a
+single click anywhere in it (peak above 0.05) makes the whole tail decode window
+by window. Gating each window of a split tail instead would take the remaining
+977 ms to milliseconds, and would also make a starved take cheap again.
 
 ## Measured dead ends
 
@@ -33,7 +78,102 @@ paid for 15 s of encoder work.
 | Second decode lane (`par2`) | helps p95 only when a release races a decode; +600 MB | opt-in only |
 | Speculating after 150 ms pauses | dropped a quiet last word on the edge set | not used |
 | Keeping the Neural Engine warm | idle penalty is only 10–15 ms on macOS 26 (was 60–120 ms); what does hurt is one encoder size sitting unused while the other runs (next run 250–465 ms), fixed above | not needed |
+| Cut as soon as the audio looks quiet (first version of the fix above) | long bucket worst 9329 → 151 ms, but 3 of 78 owner recordings changed text and one 35.9 s take went 74 → 68 words vs baseline | reverted: the guard gives way only past a minute of pending audio |
 | Pause detection above 200 Hz, against the room's hum | long takes ~15 ms faster on average, but the last word was lost in 4 of 20 releases vs 1 of 20: cuts land right before the last word, which then decodes alone | not used |
+| Committing while you talk, with each word owned by its decoded start time ([details](timestamp-partition.md)) | The seam stops being a text guess: every piece keeps the words that start inside its own span, so a phrase repeated across a seam comes back (9 phases of 11 match the six-clip reference better than main on take 1). But the transcript stops being the same twice: 3 distinct transcripts across 11 phase shifts on take 1 and 5 on take 2, where main gives 1 and 2, because the same word decoded in two windows comes out with two spellings ("Chez Panisse" as Chepanas, Cheapanis, Che Pennis). Also slower at release on these takes: 138-156 ms against main's 66-108 ms | not used: a seam every second leaves each word a couple of seconds of context on a 5 s window |
+| Skipping near-silent pieces of a long release tail (PR #65) | 977 → 208 ms on the 9 1/2 minute take by skipping 34 of its 38 pieces, and identical text on every other long take, but one 258.89 s recording ends in a 3.89 s piece with RMS 0.00065 and peak 0.0090, and the model returns that take's last five words from it: 33 words on main, 28 with the gate, at every release offset. Cut the gate back to skipping only digitally silent pieces and it skips nothing: none of 1295 owner recordings over one window holds an all-zero piece | closed: this model reads 15 dB below the gate, so no level above zero is safe |
+| Committing the tail every second while you talk, so a release decodes one window | Release decode 160 → 38 ms on paper, and the phase sweep says no: shifting the same audio in 100 ms steps gave 4 different transcripts across 10 phases with text-repaired seams and up to 14 doubled words, and still 3 of 20 phases differing with quiet-window cuts and a 4 s cap, against 1 of 20 on main. Every one of those three dropped a word. Any cut inside speech splits a word, and the model reads the two halves differently | closed: chunking continuous speech costs words on this model |
+
+### How quiet still counts as speech
+
+The piece gate is tempting because a long release tail is mostly room noise, and
+skipping it is free speed: 34 of the 38 pieces of the 9 1/2 minute take sit
+under the absolute silence test and cost 20 ms each to decode.
+
+It cannot be done on this model. One 258.89 s recording ends in a 3.89 s piece
+with RMS 0.00065 and peak 0.0090, which is 15 dB under the gate's 0.05 peak
+limit, and decoding that piece alone returns the take's last five words. With
+the gate the pasted text is 28 words where main's is 33, at every simulated
+release offset. So the level below which the model stays silent is under 0.0090
+peak, and a quieter piece has not been found to justify guessing where: the
+quietest piece measured anywhere so far is 0.00754 peak, on the same take.
+
+Exact digital silence is the only safe piece test, and it pays nothing here:
+none of the 1295 owner recordings longer than one encoder window contains a piece
+of all zeros, because the recorder always writes a noise floor. What that leaves
+is the buffer-level test, which is what main does, and the 60 s cut bound, which
+is what keeps a release from decoding minutes of audio.
+
+### Committing while you talk
+
+The largest single win left on the table is that a release decodes whatever audio
+is pending, and continuous speech leaves a lot pending: 12 s of speech with no
+pause decodes 12 s on the 15 s window, 160 ms. A 1 s held-back tail would turn
+that into one 5 s pass, about 38 ms.
+
+Both shapes of it were built and measured against the test that decides them: take
+one take, shift it by 0, 100, ... 900 ms so every tick lands somewhere different,
+and require the same words every time. Main holds 19 of 20 phases; anything that
+adds cuts has to do at least as well.
+
+- Committing every second with text-level seam repair (drop the words the two
+  decodes repeat, or repair a cut word from its stub): on the take the design was
+  built against, its 10 phase shifts produce 4 different transcripts where main
+  produces 1. Against main's own text for the same phase it loses no word and
+  carries up to 14 extra: the repair guesses wrong and doubles words, which is the
+  failure that killed it.
+- Committing only in a quiet 100 ms window, with the tail allowed to grow to 4 s
+  before forcing a cut: 17 of the 20 phase shifts match main's text. Take 1 gives 2
+  different transcripts across its 10 phases with no word lost and 2 extra; take 2
+  gives 3, losing 1 to 2 words and carrying 2 to 3 extra. Release decode p50 54 to
+  61 ms, which is the number that made it worth trying.
+
+Reproduce either one with `whisp-bench --live --json --engine short --gap 1` on
+`~/.capy/work/stall/sweep/unbroken-{1,2}.wav` and their `-p1` to `-p9` 100 ms
+shifts, then compare each phase with main's row for the same phase; the rows from
+both runs are kept on this machine in `~/.capy/work/stall/sweep{,2,-main}.jsonl`.
+
+The cause is not the join. A cut inside speech hands each half of a word to a
+different decode, and the model reads the two halves differently depending on the
+context on either side. Silence is the only place a cut costs nothing and leaves
+the words intact, and real speech does not offer enough of it to keep a tail near
+a second.
+
+### Which shape this was, and what it does to the design note
+
+Three shapes get talked about as one. Two were built and measured, and the one
+that was measured first is the one `design-tail-under-2s.md` proposes.
+
+- **Commit at the quietest point inside a 1 s bound, 0.6 s of audio re-decoded
+  behind each cut, repeated words dropped at the join.** This is the design
+  note's cadence, built as written, and it is the one that doubles words: 4
+  different transcripts across 10 phase shifts where main gives 1, and up to 14
+  extra words against main's text. The note's plan is therefore dead as written,
+  not an untested proposal.
+- **Cut only where a quiet 100 ms window exists, allowing the tail to grow to a
+  4 s cap before forcing a cut, overlap and join unchanged.** 16 of 20 phases
+  identical, and the four that differ include two dropped words. It inherits the
+  same failure, less often, because the cut still lands inside speech whenever
+  the cap is reached.
+- **The shape nobody built:** cut only at a real pause, with the two bounds that
+  ship inside a long stretch of speech, the forced cut at 14 s and the 60 s pending
+  limit from #61, and otherwise let the tail be as long as it is. That is what
+  ships today, and it is the 19 of 20.
+
+The count against main is 3 differing runs of 20 against 1 of 20, which on its own
+is p about 0.34 and proves nothing. The argument does not rest on it: it rests on
+the class of failure, runs that dropped a word against one substitution on main,
+and a dropped word is the outcome this effort refuses. It also separates two
+questions that look alike: waiting for a pause and eating a long tail costs 160 ms
+and no words, while cutting on a cadence to keep the tail short is a different
+trade, and on this model it is the one that loses words.
+
+What ships instead is what ships today: cut at pauses, forced cut at 14 s, release
+decodes up to one 15 s window. The long bucket's 208 ms worst case is not made
+better by cutting more often; it is made better by making that window pass cheaper,
+which is the live-path overhead work, or by never letting a release inherit more
+than one window, which needs a cut policy this model tolerates and none has been
+found yet.
 
 ## 10 s window
 
@@ -45,27 +185,69 @@ dropped the last word, so the segmenter is unchanged.
 On the VM (`short`, 330 files, release at +0 ms) those leftovers fall into two
 buckets: 5–10 s (11.8% of releases) waits p50 164 / p95 177 ms and 10–15 s
 (7.3%) 179 / 201 ms, both paying the 15 s encoder's flat cost. The 10 s window
-takes the first bucket to **130 / 161 ms** with transcripts identical to the
-15 s window, and the second to 168 / 175 ms. VM numbers only — the M1 verdict
-is `scripts/speed/m1-check.sh`. A piecewise alternative that decoded two
+took the first bucket to **130 / 161 ms** on the VM and the second to 168 / 175
+ms. VM numbers only, and the transcript-identity claim from that run did not
+survive the M1 replay below: on real recordings the 10 s window is faster and
+loses a last word. A piecewise alternative that decoded two
 overlapped 5 s pieces also measured faster on the 5–10 s bucket (164 → 150 ms
 VM) but was not shipped, so there is no `split` engine to pass to `--engine`
 (see [log-e](log-e-split-and-w10000.md)); 10–15 s has no cheaper option at the
 same weights either, because two pieces on any window cost more than one 15 s
 pass.
 
+### The 10 s bundle on the M1: faster, and it drops a last word
+
+Built on the Mini with `tools/convert/convert-short-window.py --windows 10` and
+the pinned NeMo commit, int8 quantized, then compiled with the CoreML framework
+(`MLModel.compileModel`) because `coremlcompiler` ships with a full Xcode this
+machine does not have. Twelve of the owner's recordings whose final speech run
+is 5 to 10 s, `--live`, engine `short`, both passes over the same clips:
+
+| | 15 s window | 10 s window |
+|---|---|---|
+| release to paste p50 | 223 ms | 158 ms |
+| release to paste worst | 285 ms | 276 ms |
+| release decode p50 | 200 ms | 158 ms |
+| clips word-identical | 11 of 12 | — |
+
+The one that differs is a 12.0 s recording whose tail is 6.4 s, and it loses its
+**last word**: kept on both 15 s runs, dropped on both 10 s runs, so the
+difference is the bundle and not run-to-run noise.
+
+Two things about how that was measured, because they matter to anyone repeating
+it. The bundle was installed into the live FluidAudio cache for the two passes
+and removed from it afterwards, which means the app on this machine was reading 5
+to 10 s tails on the 10 s window for those minutes. The app uses a bundle that is
+already on disk with no checksum, so **do not reinstall it** until the twelve clips
+pass: an installed bundle changes every 5 to 10 s release, not just a benchmark.
+
+It is not the frame accounting. Feeding the same 6.08 s of audio to both traces
+gives the same mel (608 frames), the same encoder output shape for each window
+(126 frames on the 10 s trace, 188 on the 15 s) and the same 76 valid frames the
+decoder reads, so nothing is truncated and neither trace is fed a wrong length.
+The difference is inside the encoder: full attention over a 1001-frame input
+against a 1501-frame one changes the representation of the last frames, and the
+last word is the one that tips. A shorter input window is therefore the wrong
+knob for this. If anyone wants to pursue it, a 12 or 14 s window is a different
+build, it would have to pass the same twelve clips, and nothing here says it
+would. The last word is the number this effort exists to
+protect, so the bundle stays unpublished and `middleBundle.sha256` stays empty.
+65 ms for a dropped last word on 1 of 12 clips is the same trade the per-piece
+silence gate offered, and it is refused for the same reason.
+
 `ShortWindowEngine` now also uses a 10 s encoder
 (`parakeet_unified_encoder_w10000_int8`) when that bundle is on disk, with
 the same smallest-window-that-fits rule as the 5 s one. A 7 s tail is one
-full-attention pass, so the text matches the 15 s model; splitting it into
-5 s pieces would not. The window is prewarmed the same way: while you talk,
+full-attention pass, which the VM run measured as transcript-identical to the
+15 s model; the M1 replay above found the one take where it is not. The window is prewarmed the same way: while you talk,
 the engine wakes the size a release of the audio so far would use.
 
 It is a second int8 bundle, not one shared weight file. A multi-function
 Core ML model only loads on macOS 15, and this app is macOS 14. The int8
 quantizer also rejects multi-function models, and the constants baked at
 trace time differ per window, so two bundles cannot share `weight.bin`.
-One int8 window is about 560 MB on disk. Latency is pending a Mac run.
+One int8 window is about 560 MB on disk, and the M1 measurement above is the
+latency answer: 223 to 158 ms p50 on the 5 to 10 s bucket.
 Per-process `phys_footprint` (and `footprint -p`) does not include the Core ML
 encoders: with the 5 s and 15 s int8 encoders loaded, about 1.1 GB of weights,
 both read 74 MB. That memory sits outside the whisp process, most likely in
@@ -74,19 +256,58 @@ prints a system-wide `vm_stat` delta around model load (free, wired,
 anonymous, compressor). Compare that delta with the 10 s bundle installed and
 with it moved aside.
 
-The zip is not published yet, so `ShortWindowEngine.middleBundle.sha256` is
-empty and the app does not download the 10 s window; a bundle already on disk
-is used without a checksum. Follow-up: publish
-`parakeet_unified_encoder_w10000_int8.mlmodelc.zip` on `models-v2` and paste
-its SHA-256 into `middleBundle` (see `tools/convert/RELEASE.md`). The number
-recorded for the drafted zip is
+The zip is not published, so `ShortWindowEngine.middleBundle.sha256` is empty
+and the app does not download the 10 s window; a bundle already on disk is used
+without a checksum. It stays unpublished after the M1 measurement above, and
+publishing it is blocked rather than pending: this trace is faster on the 5 to
+10 s bucket and it costs a last word, so no checksum should be pasted until the
+twelve clips pass, and they do not pass on this trace. What that needs is a
+different window length, 12 or 14 s, built and put through the same twelve clips.
+The number recorded for the drafted zip is
 `ba03f26fd519b193f76701a26a13680714d8dc0861a623e42e57ffd887f1cb50` — re-hash
 it if the bundle is rebuilt, and do not paste a number you have not verified.
-Once that checksum lands the bundle is fetched on launch like the 5 s one, so
-the download is gated on publishing, not opt-in. Until then `--install` copies
+If a trace ever passes the twelve clips, that checksum makes the app fetch it on
+launch like the 5 s one, so the download is gated on publishing, not opt-in. Until then `--install` copies
 a locally built bundle into the FluidAudio model cache, which is the directory
 the engine scans, and `WHISP_MODEL_DIR` points the bench at another folder of
 the same files.
+
+## Scoreboard
+
+One command, on the Mini, prints the wait, the accuracy and the last-word
+delta for whatever the tree currently builds:
+
+```sh
+scripts/speed/scoreboard.sh            # measure and print
+scripts/speed/scoreboard.sh --record   # also write docs/speed/scoreboard/
+```
+
+Wait is key release to text appearing, measured by real-time replay of the
+owner's own recordings through the app's dictation path (`whisp-bench --live`),
+bucketed by how long the speech is: short 1-10 s, average 10-60 s, long 5+ min.
+Replay runs in real time, so the buckets are sampled to fit a 45 minute run;
+the rule and the sample size are printed with the table. Each bucket's p50 is
+checked against its target (38 / 40 / 46 ms) and every bucket against 100 ms.
+
+Accuracy is WER on LibriSpeech test-clean and test-other and on the `say`-made
+dictation set, which is labelled a casual stand-in: `WHISP_CASUAL_SET=<dir>`
+swaps in a real casual set (one `<file>.wav` plus `<file>.txt` per clip). The
+last-word gate compares each recording's text against the recorded baseline
+build: same or better means no word the baseline heard went missing, and a new
+dropped last word is a recording whose last word changed. Zero is the gate.
+
+A run takes the benchmark lock first, so nothing else on the Mini can be
+measuring at the same time. Per-file results are cached under
+`~/.whisp-scoreboard-cache` and keyed by the sha256 of the built `whisp-bench`
+plus the engine flags, so a repeat run on the same binary is near instant
+(seconds) and a rebuilt engine always replays; `--force` ignores the cache.
+`--record` writes `baseline-<engine sha>.json`, `latest.json` and `latest.md`.
+Only aggregates land there: no audio, no transcripts, no recording names, ever.
+
+The last-word delta compares against the recorded baseline build, which needs
+that build's cached per-file rows. If the cache is wiped, run the scoreboard
+once on the baseline build to restore them, or the accuracy row reads `n/a`
+rather than a made-up number.
 
 ## Reproduce
 

@@ -183,3 +183,9 @@ public protocol TextPasting: AnyObject {
 public protocol TextCleaning: AnyObject {
     func clean(_ raw: String) -> String
 }
+
+/// Additive formatting, run after cleanup: writes the same words in a more readable
+/// form (number written as digits, spoken file paths joined, sentences closed).
+public protocol TextFormatting: AnyObject {
+    func format(_ text: String) -> String
+}

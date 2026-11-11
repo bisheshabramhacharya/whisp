@@ -131,12 +131,75 @@ public final class ShortWindowEngine: Transcribing, StatusReporting {
         public let melMs: Double
         public let encoderMs: Double
         public let rnntMs: Double
+        /// The RNNT loop split by model: joint decisions and decoder steps,
+        /// with the number of Core ML calls each one made.
+        public let jointMs: Double
+        public let decoderMs: Double
+        public let jointCalls: Int
+        public let decoderCalls: Int
     }
 
     /// Called after every windowed decode (not the >15 s fallback), on the
     /// engine's executor.
     public func observeDecodes(_ observer: @escaping @Sendable (DecodeTimings) -> Void) async {
         await engine.setObserver(observer)
+    }
+
+    /// What `decodeStatsProbe` found: the same encoder window decoded twice,
+    /// once with the per-step timings collected and once without.
+    public struct StatsProbeResult: Sendable {
+        public let frames: Int
+        public let tokenCount: Int
+        /// The two runs emitted the same tokens, so collecting costs no accuracy.
+        public let identical: Bool
+        /// The run with collection off recorded no timings and no call counts.
+        public let silentStatsAreZero: Bool
+        /// What the collecting run counted: one joint decision per encoder
+        /// frame, and the decoder step that runs before the first frame.
+        public let jointCalls: Int
+        public let decoderCalls: Int
+    }
+
+    /// `whisp-tests` calls this to prove the per-step counters are free on the
+    /// shipping path. It needs the joint and decoder bundles (17 MB) and not the
+    /// encoder, and returns nil when they are not installed, so the suite still
+    /// runs on a machine with no models.
+    public static func decodeStatsProbe(
+        frames: Int = 40
+    ) async throws -> StatsProbeResult? {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("FluidAudio/Models/parakeet-unified-en-0.6b")
+        let decoderURL = dir.appendingPathComponent(ModelNames.ParakeetUnified.decoderFile)
+        let jointURL = dir.appendingPathComponent(ModelNames.ParakeetUnified.jointDecisionFile)
+        guard FileManager.default.fileExists(atPath: decoderURL.path),
+            FileManager.default.fileExists(atPath: jointURL.path)
+        else { return nil }
+
+        let cpu = MLModelConfiguration()
+        cpu.computeUnits = .cpuOnly
+        let rnnt = try UnifiedGreedyRnnt(
+            decoderModel: try await MLModel.load(contentsOf: decoderURL, configuration: cpu),
+            jointModel: try await MLModel.load(contentsOf: jointURL, configuration: cpu),
+            config: UnifiedConfig())
+
+        let encoded = try MLMultiArray(
+            shape: [1, NSNumber(value: 1024), NSNumber(value: frames)], dataType: .float32)
+        let values = encoded.dataPointer.bindMemory(to: Float.self, capacity: encoded.count)
+        for i in 0..<encoded.count { values[i] = Float(i % 23) / 23 - 0.5 }
+
+        try rnnt.reset()
+        let silent = try rnnt.decode(encoded: encoded, frameRange: 0..<frames, collectStats: false)
+        try rnnt.reset()
+        let measured = try rnnt.decode(encoded: encoded, frameRange: 0..<frames, collectStats: true)
+        return StatsProbeResult(
+            frames: frames,
+            tokenCount: silent.tokens.count,
+            identical: silent.tokens == measured.tokens,
+            silentStatsAreZero: silent.stats.jointMs == 0 && silent.stats.decoderMs == 0
+                && silent.stats.jointCalls == 0 && silent.stats.decoderCalls == 0,
+            jointCalls: measured.stats.jointCalls,
+            decoderCalls: measured.stats.decoderCalls)
     }
 
     public func transcribe(_ samples: [Float]) async throws -> String {
@@ -426,7 +489,12 @@ extension ShortWindowEngine {
                 let rnnt, let tokenizer
             else { throw TranscriberError.notPrepared }
 
-            let t0 = DispatchTime.now().uptimeNanoseconds
+            // The per-step timings cost two clock reads per Core ML call. Only
+            // the bench attaches an observer, so the app's own dictation path
+            // decodes with the collection switched off.
+            let collecting = observer != nil
+
+            let t0 = collecting ? DispatchTime.now().uptimeNanoseconds : 0
             var buffer = [Float](repeating: 0, count: variant.windowSamples)
             samples.withUnsafeBufferPointer { src in
                 buffer.withUnsafeMutableBufferPointer { dst in
@@ -435,7 +503,7 @@ extension ShortWindowEngine {
             }
             let (melArray, melLength) = try mel.features(
                 window: buffer, validCount: samples.count)
-            let t1 = DispatchTime.now().uptimeNanoseconds
+            let t1 = collecting ? DispatchTime.now().uptimeNanoseconds : 0
 
             let encoderOutput = try encoder.prediction(
                 from: EncoderFeatureProvider(mel: melArray, melLength: melLength))
@@ -447,21 +515,25 @@ extension ShortWindowEngine {
 
             try rnnt.reset()
             let encoderLength = min(encodedLength[0].intValue, encoded.shape[2].intValue)
-            let tokens = try rnnt.decode(encoded: encoded, frameRange: 0..<encoderLength)
+            let (tokens, stats) = try rnnt.decode(
+                encoded: encoded, frameRange: 0..<encoderLength, collectStats: collecting)
             if let observer {
                 let t3 = DispatchTime.now().uptimeNanoseconds
                 observer(DecodeTimings(
                     windowSamples: variant.windowSamples, inputSamples: samples.count,
                     melMs: Double(t1 - t0) / 1e6, encoderMs: Double(t2 - t1) / 1e6,
-                    rnntMs: Double(t3 - t2) / 1e6))
+                    rnntMs: Double(t3 - t2) / 1e6,
+                    jointMs: stats.jointMs, decoderMs: stats.decoderMs,
+                    jointCalls: stats.jointCalls, decoderCalls: stats.decoderCalls))
             }
             return tokenizer.decode(ids: tokens)
         }
     }
 }
 
-/// Greedy RNNT decode over `encoded` [1, D, T] — same math as FluidAudio's
-/// `UnifiedRnntDecoder` (and whisp-bench's `ProfiledRnnt`).
+/// Greedy RNNT decode over `encoded` [1, D, T]: same math as FluidAudio's
+/// `UnifiedRnntDecoder` (and whisp-bench's `ProfiledRnnt`), with per-model call
+/// counts and timings so the cost of each stage is visible.
 final class UnifiedGreedyRnnt {
     private let decoderModel: MLModel
     private let jointModel: MLModel
@@ -470,6 +542,14 @@ final class UnifiedGreedyRnnt {
     private var hState: MLMultiArray
     private var cState: MLMultiArray
     private var lastToken: Int32
+
+    /// Timing and call counts of the last `decode`.
+    struct Stats {
+        var jointMs = 0.0
+        var decoderMs = 0.0
+        var jointCalls = 0
+        var decoderCalls = 0
+    }
 
     init(decoderModel: MLModel, jointModel: MLModel, config: UnifiedConfig) throws {
         self.decoderModel = decoderModel
@@ -496,20 +576,32 @@ final class UnifiedGreedyRnnt {
         lastToken = Int32(config.blankIdx)
     }
 
-    func decode(encoded: MLMultiArray, frameRange: Range<Int>) throws -> [Int] {
+    /// `collectStats` costs two clock reads per Core ML call, so callers pass
+    /// false unless something is reading the split (the bench). With it false
+    /// the loop takes no timestamps and the returned counters stay at zero.
+    func decode(
+        encoded: MLMultiArray, frameRange: Range<Int>, collectStats: Bool
+    ) throws -> (tokens: [Int], stats: Stats) {
+        var stats = Stats()
         var currentToken = lastToken
         var currentH = hState
         var currentC = cState
         var tokens: [Int] = []
 
-        var decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC)
+        var decoderStep = try runDecoder(
+            token: currentToken, h: currentH, c: currentC, stats: &stats, collectStats: collectStats)
 
         for t in frameRange {
             let encStep = try extractEncoderStep(from: encoded, timeIndex: t)
             for _ in 0..<config.maxSymbolsPerFrame {
+                let jointStart = collectStats ? DispatchTime.now().uptimeNanoseconds : 0
                 let jointOutput = try jointModel.prediction(
                     from: JointFeatureProvider(
                         encoderStep: encStep, decoderStep: decoderStep.output))
+                if collectStats {
+                    stats.jointMs += Double(DispatchTime.now().uptimeNanoseconds - jointStart) / 1e6
+                    stats.jointCalls += 1
+                }
                 guard let tokenArray = jointOutput.featureValue(for: "token_id")?.multiArrayValue
                 else { throw TranscriberError.notPrepared }
                 let tokenId = tokenArray[0].int32Value
@@ -518,14 +610,16 @@ final class UnifiedGreedyRnnt {
                 currentToken = tokenId
                 currentH = decoderStep.h
                 currentC = decoderStep.c
-                decoderStep = try runDecoder(token: currentToken, h: currentH, c: currentC)
+                decoderStep = try runDecoder(
+                    token: currentToken, h: currentH, c: currentC, stats: &stats,
+                    collectStats: collectStats)
             }
         }
 
         lastToken = currentToken
         hState = currentH
         cState = currentC
-        return tokens
+        return (tokens, stats)
     }
 
     private struct DecoderStep {
@@ -534,15 +628,22 @@ final class UnifiedGreedyRnnt {
         let c: MLMultiArray
     }
 
-    private func runDecoder(token: Int32, h: MLMultiArray, c: MLMultiArray) throws -> DecoderStep {
+    private func runDecoder(
+        token: Int32, h: MLMultiArray, c: MLMultiArray, stats: inout Stats, collectStats: Bool
+    ) throws -> DecoderStep {
         let targets = try MLMultiArray(shape: [1, 1], dataType: .int32)
         targets[0] = NSNumber(value: token)
         let targetLength = try MLMultiArray(shape: [1], dataType: .int32)
         targetLength[0] = 1
 
+        let start = collectStats ? DispatchTime.now().uptimeNanoseconds : 0
         let output = try decoderModel.prediction(
             from: DecoderFeatureProvider(
                 targets: targets, targetLength: targetLength, hIn: h, cIn: c))
+        if collectStats {
+            stats.decoderMs += Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+            stats.decoderCalls += 1
+        }
         guard let decoderOut = output.featureValue(for: "decoder")?.multiArrayValue,
             let hOut = output.featureValue(for: "h_out")?.multiArrayValue,
             let cOut = output.featureValue(for: "c_out")?.multiArrayValue

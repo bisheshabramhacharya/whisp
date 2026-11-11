@@ -79,6 +79,7 @@ public final class DictationController: ObservableObject {
     private let hotkey: HotkeyMonitoring
     private let paster: TextPasting
     private let cleaner: TextCleaning
+    private let formatter: TextFormatting
     private let muter: AudioMuting
     private let sounds: SoundPlaying
     private let settings: AppSettings
@@ -155,6 +156,7 @@ public final class DictationController: ObservableObject {
         hotkey: HotkeyMonitoring,
         paster: TextPasting,
         cleaner: TextCleaning,
+        formatter: TextFormatting = TextFormatter(),
         muter: AudioMuting,
         sounds: SoundPlaying,
         settings: AppSettings,
@@ -167,6 +169,7 @@ public final class DictationController: ObservableObject {
         self.hotkey = hotkey
         self.paster = paster
         self.cleaner = cleaner
+        self.formatter = formatter
         self.muter = muter
         self.sounds = sounds
         self.settings = settings
@@ -631,10 +634,15 @@ public final class DictationController: ObservableObject {
 
         let cleaned = cleaner.clean(raw)
         let cleanMs = Self.ms(since: transcribedAt)
+        // Clean, then format, then paste, in that order, and the format step is
+        // timed on its own because it has a budget of its own.
+        let formatStart = DispatchTime.now()
+        let text = formatter.format(cleaned)
+        let formatUs = Self.microseconds(since: formatStart)
         if raw.isEmpty, duration >= 1 {
             statusMessage = "Didn't hear any speech — check the microphone input"
             if settings.sounds { sounds.playError() }
-        } else if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Spoke only fillers ("um uh"): it lands in history but nothing pastes — say so.
             statusMessage = "Only filler words heard — nothing to paste"
             if settings.sounds { sounds.playError() }
@@ -642,13 +650,13 @@ public final class DictationController: ObservableObject {
 
         let pasteStart = DispatchTime.now()
         var outcome = PasteResult.pasted
-        if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // paste() waits for this lookup; Esc during that wait must still stop the paste.
             _ = await target.precedingCharacter.value
             guard id > cancelledThrough else { return }
             outcome = id <= copyOnlyThrough
-                ? paster.copy(cleaned)
-                : await paster.paste(cleaned, into: target)
+                ? paster.copy(text)
+                : await paster.paste(text, into: target)
         }
         let pasteMs = Self.ms(since: pasteStart)
         let latencyMs = Self.ms(since: releasedAt)
@@ -665,7 +673,8 @@ public final class DictationController: ObservableObject {
 
         logger.notice("""
             dictation done: audio=\(duration, format: .fixed(precision: 2))s chunks=\(chunks ?? 0) \
-            stop=\(stopMs)ms transcribe=\(transcribeMs)ms clean=\(cleanMs)ms paste=\(pasteMs)ms \
+            stop=\(stopMs)ms transcribe=\(transcribeMs)ms clean=\(cleanMs)ms \
+            format=\(formatUs)us paste=\(pasteMs)ms \
             release→paste=\(latencyMs)ms
             """)
 
@@ -674,7 +683,7 @@ public final class DictationController: ObservableObject {
             date: startedAt,
             durationSec: duration,
             raw: raw,
-            cleaned: cleaned,
+            cleaned: text,
             latencyMs: latencyMs
         )
         lastResult = entry
@@ -814,14 +823,14 @@ public final class DictationController: ObservableObject {
                 logger.error("pending take transcribe failed: \(error.localizedDescription, privacy: .public)")
                 continue
             }
-            let cleaned = cleaner.clean(raw)
-            guard !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let text = formatter.format(cleaner.clean(raw))
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let entry = HistoryEntry(
                 id: UUID().uuidString,
                 date: pendingTakes.fileDate(url),
                 durationSec: Double(samples.count) / Double(sampleRate),
                 raw: raw,
-                cleaned: cleaned,
+                cleaned: text,
                 latencyMs: 0
             )
             lastResult = entry
@@ -831,7 +840,7 @@ public final class DictationController: ObservableObject {
             // ⌘V lands the most recent one — and only when the clipboard isn't
             // already holding the user's own copy.
             if !clipboardOccupied() {
-                clipboardSink(cleaned)
+                clipboardSink(text)
                 copied = true
             }
             recovered += 1
@@ -850,6 +859,11 @@ public final class DictationController: ObservableObject {
 
     private static func ms(since start: DispatchTime) -> Int {
         Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+    }
+
+    /// Microseconds, because the format step is measured in a part of a millisecond.
+    private static func microseconds(since start: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000)
     }
 }
 

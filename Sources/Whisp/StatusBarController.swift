@@ -157,6 +157,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             guard let self else { return }
             self.services.settings.learnFromCorrections.toggle()
         })
+        menu.addItem(toggle("Confirm when a word is added", isOn: services.settings.learnConfirmation) { [weak self] in
+            guard let self else { return }
+            self.services.settings.learnConfirmation.toggle()
+        })
         menu.addItem(toggle("Launch at Login", isOn: services.settings.launchAtLogin) { [weak self] in
             guard let self else { return }
             self.services.settings.launchAtLogin.toggle()

@@ -35,6 +35,9 @@ struct Options {
     var idleCurve = false
     var pauses = false
     var switchTest = false
+    var stages = false
+    /// One `{...}` JSON line per file/per dictation, for scripts/speed/scoreboard.sh.
+    var json = false
 }
 
 func parseArgs() -> Options {
@@ -104,6 +107,10 @@ func parseArgs() -> Options {
             opts.pauses = true
         case "--switch-test":
             opts.switchTest = true
+        case "--stages":
+            opts.stages = true
+        case "--json":
+            opts.json = true
         case "--history":
             i += 1
             if i < args.count { opts.history = args[i] }
@@ -138,6 +145,12 @@ func printUsage() {
                        model in 100 ms buffers (the mic cadence) and time the release step.
           --profile    per-file stage profile (mel / encoder / joint / decoder ms, call
                        counts) of one <=15 s window via the profiled engine
+          --stages     per-file stage split through the app's own engine (--engine,
+                       default the app's): mel, encoder, RNNT split by joint and
+                       decoder with Core ML call counts, on the encoder window it
+                       really uses. A file that needs more than one window prints
+                       one row per window, since the whole-file time and one
+                       window's stages are different scopes
           --replay     release replay: run the real chunk/speculate/finish loop over each
                        file and simulate key release at --offsets ms after the last word;
                        prints wait p50/p95/mean, no-wait share, last-word survival
@@ -160,6 +173,9 @@ func printUsage() {
                        shows how much slower a cold decode is (--engine as for --live)
           --pauses     per file, how many 100 ms ticks would start a decode-ahead, and
                        the noise floor vs speech level that decides it
+          --json       print one {...} JSON line per file (and per dictation with
+                       --live; per engine per file with --compare) so a script can
+                       read numbers instead of scraping the tables
           --switch-test SHORT LONG  alternate a clip that fits the 5 s encoder
                        with one longer than 5 s (10 s window if that bundle is installed,
                        otherwise 15 s); compares encoder time right after a window
@@ -357,6 +373,17 @@ func systemMemoryDeltaLine(_ before: SystemMemorySample, _ after: SystemMemorySa
 
 func formatMB(_ bytes: UInt64) -> String {
     String(format: "%.1f MB", Double(bytes) / 1_048_576)
+}
+
+// MARK: - Machine-readable output (--json)
+
+/// One-line JSON to stdout. Scoreboard consumers read only lines starting with
+/// `{`, so every human line above can stay exactly as it was.
+func emitJSON(_ object: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+        let line = String(data: data, encoding: .utf8)
+    else { return }
+    print(line)
 }
 
 // MARK: - WER (simple word-level Levenshtein on normalized words)
@@ -557,7 +584,7 @@ if opts.live {
     do {
         try await runLive(engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
                           paths: opts.files, gapSeconds: opts.gap > 0 ? opts.gap : 3,
-                          historyPath: opts.history)
+                          historyPath: opts.history, json: opts.json)
     } catch {
         print("live replay failed: \(error.localizedDescription)")
         exit(2)
@@ -566,7 +593,7 @@ if opts.live {
 }
 
 // Track A speed modes dispatch before the standard bench loop.
-if opts.profile || opts.replay || opts.compare != nil {
+if opts.profile || opts.replay || opts.compare != nil || opts.stages {
     let files = loadFiles(opts.files)
     guard !files.isEmpty else { exit(1) }
     do {
@@ -575,18 +602,23 @@ if opts.profile || opts.replay || opts.compare != nil {
             let name = opts.engineSet ? opts.engine : "profiled"
             try await runProfile(engineName: name, runs: opts.runs, files: files, show: opts.show)
         }
+        if opts.stages {
+            try await runStages(
+                engineName: opts.engineSet ? opts.engine : ASREngine.defaultName,
+                runs: opts.runs, files: files)
+        }
         if opts.replay {
             try await runReplay(engineName: opts.engine, files: files,
                                 offsets: opts.offsets, micDropMs: opts.micDrop, show: opts.show)
         }
         if let compare = opts.compare {
             let names = compare.split(separator: ",").map { String($0) }
-            guard names.count >= 2 else {
-                print("--compare needs >= 2 engine names (e.g. parakeet,profiled)")
+            guard names.count >= 1 else {
+                print("--compare needs >= 1 engine name (e.g. parakeet,profiled); agreement needs 2")
                 exit(1)
             }
             try await runCompare(names: names, runs: opts.runs, idleSeconds: opts.idle,
-                                 files: files, show: opts.show)
+                                 files: files, show: opts.show, json: opts.json)
         }
     } catch {
         print("bench failed: \(error.localizedDescription)")

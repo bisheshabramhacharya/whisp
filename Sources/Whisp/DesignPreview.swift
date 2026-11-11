@@ -55,6 +55,16 @@ func renderDesignPreviews(to directory: URL) throws {
         pill.mode = .idle
         guard !pill.showsLock && !pill.showsSpinner else { throw NSError(domain: "WhispPreview", code: 4) }
     }
+    // The confirmation card after a correction is saved. The live panel, laid
+    // out at its real size with the real confetti layers.
+    do {
+        let notice = DictionarySavedNotice()
+        let card = notice.previewCard([
+            EditWatcher.LearnedEntry(from: "agents MD", to: "AGENTS.md", isTerm: false),
+        ])
+        try render(card, size: card.frame.size, to: directory.appendingPathComponent("learn-card.png"))
+    }
+
     // Status-menu warning rows — where clipboard-fallback outcomes surface.
     for (name, message) in [
         ("status-secure-input", DictationController.secureInputMessage),

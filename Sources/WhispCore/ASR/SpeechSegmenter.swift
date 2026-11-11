@@ -59,7 +59,7 @@ public enum SpeechSegmenter {
         }
         // A chunk the transcriber would drop as silence may still hold quiet speech;
         // keep it attached to what follows, as whole-clip decoding would.
-        if let best, !isNearSilent(Array(samples[..<(best * frame)])) { return best * frame }
+        if let best, !cutDropsQuietSpeech(samples, at: best * frame) { return best * frame }
 
         guard samples.count >= forceChunk else { return nil }
         // Quietest 100 ms window in the last 5 s.
@@ -74,7 +74,28 @@ public enum SpeechSegmenter {
             i += 1
         }
         let cut = (quietest + window / 2) * frame
-        return isNearSilent(Array(samples[..<cut])) ? nil : cut
+        return cutDropsQuietSpeech(samples, at: cut) ? nil : cut
+    }
+
+    /// Never leave more than a minute of audio pending. A release past it decodes the
+    /// whole span in 15 s windows, one window per 15 s of audio: that is how one real
+    /// 9 1/2 minute take reached 6103 ms of decode in a single release, 6124 ms release
+    /// to paste, with no decode at all for the 43 s before the key came up.
+    static let pendingCutLimit = 60 * 16_000
+
+    /// Whether cutting `samples` at `cut` would lose words: the audio before the cut
+    /// is quiet next to absolute levels, so the transcriber drops it on its own and
+    /// keeps it only when it decodes together with what follows. Keeping a quiet chunk
+    /// attached is what makes quietly recorded words survive, and it is right while the
+    /// pending span is short.
+    ///
+    /// Past `pendingCutLimit` the answer is no: leaving it pending is what makes a
+    /// release decode minutes of audio in 15 s windows (one real 9 1/2 minute take:
+    /// 6103 ms of decode in a single release, 6124 ms release to paste, no decode at
+    /// all for the 43 s before the key came up).
+    static func cutDropsQuietSpeech(_ samples: [Float], at cut: Int) -> Bool {
+        guard samples.count < pendingCutLimit, cut > 0, cut < samples.count else { return false }
+        return isQuiet(samples[..<cut])
     }
 
     /// Whether `samples` (audio pending since the last cut) holds speech and ends in a
@@ -127,6 +148,12 @@ public enum SpeechSegmenter {
 
     /// The transcriber's silence gate: whole-buffer RMS and peak both low.
     public static func isNearSilent(_ samples: [Float], rmsThreshold: Float = 0.004) -> Bool {
+        isQuiet(samples[...], rmsThreshold: rmsThreshold)
+    }
+
+    /// The same test over a view of the audio, so a cut decision reads both sides of
+    /// a candidate cut without copying either.
+    private static func isQuiet(_ samples: ArraySlice<Float>, rmsThreshold: Float = 0.004) -> Bool {
         guard !samples.isEmpty else { return true }
         let (rms, peak) = levels(samples)
         return rms < rmsThreshold && peak < 0.05

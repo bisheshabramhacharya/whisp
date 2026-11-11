@@ -10,4 +10,6 @@ windows/**/bin/
 windows/**/obj/
 
 # Local benchmark data (LibriSpeech, generated dictation clips) — never commit
-testdata/
+# No trailing slash: the shared set arrives as a symlink, which `testdata/` does
+# not match, and an untracked symlink gets swept into any PR opened from the tree.
+/testdata

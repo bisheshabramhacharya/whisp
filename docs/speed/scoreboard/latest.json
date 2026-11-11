@@ -1,0 +1,98 @@
+{
+ "accuracy": {
+  "dictation": {
+   "errors": 110,
+   "n": 150,
+   "ref_words": 2416,
+   "wer": 4.552980132450331
+  },
+  "librispeech_test_clean": {
+   "errors": 104,
+   "n": 292,
+   "ref_words": 6102,
+   "wer": 1.7043592264831202
+  },
+  "librispeech_test_other": {
+   "errors": 175,
+   "n": 294,
+   "ref_words": 5492,
+   "wer": 3.186453022578296
+  },
+  "owner": {
+   "dropped_last_words": 0,
+   "last_word_kept": 100.0,
+   "last_word_n": 72,
+   "n": 78,
+   "same_or_better": 100.0
+  }
+ },
+ "baseline": {
+  "bench": "71a12cfa4b1d80e9",
+  "build_sha": "8b915e1",
+  "engine_sha": "588c9ee",
+  "flags": "short-gap1"
+ },
+ "build": {
+  "bench": "71a12cfa4b1d80e9",
+  "branch": "capy/whisp-scoreboard",
+  "dirty": false,
+  "engine": "588c9ee",
+  "sha": "8b915e1"
+ },
+ "engine": {
+  "flags": "short-gap1",
+  "gap_s": 1.0,
+  "name": "short"
+ },
+ "machine": {
+  "chip": "M1",
+  "memory_gb": 8,
+  "model": "MacBookPro17,1",
+  "os": "26.0.1"
+ },
+ "recorded": "2026-11-05T04:49:17Z",
+ "run_seconds": 2340.4,
+ "sample": {
+  "buckets": {
+   "average": 16,
+   "long": 3,
+   "short": 59
+  },
+  "outside_buckets": {
+   "one_to_five_min": 317,
+   "total_recordings": 2598,
+   "under_1s": 211
+  },
+  "rule": "sample: short 59 of 844, average 16 of 1,205, long 3 of 21 (audio budget 300/450/1300 s, 1 s between takes); 2,598 recordings: 211 under 1 s and 317 at 1-5 min sit outside the buckets"
+ },
+ "schema": 1,
+ "settings": {
+  "average": 450.0,
+  "long": 1300.0,
+  "short": 300.0
+ },
+ "speed": {
+  "average": {
+   "n": 16,
+   "p50_ms": 100,
+   "p95_ms": 247,
+   "target_ms": 40,
+   "worst_ms": 247
+  },
+  "long": {
+   "n": 3,
+   "p50_ms": 167,
+   "p95_ms": 9329,
+   "target_ms": 46,
+   "worst_ms": 9329
+  },
+  "short": {
+   "n": 59,
+   "p50_ms": 88,
+   "p95_ms": 461,
+   "target_ms": 38,
+   "worst_ms": 795
+  }
+ },
+ "worst_case_target_ms": 100
+}
