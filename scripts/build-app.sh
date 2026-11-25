@@ -113,6 +113,7 @@ if [ -n "$DEVELOPER_ID" ]; then
     /usr/libexec/PlistBuddy -c "Add :SUFeedURL string https://github.com/bisheshabramhacharya/whisp/releases/latest/download/appcast.xml" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_KEY" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :SURequireSignedFeed bool true" "$APP/Contents/Info.plist"
 fi
 
