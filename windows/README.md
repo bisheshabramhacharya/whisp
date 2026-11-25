@@ -67,6 +67,11 @@ Any other key or mouse button you pick only talks: while it is the push-to-talk
 key, it no longer does its usual thing (a middle click won't open links in a new
 tab). Esc, left click and right click can't be picked.
 
+After cleanup, Whisp [formats spoken numbers, times, paths, and sentences](../docs/formatting.md).
+It also knows common coding words out of the box: “agents dot md” becomes
+`AGENTS.md`, and “chat gpt” becomes `ChatGPT`. Your dictionary rules take
+precedence over the built-in coding words.
+
 ## Bring your Mac's words, history and settings
 
 On the Mac, open Terminal and run:
@@ -175,7 +180,7 @@ ONNX encoder already takes the audio's own length. In
 bundles are not ported.
 
 ```
-windows/WhispCore    text cleanup, dictionary, hotkey state machine, segmenter, storage, Mac import
+windows/WhispCore    text cleanup and formatting, dictionary, hotkey state machine, segmenter, storage, Mac import
                      (line-for-line ports of Sources/WhispCore; no Windows APIs, so it's testable anywhere)
 windows/Whisp        tray app: keyboard hook, mic, sherpa-onnx engine, paster, recording pill
 windows/WhispTests   test runner
