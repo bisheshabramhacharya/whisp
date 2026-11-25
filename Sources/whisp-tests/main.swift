@@ -25,6 +25,8 @@ func expect(_ actual: String, _ expected: String, _ label: String = "", line: In
     }
 }
 
+checkDailyData { result, label in expect(String(result), "true", label) }
+
 // MARK: - Setup and pill settings survive relaunch
 
 await MainActor.run {

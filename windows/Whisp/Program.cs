@@ -47,7 +47,10 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         var raw = engine.TranscribeAsync(samples).GetAwaiter().GetResult();
         var ms = sw.ElapsedMilliseconds;
-        var cleaned = new FillerCleaner(new PersonalDictionary(paths.DictionaryFile)).Clean(raw);
+        var daily = new DailyDictionary(new DailyDataStore(Path.Combine(paths.Root, "daily-data.json")));
+        var dictionary = File.Exists(Path.Combine(paths.Root, "daily-data.json"))
+            ? new PersonalDictionary(daily) : new PersonalDictionary(paths.DictionaryFile);
+        var cleaned = new FillerCleaner(dictionary).Clean(raw);
         Console.WriteLine($"raw:     {raw}");
         Console.WriteLine($"cleaned: {cleaned}");
         Console.WriteLine($"{samples.Length / 16000.0:F1}s audio in {ms} ms");

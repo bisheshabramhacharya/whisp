@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using System.Runtime.InteropServices;
 
 namespace Whisp;
 
@@ -24,6 +25,48 @@ internal sealed class MicRecorder : IDisposable
     /// True when the input device failed mid-recording; the last Stop() returned only
     /// the audio from before the failure.
     public bool LostInput { get; private set; }
+    public string PreferredInput { get; set; } = "";
+
+    public sealed record Input(string Id, string Name, int Number)
+    {
+        public override string ToString() => Name;
+    }
+
+    public static Input[] Inputs()
+    {
+        var inputs = new List<Input>();
+        for (var number = 0; number < WaveInEvent.DeviceCount; number++)
+        {
+            var caps = WaveInEvent.GetCapabilities(number);
+            var id = DeviceInterface(number) ?? $"{caps.NameGuid:D}:{caps.ProductGuid:D}:{caps.ProductName}";
+            inputs.Add(new Input(id, caps.ProductName, number));
+        }
+        return inputs.GroupBy(i => i.Id, StringComparer.Ordinal).Where(g => g.Count() == 1)
+            .Select(g => g.First()).ToArray();
+    }
+
+    [DllImport("winmm.dll", ExactSpelling = true)]
+    private static extern uint waveInMessage(nint device, uint message, nint first, nint second);
+
+    private static string? DeviceInterface(int number)
+    {
+        const uint querySize = 0x080C, queryInterface = 0x080D;
+        var sizePointer = Marshal.AllocHGlobal(sizeof(int));
+        try
+        {
+            if (waveInMessage(number, querySize, sizePointer, 0) != 0) return null;
+            var bytes = Marshal.ReadInt32(sizePointer);
+            if (bytes is <= 2 or > 65536) return null;
+            var buffer = Marshal.AllocHGlobal(bytes);
+            try
+            {
+                return waveInMessage(number, queryInterface, buffer, bytes) == 0
+                    ? Marshal.PtrToStringUni(buffer) : null;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        finally { Marshal.FreeHGlobal(sizePointer); }
+    }
 
     public MicRecorder()
     {
@@ -46,7 +89,8 @@ internal sealed class MicRecorder : IDisposable
             throw new InvalidOperationException("No microphone found");
         var device = new WaveInEvent
         {
-            DeviceNumber = -1, // WAVE_MAPPER: follows the Windows default input device
+            DeviceNumber = PreferredInput.Length == 0 ? -1 : Inputs()
+                .FirstOrDefault(i => i.Id == PreferredInput)?.Number ?? -1,
             WaveFormat = new WaveFormat(SampleRate, 16, 1),
             BufferMilliseconds = 40,
             NumberOfBuffers = 3,

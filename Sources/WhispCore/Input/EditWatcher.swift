@@ -36,6 +36,7 @@ public final class EditWatcher: CorrectionWatching {
     private let learner: CorrectionLearner
     private let pending: PendingCorrections
     private let dictionaryFile: URL
+    private let daily: DailyDictionary?
     private let isEnabled: () -> Bool
     private let logger = Logger(subsystem: "com.bishesha.whisp", category: "Learn")
     private var span: Span?
@@ -73,10 +74,11 @@ public final class EditWatcher: CorrectionWatching {
     /// sightings, duplicates, removals, and failed writes do not call it.
     public var onDictionarySaved: ((LearnedBatch) -> Void)?
 
-    public init(learner: CorrectionLearner, dictionaryFile: URL, pendingFile: URL,
+    public init(learner: CorrectionLearner, dictionaryFile: URL, pendingFile: URL, daily: DailyDictionary? = nil,
                 isEnabled: @escaping () -> Bool) {
         self.learner = learner
         self.dictionaryFile = dictionaryFile
+        self.daily = daily
         self.pending = PendingCorrections(fileURL: pendingFile)
         self.isEnabled = isEnabled
         observer = NSWorkspace.shared.notificationCenter.addObserver(
@@ -131,14 +133,15 @@ public final class EditWatcher: CorrectionWatching {
         expiryTimer?.cancel()
         expiryTimer = nil
         checkTask?.cancel()
-        let learner = self.learner, dictionaryFile = self.dictionaryFile
+        let learner = self.learner, dictionaryFile = self.dictionaryFile, daily = self.daily
         checkTask = Task.detached(priority: .utility) { [weak self] in
             guard let window = Self.readWindow(around: span) else { return }
             // The anchor must appear exactly once — else we can't be sure which
             // occurrence the pasted text follows, so learn nothing.
             guard let range = Self.singleOccurrence(of: span.beforeText, in: window) else { return }
             let current = String(window[range.upperBound...])
-            let rules = PersonalDictionary.loadPairs(fileURL: dictionaryFile)
+            let rules = daily.map { (try? $0.pairs()) ?? [] }
+                ?? PersonalDictionary.loadPairs(fileURL: dictionaryFile)
             if Task.isCancelled { return }
             // decide() calls the NSSpellChecker oracle, which belongs on main.
             await MainActor.run { [weak self] in
@@ -161,14 +164,14 @@ public final class EditWatcher: CorrectionWatching {
             do {
                 switch decision {
                 case .term(let term):
-                    if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
+                    if try saveTerm(term) {
                         saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                     }
                     learned.append(term)
                     applied.append(decision)
                 case .replacement(let from, let to):
                     let phrase = "\(from) → \(to)"
-                    if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
+                    if try saveReplacement(from: from, to: to) {
                         saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                     }
                     learned.append(phrase)
@@ -181,13 +184,13 @@ public final class EditWatcher: CorrectionWatching {
                         kind == .term ? .term(to) : .replacement(from: from, to: to)
                     switch promoted {
                     case .term(let term):
-                        if try PersonalDictionary.addTerm(term, fileURL: dictionaryFile) {
+                        if try saveTerm(term) {
                             saved.append(LearnedEntry(from: term.lowercased(), to: term, isTerm: true))
                         }
                         learned.append(term)
                     case .replacement(let from, let to):
                         let phrase = "\(from) → \(to)"
-                        if try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile) {
+                        if try saveReplacement(from: from, to: to) {
                             saved.append(LearnedEntry(from: from, to: to, isTerm: false))
                         }
                         learned.append(phrase)
@@ -195,7 +198,7 @@ public final class EditWatcher: CorrectionWatching {
                     }
                     applied.append(promoted)
                 case .removed(let from, let to):
-                    try PersonalDictionary.removeReplacement(from: from, to: to, fileURL: dictionaryFile)
+                    try removeReplacement(from: from, to: to)
                     learned.append("unlearned \(from) → \(to)")
                     applied.append(decision)
                 }
@@ -229,10 +232,9 @@ public final class EditWatcher: CorrectionWatching {
     public func undo(_ entries: [LearnedEntry]) {
         for entry in entries {
             if entry.isTerm {
-                try? PersonalDictionary.removeTerm(entry.to, fileURL: dictionaryFile)
+                try? removeTerm(entry.to)
             } else {
-                try? PersonalDictionary.removeReplacement(from: entry.from, to: entry.to,
-                                                          fileURL: dictionaryFile)
+                try? removeReplacement(from: entry.from, to: entry.to)
             }
         }
     }
@@ -244,11 +246,11 @@ public final class EditWatcher: CorrectionWatching {
         for decision in lastApplied {
             switch decision {
             case .term(let term):
-                try? PersonalDictionary.removeTerm(term, fileURL: dictionaryFile)
+                try? removeTerm(term)
             case .replacement(let from, let to):
-                try? PersonalDictionary.removeReplacement(from: from, to: to, fileURL: dictionaryFile)
+                try? removeReplacement(from: from, to: to)
             case .removed(let from, let to):
-                _ = try? PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
+                _ = try? saveReplacement(from: from, to: to)
             case .pending(let from, let to, _):
                 pending.remove(from: from, to: to)
             }
@@ -258,6 +260,26 @@ public final class EditWatcher: CorrectionWatching {
     }
 
     // MARK: - AX read (detached)
+
+    private func saveTerm(_ term: String) throws -> Bool {
+        if let daily { return try daily.save(from: term) }
+        return try PersonalDictionary.addTerm(term, fileURL: dictionaryFile)
+    }
+
+    private func saveReplacement(from: String, to: String) throws -> Bool {
+        if let daily { return try daily.save(from: from, to: to) }
+        return try PersonalDictionary.addReplacement(from: from, to: to, fileURL: dictionaryFile)
+    }
+
+    private func removeTerm(_ term: String) throws {
+        if let daily { try daily.remove(from: term) }
+        else { try PersonalDictionary.removeTerm(term, fileURL: dictionaryFile) }
+    }
+
+    private func removeReplacement(from: String, to: String) throws {
+        if let daily { try daily.remove(from: from, to: to) }
+        else { try PersonalDictionary.removeReplacement(from: from, to: to, fileURL: dictionaryFile) }
+    }
 
     /// Reads the bounded window around the span via the parameterized
     /// string-for-range attribute. nil on any failure (dead element, hung app).

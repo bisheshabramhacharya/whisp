@@ -25,12 +25,14 @@ public sealed class HistoryStore
 {
     private const long TailReadLimit = 512 * 1024;
     private readonly object _gate = new();
+    private readonly DailyDataStore? _daily;
 
     public string FilePath { get; }
 
-    public HistoryStore(string filePath)
+    public HistoryStore(string filePath, DailyDataStore? daily = null)
     {
         FilePath = filePath;
+        _daily = daily;
     }
 
     private sealed class Line
@@ -78,6 +80,8 @@ public sealed class HistoryStore
     /// Appends one entry as a single JSON line. Creates the file if needed.
     public void Append(HistoryEntry entry)
     {
+        if (_daily != null)
+            _daily.Seed(new[] { Change(entry) });
         lock (_gate)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
@@ -89,6 +93,11 @@ public sealed class HistoryStore
     /// the file, so it stays fast as history grows.
     public List<HistoryEntry> LoadLast(int count)
     {
+        if (_daily != null)
+        {
+            try { return Search("").Take(count).ToList(); }
+            catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { return new(); }
+        }
         if (count <= 0) return new();
         string text;
         long offset;
@@ -130,6 +139,35 @@ public sealed class HistoryStore
         if (!File.Exists(FilePath)) return new();
         return File.ReadAllLines(FilePath).Select(Decode).OfType<HistoryEntry>().ToList();
     }
+
+    public void ImportLegacy() => _daily?.Seed(LoadAll().Select(Change));
+
+    public List<HistoryEntry> Search(string query) => _daily == null ? new() : _daily.Records("history")
+        .Select(r => Decode(r.Value)).OfType<HistoryEntry>()
+        .Where(e => e.Cleaned.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    e.Raw.Contains(query, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(e => e.Date).ThenBy(e => e.Id, StringComparer.Ordinal).ToList();
+
+    public HistoryEntry? Latest(HistoryEntry? transient)
+    {
+        var latest = LoadLast(1).FirstOrDefault();
+        if (transient == null || latest?.Date >= transient.Date) return latest;
+        try
+        {
+            var updated = _daily?.Records("history").FirstOrDefault(r => r.Id == transient.Id);
+            return updated == null ? transient : Decode(updated.Value) ?? transient;
+        }
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { return transient; }
+    }
+
+    public void Edit(string id, string text)
+    {
+        var record = _daily?.Records("history").FirstOrDefault(r => r.Id == id);
+        if (record != null && Decode(record.Value) is { } entry)
+            _daily!.Update(Change(entry with { Cleaned = text }));
+    }
+
+    private static DailyDataStore.Change Change(HistoryEntry entry) => new("history", entry.Id, Encode(entry));
 
     /// Adds entries whose id isn't already present, keeping the file in date order.
     /// Returns how many were added.

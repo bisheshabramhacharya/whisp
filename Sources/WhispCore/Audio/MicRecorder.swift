@@ -1,5 +1,7 @@
 import AVFoundation
 import Accelerate
+import AudioToolbox
+import CoreAudio
 import Foundation
 import os
 
@@ -40,6 +42,8 @@ public final class MicRecorder: AudioRecording {
     private let logger = Logger(subsystem: "com.bishesha.whisp", category: "Mic")
 
     private let engine = AVAudioEngine()
+    private let preferredInput: () -> String
+    private var manuallySelectedInput = false
 
     /// What the ASR engine consumes: 16 kHz, mono, non-interleaved Float32.
     private let outputFormat = AVAudioFormat(
@@ -109,7 +113,8 @@ public final class MicRecorder: AudioRecording {
     /// Reserved capacity of the capture buffer — introspection for tests.
     public var reservedSampleCapacity: Int { capture.reservedCapacity }
 
-    public init() {
+    public init(preferredInput: @escaping () -> String = { "" }) {
+        self.preferredInput = preferredInput
         let state = sinkState
         sink = AVAudioSinkNode { _, frameCount, audioBufferList in
             state.ring?.write(audioBufferList, frames: Int(frameCount))
@@ -132,7 +137,7 @@ public final class MicRecorder: AudioRecording {
             object: engine,
             queue: nil
         ) { [weak self] _ in
-            self?.handleConfigurationChange()
+            self?.teardownQueue.async { [weak self] in self?.handleConfigurationChange() }
         }
     }
 
@@ -179,6 +184,7 @@ public final class MicRecorder: AudioRecording {
 
         engineLock.lock()
         do {
+            try configureInputLocked()
             try installTapLocked()
         } catch {
             engineLock.unlock()
@@ -388,6 +394,25 @@ public final class MicRecorder: AudioRecording {
         lock.unlock()
     }
 
+    private func configureInputLocked() throws {
+        let preference = preferredInput()
+        let selected = preference.isEmpty ? nil : MicrophoneDevice.available().first { $0.id == preference }?.device
+        guard selected != nil || manuallySelectedInput else { return }
+        guard var target = selected ?? MicrophoneDevice.defaultInput(),
+              let unit = engine.inputNode.audioUnit else { throw MicRecorderError.inputUnavailable }
+        var current = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        if AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                &current, &size) != noErr || current != target {
+            teardownLocked()
+            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                       &target, UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else {
+                throw MicRecorderError.inputUnavailable
+            }
+        }
+        manuallySelectedInput = selected != nil
+    }
+
     // MARK: - Level reporting (~30 Hz on main)
 
     /// Main-thread only (via dispatch). Emits the freshest level at ~30 Hz;
@@ -423,6 +448,7 @@ public final class MicRecorder: AudioRecording {
         let wasRecording = capture.isRecording
         if wasRecording {
             do {
+                try configureInputLocked()
                 try installTapLocked()
                 try engine.start()
                 lock.lock()

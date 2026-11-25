@@ -94,15 +94,18 @@ the files are interchangeable in both directions:
 
 | | |
 |---|---|
-| `%APPDATA%\Whisp\dictionary.json` | Your words — same format as on the Mac (see the main README) |
-| `%APPDATA%\Whisp\history.jsonl` | Past dictations |
+| `%APPDATA%\Whisp\daily-data.json` | Editable history, dictionary entries and device-local data preferences |
+| `%APPDATA%\Whisp\dictionary.json` and `history.jsonl` | Preserved legacy/import files; history log also keeps original local dictations |
 | `%APPDATA%\Whisp\recordings\` | WAVs, if **Keep Recordings** is on |
 | `%APPDATA%\Whisp\settings.json` | Menu settings |
 | `%APPDATA%\Whisp\whisp.log` | Timings and errors (never what you said) |
 | `%LOCALAPPDATA%\Whisp\Models\` | The speech model |
 
-Edits to `dictionary.json` apply to your next dictation; **Edit Dictionary…**
-in the tray menu opens it in Notepad.
+Use **History → Search & Edit History…**, **Edit Dictionary…**, or
+**Microphone Settings…** in the tray to manage your data. **Folder Sync…**
+syncs text and dictionary entries with other devices without an account. Pick
+the same synced folder on each device. Audio and microphone choices stay
+local; see [folder sync](../docs/daily-data-sync.md).
 
 ## How it differs from the Mac version
 

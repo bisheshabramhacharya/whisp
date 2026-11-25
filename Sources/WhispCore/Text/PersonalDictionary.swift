@@ -42,6 +42,8 @@ public final class PersonalDictionary: @unchecked Sendable {
     }
 
     private let fileURL: URL?
+    private var daily: DailyDictionary?
+    private var lastRecords: [DailyDataStore.Record]?
     private let lock = NSLock()
     private var loadedModificationDate: Date?
     private var rules: [Rule] = []
@@ -49,6 +51,11 @@ public final class PersonalDictionary: @unchecked Sendable {
     /// Loads from `fileURL`; a missing or malformed file is treated as empty.
     public init(fileURL: URL) {
         self.fileURL = fileURL
+    }
+
+    public init(daily: DailyDictionary) {
+        self.fileURL = nil
+        self.daily = daily
     }
 
     /// In-memory dictionary (tests).
@@ -71,7 +78,7 @@ public final class PersonalDictionary: @unchecked Sendable {
         guard !rules.isEmpty, !text.isEmpty else { return text }
         let result = NSMutableString(string: text)
         for rule in rules {
-            rule.regex.replaceMatches(
+            _ = rule.regex.replaceMatches(
                 in: result, range: NSRange(location: 0, length: result.length),
                 withTemplate: rule.template)
         }
@@ -188,6 +195,17 @@ public final class PersonalDictionary: @unchecked Sendable {
     // MARK: - Loading (call with lock held)
 
     private func reloadIfNeeded() {
+        if let daily {
+            guard let records = try? daily.records(), records != lastRecords else { return }
+            let json: [String: Any] = [
+                "terms": records.filter { $0.detail.isEmpty }.map(\.value),
+                "replacements": records.filter { !$0.detail.isEmpty }.map { ["from": [$0.value], "to": $0.detail] },
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: json), load(data) {
+                lastRecords = records
+            }
+            return
+        }
         guard let fileURL else { return }
         let modified = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
         guard modified != loadedModificationDate else { return }

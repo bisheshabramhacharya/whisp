@@ -147,13 +147,20 @@ is in [docs/speed](docs/speed/README.md).
 
 ## Is it private?
 
-Yes. Whisp transcribes everything on your Mac. Your audio and text are never
-sent anywhere. The only things it downloads are the speech models, once.
+Yes. Whisp transcribes everything on your Mac. By default audio and text stay
+on your device; the only downloads are the speech models. Optional folder
+sync copies text and dictionary entries into a folder you choose.
 
 Your history, dictionary and (if you keep them) recordings live in
 `~/Library/Application Support/Whisp/`, readable only by your user account.
 Setup asks whether to keep recordings, and you can change it any time with
 **Keep recordings** in the menu.
+
+Open **History → Search & Edit History…** to find a dictation and edit its
+final text. **Microphone Settings…** changes the input for the next dictation.
+Use **Folder Sync…** on each device to connect the same synced folder without
+a Whisp account. Audio and microphone choices stay local. The folder contains
+readable text, so only choose one you trust. See [folder sync](docs/daily-data-sync.md).
 
 ## Teach it your words
 
@@ -161,22 +168,10 @@ The easy way is **Fix a Misheard Word…** in the menu, or just correct the word
 by hand after Whisp types it. Whisp learns only the word you changed, and the
 menu has an Undo.
 
-Power users can edit `~/Library/Application Support/Whisp/dictionary.json`
-directly. Changes apply to your next dictation:
-
-```json
-{
-  "terms": ["Kubernetes", "ChatGPT"],
-  "replacements": [
-    { "from": ["cloud code", "clawed code"], "to": "Claude Code" },
-    { "from": ["kate's"], "to": "K8s" }
-  ]
-}
-```
-
-- `terms` fixes capitalization (*kubernetes* → *Kubernetes*).
-- `replacements` swaps a misheard phrase for the right one. Matching is
-  whole-word and ignores case.
+Use **Edit Dictionary…** to search, add, edit, or remove entries. Leave the
+replacement empty for a capitalization fix (*kubernetes* → *Kubernetes*),
+or enter a replacement to swap a misheard phrase. Matching remains whole-word
+and case insensitive. Existing `dictionary.json` entries are brought along.
 
 ## How it works
 

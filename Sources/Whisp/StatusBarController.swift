@@ -11,6 +11,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let onOpenSetup: () -> Void
     private let statusItem: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
+    private var dataWindow: DailyDataWindow?
 
     /// Retains @objc action targets for the current menu incarnation.
     private var menuActions: [MenuAction] = []
@@ -90,7 +91,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         // Last transcript — click copies. Cleanup can empty it (all fillers); show raw then.
-        let lastText = controller.lastResult.flatMap { $0.cleaned.isEmpty ? $0.raw : $0.cleaned }
+        let lastText = services.history.latest(preferring: controller.lastResult)
+            .flatMap { $0.cleaned.isEmpty ? $0.raw : $0.cleaned }
         if let text = lastText, !text.isEmpty {
             menu.addItem(item("Last: \(truncate(text, 46))", action: { [weak self] in
                 self?.copyToPasteboard(text)
@@ -104,6 +106,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // History submenu — last 10, click copies
         let historyMenu = NSMenu()
+        historyMenu.addItem(item("Search & Edit History…", action: { [weak self] in self?.openData(.history) }))
+        historyMenu.addItem(.separator())
         let entries = services.history.loadLast(10)
         if entries.isEmpty {
             historyMenu.addItem(disabled("Empty"))
@@ -126,9 +130,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(item("Open Whisp Folder", action: {
             NSWorkspace.shared.open(AppPaths.root)
         }))
-        menu.addItem(item("Edit Dictionary…", action: {
-            NSWorkspace.shared.open(AppPaths.ensureDictionaryTemplate())
-        }))
+        menu.addItem(item("Edit Dictionary…", action: { [weak self] in self?.openData(.dictionary) }))
+        menu.addItem(item("Microphone Settings…", action: { [weak self] in self?.openData(.microphone) }))
+        menu.addItem(item("Folder Sync…", action: { [weak self] in self?.openData(.sync) }))
 
         // Auto-learn feedback — what the watcher folded into the dictionary,
         // plus a one-click reversal of the most recent batch.
@@ -265,16 +269,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             return
         }
         do {
-            try PersonalDictionary.addReplacement(
-                from: heard.stringValue, to: correct.stringValue, fileURL: AppPaths.ensureDictionaryTemplate())
+            try services.daily.dictionary.save(from: heard.stringValue, to: correct.stringValue)
         } catch {
             let failure = NSAlert(error: error)
-            failure.messageText = "dictionary.json couldn't be read — fix it with Edit Dictionary… and try again."
+            failure.messageText = "Couldn't save the dictionary entry."
             failure.runModal()
         }
     }
 
     // MARK: - Helpers
+
+    private func openData(_ page: DailyDataWindow.Page) {
+        dataWindow?.close()
+        let window = DailyDataWindow(session: services.daily, page: page)
+        dataWindow = window
+        window.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.window?.makeKeyAndOrderFront(nil)
+    }
 
     private func copyToPasteboard(_ text: String) {
         let pb = NSPasteboard.general

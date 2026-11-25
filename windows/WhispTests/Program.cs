@@ -28,6 +28,8 @@ string Lower(bool b) => b ? "true" : "false";
 
 string NewTempPath(string name) => Path.Combine(Path.GetTempPath(), $"whisp-{name}-{Guid.NewGuid():N}");
 
+DailyDataTests.Run(NewTempPath("daily-data"), (result, label) => Expect(Lower(result), "true", label));
+
 // FillerCleaner
 
 var cleaner = new FillerCleaner();
