@@ -44,8 +44,11 @@ touch "$WHISP_SMOKE/recorded"
 EOF
 cat > "$scratch/bin/wtype" <<'EOF'
 #!/usr/bin/env bash
-[[ "$*" == '-' ]] || exit 2
-cat > "$WHISP_SMOKE/typed"
+case "$*" in
+    '-') cat > "$WHISP_SMOKE/typed" ;;
+    '-M ctrl -k v -m ctrl') cp "$WHISP_SMOKE/clipboard" "$WHISP_SMOKE/typed" ;;
+    *) exit 2 ;;
+esac
 EOF
 cat > "$scratch/bin/wl-copy" <<'EOF'
 #!/usr/bin/env bash
@@ -103,3 +106,14 @@ wait_for grep -Fxq 'Ready' "$scratch/daemon.log"
 wait_for test -f "$scratch/recorded"
 "$whisp" cancel
 echo 'PASS: both legacy and modern pw-record arguments are supported'
+
+rm -- "$scratch/recorded" "$scratch/clipboard"
+long="$(printf '%01024d' 0)"
+printf '{"replacements":[{"from":["quick brown fox"],"to":"%s"}]}' "$long" > "$WHISP_HOME/dictionary.json"
+printf '{"address":"0x1"}\n' > "$scratch/window"
+"$whisp" press
+wait_for test -f "$scratch/recorded"
+"$whisp" release
+wait_for grep -Fxq "The $long jumps over the lazy dog." "$scratch/typed"
+cmp -- "$scratch/typed" "$scratch/clipboard"
+echo 'PASS: a 1,053-character transcript is pasted in full'
