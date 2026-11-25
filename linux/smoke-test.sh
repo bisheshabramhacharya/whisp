@@ -44,15 +44,15 @@ touch "$WHISP_SMOKE/recorded"
 EOF
 cat > "$scratch/bin/wtype" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in
-    '-') cat > "$WHISP_SMOKE/typed" ;;
-    '-M ctrl -k v -m ctrl') cp "$WHISP_SMOKE/clipboard" "$WHISP_SMOKE/typed" ;;
-    *) exit 2 ;;
-esac
+[[ "$*" == '-M ctrl -k v -m ctrl' ]] || exit 2
+cp "$WHISP_SMOKE/clipboard" "$WHISP_SMOKE/typed"
 EOF
 cat > "$scratch/bin/wl-copy" <<'EOF'
 #!/usr/bin/env bash
 cat > "$WHISP_SMOKE/clipboard"
+if [[ -e "$WHISP_SMOKE/shift-after-copy" ]]; then
+    printf '{"address":"0x2"}\n' > "$WHISP_SMOKE/window"
+fi
 EOF
 chmod +x "$scratch/bin/"*
 export PATH="$scratch/bin:$PATH"
@@ -76,9 +76,10 @@ wait_for test -f "$scratch/recorded"
 [[ ! -e "$scratch/typed" && ! -e "$scratch/clipboard" ]]
 "$whisp" release
 wait_for grep -Fixq "$expected" "$scratch/typed"
+cmp -- "$scratch/clipboard" "$scratch/typed"
 echo 'PASS: press/release records and types the transcript into the original window'
 
-rm -- "$scratch/recorded" "$scratch/typed"
+rm -- "$scratch/recorded" "$scratch/typed" "$scratch/clipboard"
 "$whisp" press
 wait_for test -f "$scratch/recorded"
 "$whisp" cancel
@@ -117,3 +118,13 @@ wait_for test -f "$scratch/recorded"
 wait_for grep -Fxq "The $long jumps over the lazy dog." "$scratch/typed"
 cmp -- "$scratch/typed" "$scratch/clipboard"
 echo 'PASS: a 1,053-character transcript is pasted in full'
+
+rm -- "$scratch/recorded" "$scratch/typed" "$scratch/clipboard" "$WHISP_HOME/dictionary.json"
+touch "$scratch/shift-after-copy"
+"$whisp" press
+wait_for test -f "$scratch/recorded"
+"$whisp" release
+wait_for grep -Fq 'dictation copied; paste it where you want it.' "$scratch/daemon.log"
+grep -Fxq "$expected" "$scratch/clipboard"
+[[ ! -e "$scratch/typed" ]]
+echo 'PASS: focus change after copying preserves the full transcript without pasting'

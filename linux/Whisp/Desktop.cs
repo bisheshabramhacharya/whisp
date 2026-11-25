@@ -92,17 +92,12 @@ internal static class Desktop
 
     public static async Task InsertAsync(string text, string? target, CancellationToken cancellation)
     {
-        var usePaste = text.Length > 512;
-        if (!usePaste && !string.IsNullOrEmpty(target) && target == await FocusedWindowAsync(cancellation))
-        {
-            if (await RunAsync("wtype", ["-"], text, cancellation) is not null) return;
-        }
         if (await RunAsync("wl-copy", [], text, cancellation, output: false) is null)
         {
             Console.Error.WriteLine("Whisp: could not type or copy the dictation.");
             return;
         }
-        if (usePaste && !string.IsNullOrEmpty(target) && target == await FocusedWindowAsync(cancellation))
+        if (!string.IsNullOrEmpty(target) && target == await FocusedWindowAsync(cancellation))
         {
             if (await RunAsync("wtype", ["-M", "ctrl", "-k", "v", "-m", "ctrl"], null, cancellation) is not null) return;
         }

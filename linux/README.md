@@ -66,9 +66,11 @@ shortcut. To configure a different Hyprland config manually,
 add the corresponding bindings (use absolute paths if necessary).
 `whisp cancel` can be bound separately to discard a take.
 
-The transcript is typed with `wtype` only if the same window is still focused.
-If focus changes or typing fails, Whisp copies it to the Wayland clipboard for
-manual paste. This build targets Hyprland, not X11 or other Wayland compositors.
+Whisp puts the whole transcript on the Wayland clipboard, then sends a single
+Ctrl+V if the original window is still focused. It doesn't send the transcript
+one key at a time. If focus changes or your app uses a different paste
+shortcut (for example Ctrl+Shift+V in a terminal), paste it manually.
+This build targets Hyprland, not X11 or other Wayland compositors.
 It has no tray icon or history UI. Dictionary overrides use Whisp's existing
 `dictionary.json` format in `${XDG_DATA_HOME:-~/.local/share}/whisp`.
 
