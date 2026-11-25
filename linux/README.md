@@ -1,6 +1,6 @@
 # Whisp for Linux (Omarchy / Hyprland)
 
-Hold **F9**, talk, and release. Whisp transcribes on your CPU using the same
+Hold **Right Ctrl**, talk, and release. Whisp transcribes on your CPU using the same
 Parakeet Unified int8 model and text cleanup as Whisp for Windows. The first run
 downloads and verifies about 660 MB of model files; recognition works offline
 afterwards. Whisp only records during a hold and does not save audio or history.
@@ -28,24 +28,41 @@ tar -xzf Whisp-linux-x64.tar.gz
 ./Whisp-linux-x64/install.sh
 ```
 
-Setup creates `~/.config/hypr/whisp.conf` (or uses your `XDG_CONFIG_HOME`),
-adds a source line, and starts a systemd user service. It does not edit
+Setup creates `~/.config/hypr/whisp.lua` for Lua Hyprland configs (including
+Omarchy 4.5+) or `whisp.conf` for legacy configs. It adds one include to your
+user config and enables the systemd user service. It does not edit
 Omarchy defaults. To watch model setup, run `journalctl --user -fu whisp`;
 wait for `Ready` before dictating. If the model fails to download,
 `systemctl --user restart whisp` retries it.
 
-The config starts Whisp at future Hyprland logins. Edit these lines in
-`whisp.conf` to change the key, keeping the key identical on both lines:
+The service starts with the systemd graphical session. On a standalone Hyprland
+session that does not start `graphical-session.target`, run
+`whisp-setup-hyprland --start` after logging in or add it to your session's
+startup commands.
+
+Right Ctrl is not consumed, so ordinary Ctrl shortcuts still reach Hyprland
+and your apps; Left Ctrl does not trigger Whisp. To change the dictation key,
+run `whisp-setup-hyprland --key F9` (or pass `--key F9` to the archive installer).
+Setup replaces the bindings in its own generated file, not your other shortcuts.
+Uninstall or quit another dictation app using the same key before starting Whisp.
+
+The generated Lua bindings look like this:
+
+```lua
+hl.bind("Control_R", hl.dsp.exec_cmd("whisp press"), { ignore_mods = true, non_consuming = true })
+hl.bind("Control_R", hl.dsp.exec_cmd("whisp release"), { ignore_mods = true, non_consuming = true, release = true })
+```
+
+For legacy Hyprland configs:
 
 ```ini
-bindi = , F9, exec, whisp press
-bindri = , F9, exec, whisp release
+bindin = , Control_R, exec, whisp press
+bindrin = , Control_R, exec, whisp release
 ```
 
 Use a key that isn't already bound in Hyprland. `r` dispatches on release and
-`i` ignores held modifiers. To configure a different Hyprland
-config manually, add those bindings and
-`exec-once = whisp-setup-hyprland --start` (use absolute paths if necessary).
+`i` ignores held modifiers. To configure a different Hyprland config manually,
+add the corresponding bindings (use absolute paths if necessary).
 `whisp cancel` can be bound separately to discard a take.
 
 The transcript is typed with `wtype` only if the same window is still focused.
@@ -59,6 +76,7 @@ It has no tray icon or history UI. Dictionary overrides use Whisp's existing
 ```sh
 bash linux/build.sh --arch     # also create the Arch package (makepkg or Docker)
 dotnet run --project windows/WhispTests -c Release
+bash linux/setup-test.sh
 bash linux/smoke-test.sh /path/to/extracted/Whisp-linux-x64/app/whisp
 ```
 

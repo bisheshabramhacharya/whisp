@@ -52,6 +52,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Test shared core
         run: dotnet run --project windows/WhispTests -c Release
+      - name: Test Hyprland installer
+        run: bash linux/setup-test.sh
       - name: Build Linux artifacts
         run: bash linux/build.sh --arch
       - name: Smoke-test packaged Whisp

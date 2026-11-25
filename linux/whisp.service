@@ -7,3 +7,6 @@ Type=simple
 ExecStart=%h/.local/lib/whisp/whisp daemon
 Restart=on-failure
 UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

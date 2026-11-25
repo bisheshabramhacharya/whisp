@@ -68,7 +68,7 @@ irm https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/windows/in
 See [windows/README.md](windows/README.md) for requirements, speed, and how to
 bring over your dictionary and history from a Mac.
 
-**On Omarchy / Hyprland?** Whisp for Linux uses **F9** for hold-to-talk. See
+**On Omarchy / Hyprland?** Whisp for Linux uses **Right Ctrl** for hold-to-talk. See
 the [Linux install guide](linux/README.md) for the Arch package and portable
 x86-64 download.
 
