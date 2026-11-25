@@ -62,7 +62,7 @@ printf '{"address":"0x1"}\n' > "$scratch/window"
 daemon=$!
 wait_for() {
     for ((i = 0; i < 200; i++)); do
-        if "$@"; then return; fi
+        if "$@" 2>/dev/null; then return; fi
         if ! kill -0 "$daemon" 2>/dev/null; then break; fi
         sleep 0.1
     done
@@ -119,7 +119,8 @@ wait_for grep -Fxq "The $long jumps over the lazy dog." "$scratch/typed"
 cmp -- "$scratch/typed" "$scratch/clipboard"
 echo 'PASS: a 1,053-character transcript is pasted in full'
 
-rm -- "$scratch/recorded" "$scratch/typed" "$scratch/clipboard" "$WHISP_HOME/dictionary.json"
+rm -- "$scratch/recorded" "$scratch/typed" "$scratch/clipboard"
+printf '{}\n' > "$WHISP_HOME/dictionary.json"
 touch "$scratch/shift-after-copy"
 "$whisp" press
 wait_for test -f "$scratch/recorded"
