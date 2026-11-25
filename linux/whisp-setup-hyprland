@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${WAYLAND_DISPLAY:-}" || -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    echo 'Run whisp-setup-hyprland in a terminal inside your Hyprland session.' >&2
+    exit 1
+fi
+
+if [[ "${1:-}" == --start ]]; then
+    systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+    systemctl --user restart whisp.service
+    exit
+fi
+
+check=false
+key=
+while (( $# )); do
+    case "$1" in
+        --check) check=true; shift ;;
+        --key)
+            if [[ ! "${2:-}" =~ ^[a-zA-Z0-9_]+$ ]]; then
+                echo 'Use --key with an XKB key name such as Control_R or F9.' >&2
+                exit 2
+            fi
+            key="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+bin="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+lua_string() {
+    local value=${1//\\/\\\\}
+    printf '"%s"' "${value//\"/\\\"}"
+}
+if [[ -f "$dir/hyprland.lua" ]]; then
+    config="$dir/hyprland.lua"
+    bindings="$dir/whisp.lua"
+    include="dofile($(lua_string "$bindings"))"
+elif [[ -f "$dir/hyprland.conf" ]]; then
+    config="$dir/hyprland.conf"
+    bindings="$dir/whisp.conf"
+    include="source = $bindings"
+else
+    echo "No hyprland.lua or hyprland.conf found in $dir." >&2
+    exit 1
+fi
+if [[ ! -w "$config" || ! -w "$dir" ]]; then
+    echo "Whisp needs write access to $config and $dir." >&2
+    exit 1
+fi
+if "$check"; then
+    exit 0
+fi
+
+backup="$(mktemp -d)"
+added_config=false
+added_bindings=false
+enabled=false
+active=false
+systemctl --user is-enabled --quiet whisp.service && enabled=true
+systemctl --user is-active --quiet whisp.service && active=true
+rollback() {
+    local result=$?
+    if (( result )); then
+        if "$added_config"; then cp -- "$backup/config" "$config"; fi
+        if "$added_bindings"; then
+            if [[ -f "$backup/bindings" ]]; then cp -- "$backup/bindings" "$bindings"; else rm -f -- "$bindings"; fi
+        fi
+        hyprctl reload >/dev/null 2>&1 || true
+        if ! "$enabled"; then systemctl --user disable whisp.service || true; fi
+        if ! "$active"; then systemctl --user stop whisp.service || true; fi
+    fi
+    rm -rf -- "$backup"
+    exit "$result"
+}
+trap rollback EXIT
+
+if [[ ! -e "$bindings" || -n "$key" ]]; then
+    if [[ -e "$bindings" ]]; then cp -- "$bindings" "$backup/bindings"; fi
+    added_bindings=true
+    key="${key:-Control_R}"
+    if [[ "$config" == *.lua ]]; then
+        printf '%s\n' \
+            "hl.bind(\"$key\", hl.dsp.exec_cmd($(lua_string "\"$bin/whisp\" press")), { ignore_mods = true, non_consuming = true })" \
+            "hl.bind(\"$key\", hl.dsp.exec_cmd($(lua_string "\"$bin/whisp\" release")), { ignore_mods = true, non_consuming = true, release = true, transparent = true })" > "$bindings"
+    else
+        printf '%s\n' \
+            "bindin = , $key, exec, \"$bin/whisp\" press" \
+            "bindrint = , $key, exec, \"$bin/whisp\" release" > "$bindings"
+    fi
+fi
+if ! grep -Fxq -- "$include" "$config"; then
+    cp -- "$config" "$backup/config"
+    added_config=true
+    printf '\n%s\n' "$include" >> "$config"
+fi
+systemctl --user daemon-reload
+systemctl --user enable whisp.service
+"$bin/whisp-setup-hyprland" --start
+hyprctl reload
+echo 'Whisp is starting. Hold your dictation key when the model is ready.'
