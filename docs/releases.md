@@ -8,9 +8,11 @@ installed binary and update package.
 
 To release, set the version in `Resources/Info.plist` (both version keys) and
 `windows/Directory.Build.props`. Merge the PR after CI and Installers pass.
-Push a matching `vMAJOR.MINOR.PATCH` tag from main. Only a tag reachable from
-main can publish; publishing requires both platform jobs to pass. The workflow
+Push a matching `vMAJOR.MINOR.PATCH` tag from main. The workflow checks the tag
+is reachable from main before packaging; publishing requires both platform jobs to pass. The workflow
 creates a draft with all assets, then publishes it as the latest release.
+Restrict creation of release tags to trusted maintainers in repository rules:
+a workflow from an arbitrary tagged commit can change its own checks.
 
 ## Repository setup
 

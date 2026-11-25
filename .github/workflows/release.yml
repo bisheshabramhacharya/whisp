@@ -18,7 +18,21 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        if: github.ref_type == 'tag'
+        with:
+          fetch-depth: 0
+      - name: Verify release tag is on main
+        if: github.ref_type == 'tag'
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
   macos:
+    needs: preflight
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -42,6 +56,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    needs: preflight
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -110,8 +125,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -120,8 +133,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           version="${GITHUB_REF_NAME#v}"
           test -s "release/Whisp-$version-macos-arm64.dmg"
           test -s "release/Whisp-$version-windows-x64-Setup.exe"
