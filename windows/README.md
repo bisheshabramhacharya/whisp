@@ -102,12 +102,16 @@ the files are interchangeable in both directions:
 | `%APPDATA%\Whisp\dictionary.json` | Your words — same format as on the Mac (see the main README) |
 | `%APPDATA%\Whisp\history.jsonl` | Past dictations |
 | `%APPDATA%\Whisp\recordings\` | WAVs, if **Keep Recordings** is on |
+| `%APPDATA%\Whisp\pending\` | Temporary WAVs for released takes that haven't finished |
 | `%APPDATA%\Whisp\settings.json` | Menu settings |
 | `%APPDATA%\Whisp\whisp.log` | Timings and errors (never what you said) |
 | `%LOCALAPPDATA%\Whisp\Models\` | The speech model |
 
 Edits to `dictionary.json` apply to your next dictation; **Edit Dictionary…**
 in the tray menu opens it in Notepad.
+
+If Whisp closes unexpectedly after you release the hotkey, the next launch
+recovers unfinished takes into **History**. It doesn't paste or change your clipboard.
 
 ## How it differs from the Mac version
 

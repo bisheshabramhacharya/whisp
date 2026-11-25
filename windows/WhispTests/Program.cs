@@ -551,6 +551,7 @@ Expect($"{Lower(HotkeyBinding.Key(0x5B).MasksRelease)} {Lower(HotkeyBinding.Righ
 }
 
 TextParityTests.Run((actual, expected, label) => Expect(actual, expected, label), dictCleaner);
+await CrashRecoveryTests.RunAsync((actual, expected, label) => Expect(actual, expected, label), NewTempPath("recovery"));
 
 Console.WriteLine($"{passes} passed, {failures} failed");
 return failures == 0 ? 0 : 1;
