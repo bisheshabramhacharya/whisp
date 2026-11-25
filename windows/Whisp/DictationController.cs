@@ -27,8 +27,8 @@ internal sealed class DictationController
     private readonly AudioMuter _muter;
     private readonly Sounds _sounds;
     private readonly AppSettings _settings;
-    private readonly HistoryStore _history;
-    private readonly RecordingArchive _recordings;
+    private readonly TakePersistence _persistence;
+    private readonly HashSet<string> _cancellableTakes = new();
 
     private bool _isRecording;
     private bool _systemMuted;
@@ -57,7 +57,7 @@ internal sealed class DictationController
     public event Action<float>? Level;
 
     public DictationController(SpeechEngine engine, MicRecorder recorder, Paster paster, FillerCleaner cleaner,
-        AudioMuter muter, Sounds sounds, AppSettings settings, HistoryStore history, RecordingArchive recordings)
+        AudioMuter muter, Sounds sounds, AppSettings settings, TakePersistence persistence)
     {
         _engine = engine;
         _recorder = recorder;
@@ -66,8 +66,7 @@ internal sealed class DictationController
         _muter = muter;
         _sounds = sounds;
         _settings = settings;
-        _history = history;
-        _recordings = recordings;
+        _persistence = persistence;
         _recorder.Level += level => Level?.Invoke(level);
     }
 
@@ -97,7 +96,7 @@ internal sealed class DictationController
     /// Clean shutdown: queued dictations are not pasted.
     public void Shutdown()
     {
-        _cancelledThrough = _lastClipId;
+        CancelPendingTakes();
         if (_isRecording)
         {
             _isRecording = false;
@@ -105,6 +104,27 @@ internal sealed class DictationController
             _live = null;
             _recorder.Cancel();
             RestoreAudio();
+        }
+        _persistence.FlushAsync().GetAwaiter().GetResult();
+    }
+
+    public void StartRecovery()
+    {
+        _pipelineTail = RecoverAsync();
+
+        async Task RecoverAsync()
+        {
+            try
+            {
+                var status = await _persistence.RecoverAsync(() => _engine.PrepareAsync(), _engine.TranscribeAsync,
+                    _settings.KeepRecordings);
+                if (status != null) SetStatus(status);
+            }
+            catch (Exception e)
+            {
+                Log.Write($"pending take recovery failed: {e.Message}");
+                SetStatus(TakePersistence.RecoveryFailedMessage);
+            }
         }
     }
 
@@ -199,7 +219,7 @@ internal sealed class DictationController
             // Esc after release: drop every dictation still being transcribed.
             if (_pendingTranscriptions > 0 && _cancelledThrough < _lastClipId)
             {
-                _cancelledThrough = _lastClipId;
+                CancelPendingTakes();
                 if (_settings.Sounds) _sounds.PlayCancel();
                 Log.Write("pending dictation cancelled");
             }
@@ -212,6 +232,14 @@ internal sealed class DictationController
         RestoreAudio();
         if (_settings.Sounds) _sounds.PlayCancel();
         Recompute();
+    }
+
+    private void CancelPendingTakes()
+    {
+        _cancelledThrough = _lastClipId;
+        foreach (var takeId in _cancellableTakes)
+            _ = _persistence.DiscardAsync(takeId);
+        _cancellableTakes.Clear();
     }
 
     private void RestoreAudio()
@@ -336,13 +364,22 @@ internal sealed class DictationController
         DateTimeOffset startedAt, Stopwatch released)
     {
         var id = ++_lastClipId;
+        var takeId = Guid.NewGuid().ToString().ToUpperInvariant();
+        _cancellableTakes.Add(takeId);
+        var staged = _persistence.StageAsync(takeId, samples, startedAt);
         _pendingTranscriptions++;
         Recompute();
 
         var transcribe = Stopwatch.StartNew();
-        var transcription = TranscribeAsync(samples, chunks);
+        var transcription = DecodeWhenStagedAsync();
         var previous = _pipelineTail;
         _pipelineTail = Pipeline();
+
+        async Task<string?> DecodeWhenStagedAsync()
+        {
+            await staged;
+            return id <= _cancelledThrough ? null : await TranscribeAsync(samples, chunks);
+        }
 
         async Task Pipeline()
         {
@@ -359,24 +396,27 @@ internal sealed class DictationController
             }
             try
             {
-                await ProcessAsync(id, raw, error, samples, chunks?.Texts.Count ?? 0, target, duration, startedAt,
+                await ProcessAsync(id, takeId, raw, error, samples, chunks?.Texts.Count ?? 0, target, duration, startedAt,
                     released, transcribe.ElapsedMilliseconds);
             }
             catch (Exception e)
             {
                 Log.Write($"dictation {id} failed: {e}");
             }
+            _cancellableTakes.Remove(takeId);
             _pendingTranscriptions--;
             Recompute();
         }
     }
 
-    private async Task ProcessAsync(int id, string? raw, Exception? error, float[] samples, int chunkCount,
+    private async Task ProcessAsync(int id, string takeId, string? raw, Exception? error, float[] samples, int chunkCount,
         PasteTarget target, double duration, DateTimeOffset startedAt, Stopwatch released, long transcribeMs)
     {
         if (raw == null)
         {
             if (id <= _cancelledThrough) return;
+            _cancellableTakes.Remove(takeId);
+            await _persistence.DiscardAsync(takeId);
             Log.Write($"transcribe failed: {error}");
             SetStatus($"Transcription failed: {error?.Message}");
             if (_settings.Sounds) _sounds.PlayError();
@@ -401,16 +441,17 @@ internal sealed class DictationController
             if (_settings.Sounds) _sounds.PlayError();
         }
 
-        var outcome = PasteResult.Pasted;
-        if (cleaned.Trim().Length > 0)
+        var hasText = !string.IsNullOrWhiteSpace(cleaned);
+        if (hasText)
         {
             // Wait out the whole caret lookup. The character before the cursor is
             // saved before the extra reads, so a timeout there still keeps the
             // leading space. Esc during this wait must still stop the paste.
             await target.Caret;
             if (id <= _cancelledThrough) return;
-            outcome = await _paster.PasteAsync(cleaned, target);
         }
+        _cancellableTakes.Remove(takeId);
+        var outcome = hasText ? await _paster.PasteAsync(cleaned, target) : PasteResult.Pasted;
         var latency = released.ElapsedMilliseconds;
         if (outcome == PasteResult.CopiedAppChanged)
         {
@@ -420,21 +461,10 @@ internal sealed class DictationController
         Log.Write($"dictation done: audio={duration:F2}s chunks={chunkCount} transcribe={transcribeMs}ms " +
                   $"release→paste={latency}ms into={target.AppName} result={outcome}");
 
-        var entry = new HistoryEntry(Guid.NewGuid().ToString().ToUpperInvariant(), startedAt, duration, raw, cleaned, (int)latency);
+        var entry = new HistoryEntry(takeId, startedAt, duration, raw, cleaned, (int)latency);
         LastResult = entry;
         Changed?.Invoke();
-        var keep = _settings.KeepRecordings;
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                _history.Append(entry);
-                if (keep) _recordings.Save(samples, entry.Id);
-            }
-            catch (Exception e)
-            {
-                Log.Write($"history write failed: {e.Message}");
-            }
-        });
+        if (!await _persistence.CompleteAsync(entry, _settings.KeepRecordings ? samples : null))
+            SetStatus(TakePersistence.SaveFailedMessage);
     }
 }

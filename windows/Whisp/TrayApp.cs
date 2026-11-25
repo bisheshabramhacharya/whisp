@@ -41,8 +41,10 @@ internal sealed class TrayApp : ApplicationContext
         var cleaner = new FillerCleaner(new PersonalDictionary(paths.DictionaryFile));
         cleaner.Clean("Warm up the cleaner, um, and the dictionary.");
 
+        var persistence = new TakePersistence(new PendingTakes(paths.PendingDirectory), _history,
+            new RecordingArchive(paths.RecordingsDirectory), cleaner, Log.Write);
         _controller = new DictationController(_engine, _recorder, _paster, cleaner, new AudioMuter(paths.MutedSentinel),
-            _sounds, _settings, _history, new RecordingArchive(paths.RecordingsDirectory));
+            _sounds, _settings, persistence);
 
         _pill = new RecordingPill(_settings);
         _pill.ContextMenuRequested += p => _menu.Show(p);
@@ -72,6 +74,7 @@ internal sealed class TrayApp : ApplicationContext
         }, null);
         _controller.Changed += UpdateIndicators;
         _controller.Level += _pill.PushLevel;
+        _controller.StartRecovery();
         _hotkey.Event += _controller.Handle;
         _hotkey.Key = _settings.Hotkey;
         _settings.Changed += () => _hotkey.Key = _settings.Hotkey;

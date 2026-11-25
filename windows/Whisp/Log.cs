@@ -34,7 +34,7 @@ internal static class Log
             {
                 File.AppendAllText(_path, line + Environment.NewLine);
             }
-            catch (IOException)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
             }
         }

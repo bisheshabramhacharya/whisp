@@ -33,6 +33,7 @@ public sealed class AppPaths
 
     public string HistoryFile => Path.Combine(Root, "history.jsonl");
     public string RecordingsDirectory => Path.Combine(Root, "recordings");
+    public string PendingDirectory => Path.Combine(Root, "pending");
     public string DictionaryFile => Path.Combine(Root, "dictionary.json");
     public string SettingsFile => Path.Combine(Root, "settings.json");
     /// Written while system audio is muted, so a crash can't leave it muted.

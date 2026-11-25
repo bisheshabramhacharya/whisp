@@ -59,29 +59,30 @@ public static class Wav
         {
             var id = new string(r.ReadChars(4));
             var size = r.ReadInt32();
+            if (size < 0 || size > r.BaseStream.Length - r.BaseStream.Position)
+                throw new InvalidDataException("invalid WAV chunk size");
+            var nextChunk = r.BaseStream.Position + size + (size & 1);
             if (id == "fmt ")
             {
+                if (size < 16) throw new InvalidDataException("invalid WAV format chunk");
                 var format = r.ReadInt16();
                 channels = r.ReadInt16();
                 rate = r.ReadInt32();
                 r.ReadInt32();
                 r.ReadInt16();
                 bits = r.ReadInt16();
-                r.BaseStream.Seek(size - 16, SeekOrigin.Current);
                 if (format != 1) throw new InvalidDataException("WAV must be PCM");
             }
             else if (id == "data")
             {
                 if (channels != 1 || bits != 16 || rate != SampleRate)
                     throw new InvalidDataException($"WAV must be 16 kHz mono 16-bit (got {rate} Hz, {channels} ch, {bits}-bit)");
+                if (size % 2 != 0) throw new InvalidDataException("incomplete WAV sample");
                 var samples = new float[size / 2];
                 for (var i = 0; i < samples.Length; i++) samples[i] = r.ReadInt16() / 32768f;
                 return samples;
             }
-            else
-            {
-                r.BaseStream.Seek(size + (size & 1), SeekOrigin.Current);
-            }
+            r.BaseStream.Position = nextChunk;
         }
         throw new InvalidDataException("no data chunk");
     }
