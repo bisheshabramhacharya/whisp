@@ -50,18 +50,19 @@ The generated Lua bindings look like this:
 
 ```lua
 hl.bind("Control_R", hl.dsp.exec_cmd("whisp press"), { ignore_mods = true, non_consuming = true })
-hl.bind("Control_R", hl.dsp.exec_cmd("whisp release"), { ignore_mods = true, non_consuming = true, release = true })
+hl.bind("Control_R", hl.dsp.exec_cmd("whisp release"), { ignore_mods = true, non_consuming = true, release = true, transparent = true })
 ```
 
 For legacy Hyprland configs:
 
 ```ini
 bindin = , Control_R, exec, whisp press
-bindrin = , Control_R, exec, whisp release
+bindrint = , Control_R, exec, whisp release
 ```
 
-Use a key that isn't already bound in Hyprland. `r` dispatches on release and
-`i` ignores held modifiers. To configure a different Hyprland config manually,
+Use a key that isn't already bound in Hyprland. `r` dispatches on release,
+`i` ignores held modifiers, and `t` keeps release from being shadowed by another
+shortcut. To configure a different Hyprland config manually,
 add the corresponding bindings (use absolute paths if necessary).
 `whisp cancel` can be bound separately to discard a take.
 

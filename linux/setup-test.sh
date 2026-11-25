@@ -41,14 +41,14 @@ for extension in conf lua; do
     if [[ "$extension" == lua ]]; then
         [[ "$(grep -Fxc "dofile(\"$bindings\")" "$config")" == 1 ]]
         grep -F 'hl.bind("Control_R"' "$bindings" | grep -F 'ignore_mods = true, non_consuming = true'
-        grep -Fq 'release = true' "$bindings"
+        grep -Fq 'release = true, transparent = true' "$bindings"
         if [[ "${WHISP_VERIFY_HYPRLAND:-}" == "$extension" ]]; then
             Hyprland --verify-config --config "$config"
         fi
     else
         [[ "$(grep -Fxc "source = $bindings" "$config")" == 1 ]]
         grep -Fq 'bindin = , Control_R, exec,' "$bindings"
-        grep -Fq 'bindrin = , Control_R, exec,' "$bindings"
+        grep -Fq 'bindrint = , Control_R, exec,' "$bindings"
         if [[ "${WHISP_VERIFY_HYPRLAND:-}" == "$extension" ]]; then
             Hyprland --verify-config --config "$config"
         fi

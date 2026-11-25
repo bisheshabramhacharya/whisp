@@ -83,11 +83,11 @@ if [[ ! -e "$bindings" || -n "$key" ]]; then
     if [[ "$config" == *.lua ]]; then
         printf '%s\n' \
             "hl.bind(\"$key\", hl.dsp.exec_cmd($(lua_string "\"$bin/whisp\" press")), { ignore_mods = true, non_consuming = true })" \
-            "hl.bind(\"$key\", hl.dsp.exec_cmd($(lua_string "\"$bin/whisp\" release")), { ignore_mods = true, non_consuming = true, release = true })" > "$bindings"
+            "hl.bind(\"$key\", hl.dsp.exec_cmd($(lua_string "\"$bin/whisp\" release")), { ignore_mods = true, non_consuming = true, release = true, transparent = true })" > "$bindings"
     else
         printf '%s\n' \
             "bindin = , $key, exec, \"$bin/whisp\" press" \
-            "bindrin = , $key, exec, \"$bin/whisp\" release" > "$bindings"
+            "bindrint = , $key, exec, \"$bin/whisp\" release" > "$bindings"
     fi
 fi
 if ! grep -Fxq -- "$include" "$config"; then
