@@ -13,14 +13,17 @@ enum Composition {
 
     static func makeServices() -> AppServices {
         let settings = AppSettings()
-        let history = HistoryStore()
+        let daily = DailyDataSession(root: AppPaths.root)
+        let history = daily.history
         let recordings = RecordingArchive()
 
         let transcriber = ASREngine.make(named: settings.asrEngine)
-        let recorder = MicRecorder()
+        let recorder = MicRecorder { [store = daily.store] in
+            (try? store.records("local").first { $0.id == "microphone" }?.value) ?? ""
+        }
         let hotkey = RightOptionHotkey(keyCode: UInt16(clamping: settings.hotkeyKeyCode))
         let paster = Paster()
-        let dictionary = PersonalDictionary(fileURL: AppPaths.dictionaryFile)
+        let dictionary = PersonalDictionary(daily: daily.dictionary)
         let cleaner = FillerCleaner(dictionary: dictionary)
         // First clean() pays the lazy costs — clock-time regexes compile and
         // dictionary.json loads+compiles its rules (~40–70 ms on M1, measured
@@ -35,7 +38,8 @@ enum Composition {
         let learnWatcher = EditWatcher(
             learner: learner,
             dictionaryFile: AppPaths.dictionaryFile,
-            pendingFile: AppPaths.pendingCorrectionsFile
+            pendingFile: AppPaths.pendingCorrectionsFile,
+            daily: daily.dictionary
         ) { settings.learnFromCorrections }
         // Retained by the watcher for the life of the app. Fires only after a
         // correction was written to dictionary.json, so the card, the chime and
@@ -86,6 +90,7 @@ enum Composition {
             controller: controller,
             settings: settings,
             history: history,
+            daily: daily,
             permissions: RealPermissions(),
             pasteLast: PasteLastHotkey(controller: controller, history: history, paster: paster),
             learnWatcher: learnWatcher

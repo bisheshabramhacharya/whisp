@@ -9,7 +9,9 @@ final class OnboardingController: NSWindowController, NSWindowDelegate {
     private weak var appDelegate: AppDelegate?
 
     init(services: AppServices, appDelegate: AppDelegate) {
-        let model = OnboardingModel(permissions: services.permissions)
+        let model = OnboardingModel(permissions: services.permissions, makeMicrophoneRecorder: { [store = services.daily.store] in
+            MicRecorder { (try? store.records("local").first { $0.id == "microphone" }?.value) ?? "" }
+        })
         self.model = model
         self.appDelegate = appDelegate
         let view = OnboardingView(model: model, settings: services.settings,

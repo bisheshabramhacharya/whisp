@@ -55,7 +55,7 @@ final class PasteLastHotkey {
     }
 
     private func pasteLast() {
-        guard let text = controller.lastResult?.cleaned ?? history.loadLast(1).first?.cleaned else { return }
+        guard let text = history.latest(preferring: controller.lastResult)?.cleaned else { return }
         logger.log("paste last (\(text.count) chars)")
         let target = paster.target()
         Task { _ = await paster.paste(text, into: target) }

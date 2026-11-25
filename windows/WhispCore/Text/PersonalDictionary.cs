@@ -26,6 +26,8 @@ public sealed class PersonalDictionary
     private sealed record Rule(Regex Regex, string Replacement);
 
     private readonly string? _path;
+    private readonly DailyDictionary? _daily;
+    private DailyDataStore.Record[]? _lastRecords;
     private readonly object _gate = new();
     private DateTime? _loadedStamp;
     private List<Rule> _rules = new();
@@ -34,6 +36,11 @@ public sealed class PersonalDictionary
     public PersonalDictionary(string path)
     {
         _path = path;
+    }
+
+    public PersonalDictionary(DailyDictionary daily)
+    {
+        _daily = daily;
     }
 
     /// In-memory dictionary (tests). replacements maps "to" -> its "from" phrases.
@@ -219,6 +226,20 @@ public sealed class PersonalDictionary
 
     private void ReloadIfNeeded()
     {
+        if (_daily != null)
+        {
+            DailyDataStore.Record[] records;
+            try { records = _daily.Records(); }
+            catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { return; }
+            if (_lastRecords != null && records.SequenceEqual(_lastRecords)) return;
+            var json = JsonSerializer.Serialize(new
+            {
+                terms = records.Where(r => r.Detail == "").Select(r => r.Value),
+                replacements = records.Where(r => r.Detail != "").Select(r => new { from = new[] { r.Value }, to = r.Detail }),
+            });
+            if (Load(json)) _lastRecords = records;
+            return;
+        }
         if (_path == null) return;
         DateTime? stamp = File.Exists(_path) ? File.GetLastWriteTimeUtc(_path) : null;
         if (stamp == _loadedStamp) return;

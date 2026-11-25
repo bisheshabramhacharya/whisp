@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 /// One completed dictation, persisted as a JSONL line.
 public struct HistoryEntry: Codable, Sendable, Identifiable {
@@ -33,6 +38,7 @@ public struct HistoryEntry: Codable, Sendable, Identifiable {
 public final class HistoryStore: @unchecked Sendable {
 
     public let fileURL: URL
+    private let daily: DailyDataStore?
 
     /// How far back from EOF `loadLast` reads. ~512 KB covers thousands of entries.
     private let tailReadLimit: UInt64 = 512 * 1024
@@ -49,12 +55,16 @@ public final class HistoryStore: @unchecked Sendable {
         return d
     }()
 
-    public init(fileURL: URL = AppPaths.historyFile) {
+    public init(fileURL: URL = AppPaths.historyFile, daily: DailyDataStore? = nil) {
         self.fileURL = fileURL
+        self.daily = daily
     }
 
     /// Appends one entry as a single JSON line. Creates the file if needed.
     public func append(_ entry: HistoryEntry) throws {
+        if let daily {
+            try daily.seed([Self.change(entry)])
+        }
         var line = try encoder.encode(entry)
         line.append(0x0A) // \n
 
@@ -75,7 +85,7 @@ public final class HistoryStore: @unchecked Sendable {
         try line.withUnsafeBytes { buf in
             var written = 0
             while written < line.count {
-                let n = Darwin.write(fd, buf.baseAddress!.advanced(by: written), line.count - written)
+                let n = write(fd, buf.baseAddress!.advanced(by: written), line.count - written)
                 guard n > 0 else { throw CocoaError(.fileWriteUnknown) }
                 written += n
             }
@@ -86,6 +96,7 @@ public final class HistoryStore: @unchecked Sendable {
     /// Returns the most recent `count` entries, newest first.
     /// Reads only the tail of the file, so it stays fast as history grows.
     public func loadLast(_ count: Int) -> [HistoryEntry] {
+        if daily != nil { return Array(((try? search("")) ?? []).prefix(max(0, count))) }
         guard count > 0,
               let handle = try? FileHandle(forReadingFrom: fileURL) else { return [] }
         defer { try? handle.close() }
@@ -107,5 +118,55 @@ public final class HistoryStore: @unchecked Sendable {
         return lines.reversed().compactMap { line in
             try? decoder.decode(HistoryEntry.self, from: Data(line.utf8))
         }
+    }
+
+    public func importLegacy() throws {
+        guard let daily, FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let text = String(decoding: try Data(contentsOf: fileURL), as: UTF8.self)
+        let decoder = Self.historyDecoder()
+        try daily.seed(text.split(separator: "\n").compactMap {
+            try? decoder.decode(HistoryEntry.self, from: Data($0.utf8))
+        }.map(Self.change))
+    }
+
+    public func search(_ query: String) throws -> [HistoryEntry] {
+        guard let daily else { return [] }
+        let decoder = Self.historyDecoder()
+        return try daily.records("history").compactMap {
+            try? decoder.decode(HistoryEntry.self, from: Data($0.value.utf8))
+        }.filter {
+            query.isEmpty || $0.cleaned.localizedCaseInsensitiveContains(query)
+                || $0.raw.localizedCaseInsensitiveContains(query)
+        }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    }
+
+    public func latest(preferring transient: HistoryEntry?) -> HistoryEntry? {
+        let latest = loadLast(1).first
+        guard let transient else { return latest }
+        if let latest, latest.date >= transient.date { return latest }
+        if let daily, let record = try? daily.records("history").first(where: { $0.id == transient.id }),
+           let entry = try? Self.historyDecoder().decode(HistoryEntry.self, from: Data(record.value.utf8)) {
+            return entry
+        }
+        return transient
+    }
+
+    public func edit(id: String, text: String) throws {
+        guard let daily, let record = try daily.records("history").first(where: { $0.id == id }) else { return }
+        var entry = try Self.historyDecoder().decode(HistoryEntry.self, from: Data(record.value.utf8))
+        entry.cleaned = text
+        try daily.update([Self.change(entry)])
+    }
+
+    private static func change(_ entry: HistoryEntry) throws -> DailyDataStore.Change {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return .init("history", entry.id, String(decoding: try encoder.encode(entry), as: UTF8.self))
+    }
+
+    private static func historyDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }

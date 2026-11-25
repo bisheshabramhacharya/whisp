@@ -30,6 +30,7 @@ struct AppServices {
     let controller: DictationController
     let settings: AppSettings
     let history: HistoryStore
+    let daily: DailyDataSession
     let permissions: PermissionsProviding
     let pasteLast: PasteLastHotkey
     /// "Learn from my corrections" watcher — drives the menu's learned summary + Undo.

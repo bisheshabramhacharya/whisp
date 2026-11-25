@@ -17,6 +17,8 @@ internal sealed class TrayApp : ApplicationContext
     private readonly AppPaths _paths;
     private readonly AppSettings _settings;
     private readonly HistoryStore _history;
+    private readonly DailyDataSession _daily;
+    private readonly System.Windows.Forms.Timer _syncTimer = new() { Interval = 15000 };
     private readonly SpeechEngine _engine;
     private readonly MicRecorder _recorder;
     private readonly Paster _paster = new();
@@ -34,11 +36,12 @@ internal sealed class TrayApp : ApplicationContext
         _paths = paths;
         paths.EnsureCreated();
         _settings = new AppSettings(paths.SettingsFile);
-        _history = new HistoryStore(paths.HistoryFile);
+        _daily = new DailyDataSession(paths);
+        _history = _daily.History;
         _engine = new SpeechEngine(ModelSpec.ById(_settings.SpeechModel), paths.ModelsRoot);
-        _recorder = new MicRecorder();
+        _recorder = new MicRecorder { PreferredInput = _daily.Microphone };
         AudioMuter.RepairAfterCrash(paths.MutedSentinel);
-        var cleaner = new FillerCleaner(new PersonalDictionary(paths.DictionaryFile));
+        var cleaner = new FillerCleaner(new PersonalDictionary(_daily.Dictionary));
         cleaner.Clean("Warm up the cleaner, um, and the dictionary.");
 
         _controller = new DictationController(_engine, _recorder, _paster, cleaner, new AudioMuter(paths.MutedSentinel),
@@ -94,6 +97,9 @@ internal sealed class TrayApp : ApplicationContext
         ApplyLaunchAtLogin();
         UpdateIndicators();
         _ = PrepareModelAsync();
+        _syncTimer.Tick += async (_, _) => await _daily.Sync();
+        _syncTimer.Start();
+        _ = _daily.Sync();
 
         if (!_settings.OnboardingCompleted)
         {
@@ -175,6 +181,8 @@ internal sealed class TrayApp : ApplicationContext
         _menu.Items.Add(copyLast);
 
         var historyMenu = new ToolStripMenuItem("History");
+        historyMenu.DropDownItems.Add("Search & Edit History…", null, (_, _) => OpenData(0));
+        historyMenu.DropDownItems.Add(new ToolStripSeparator());
         var recent = _history.LoadLast(15);
         if (recent.Count == 0)
         {
@@ -197,7 +205,9 @@ internal sealed class TrayApp : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
 
         _menu.Items.Add("Fix a Misheard Word…", null, (_, _) => FixWord());
-        _menu.Items.Add("Edit Dictionary…", null, (_, _) => EditDictionary());
+        _menu.Items.Add("Edit Dictionary…", null, (_, _) => OpenData(1));
+        _menu.Items.Add("Microphone Settings…", null, (_, _) => OpenData(2));
+        _menu.Items.Add("Folder Sync…", null, (_, _) => OpenData(3));
         _menu.Items.Add("Import from Mac…", null, (_, _) => ImportFromMac());
         _menu.Items.Add(new ToolStripSeparator());
 
@@ -264,7 +274,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private string? LastText()
     {
-        var text = _controller.LastResult?.Cleaned ?? _history.LoadLast(1).FirstOrDefault()?.Cleaned;
+        var text = _history.Latest(_controller.LastResult)?.Cleaned;
         return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
@@ -302,29 +312,24 @@ internal sealed class TrayApp : ApplicationContext
         if (dialog.ShowDialog() != DialogResult.OK) return;
         try
         {
-            PersonalDictionary.AddReplacement(dialog.Heard, dialog.Meant, _paths.DictionaryFile);
+            _daily.Dictionary.Save(dialog.Heard, dialog.Meant);
             _tray.ShowBalloonTip(3000, "Whisp", $"Got it: \"{dialog.Heard}\" will be typed as \"{dialog.Meant}\".", ToolTipIcon.Info);
         }
         catch (Exception e)
         {
-            MessageBox.Show($"Couldn't update dictionary.json: {e.Message}\n\nFix the file (Edit Dictionary…) and try again.",
+            MessageBox.Show($"Couldn't save the dictionary entry: {e.Message}",
                 "Whisp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
-    private void EditDictionary()
-    {
-        if (!File.Exists(_paths.DictionaryFile))
-        {
-            AtomicFile.WriteAllText(_paths.DictionaryFile, """
-                {
-                  "terms": [],
-                  "replacements": []
-                }
+    private DailyDataForm? _dataForm;
 
-                """);
-        }
-        Process.Start(new ProcessStartInfo("notepad.exe", $"\"{_paths.DictionaryFile}\"") { UseShellExecute = true });
+    private void OpenData(int page)
+    {
+        if (_dataForm is { IsDisposed: false }) _dataForm.Close();
+        _dataForm = new DailyDataForm(_daily, _recorder, _paster.Copy, page);
+        _dataForm.Show();
+        _dataForm.Activate();
     }
 
     public void ImportFromMac(IWin32Window? owner = null)
@@ -339,6 +344,7 @@ internal sealed class TrayApp : ApplicationContext
         try
         {
             var report = MacImport.Import(dialog.FileName, _paths, _settings);
+            _daily.ImportLegacy();
             ApplyLaunchAtLogin();
             Log.Write($"mac import: {report}");
             MessageBox.Show(owner, report.ToString(), "Whisp", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -398,6 +404,8 @@ internal sealed class TrayApp : ApplicationContext
     {
         if (disposing)
         {
+            _syncTimer.Dispose();
+            _dataForm?.Dispose();
             _hotkey.Dispose();
             _tray.Dispose();
             _menu.Dispose();
