@@ -188,7 +188,7 @@ private struct DailyDataView: View {
         VStack(alignment: .leading) {
             TextField("Search words and replacements", text: $dictionaryQuery)
             HSplitView {
-                List(dictionary, selection: $wordID) { entry in
+                List(dictionary, id: \.id, selection: $wordID) { entry in
                     Text(entry.detail.isEmpty ? entry.value : "\(entry.value) → \(entry.detail)").tag(entry.id)
                 }.frame(minWidth: 200)
                 VStack(alignment: .leading, spacing: 8) {
