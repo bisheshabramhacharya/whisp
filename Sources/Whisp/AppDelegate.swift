@@ -1,6 +1,9 @@
 import AppKit
 import Combine
 import WhispCore
+#if WHISP_RELEASE_UPDATER
+import Sparkle
+#endif
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -10,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pill: RecordingPillController?
     private var onboarding: OnboardingController?
     private var microphoneTesting = false
+    #if WHISP_RELEASE_UPDATER
+    private var updater: SPUStandardUpdaterController?
+    #endif
 
     /// Polls permission state after the user was sent to Settings, so the
     /// hotkey starts as soon as Accessibility + Input Monitoring land.
@@ -36,6 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusBar = StatusBarController(services: services, onOpenSetup: { [weak self] in self?.showOnboarding() })
         pill = RecordingPillController(controller: services.controller, settings: services.settings)
+        #if WHISP_RELEASE_UPDATER
+        if Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") != nil {
+            let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            self.updater = updater
+            statusBar.checkForUpdates = { [weak updater] in updater?.checkForUpdates(nil) }
+        }
+        #endif
 
         // Warm the model in the background — first launch may download it.
         services.controller.prepareModel()

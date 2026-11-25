@@ -11,6 +11,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let onOpenSetup: () -> Void
     private let statusItem: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
+    var checkForUpdates: (() -> Void)?
 
     /// Retains @objc action targets for the current menu incarnation.
     private var menuActions: [MenuAction] = []
@@ -188,6 +189,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(item("Open Setup…", action: onOpenSetup))
+        if let checkForUpdates {
+            menu.addItem(item("Check for Updates…", action: checkForUpdates))
+        }
         menu.addItem(.separator())
 
         // Permissions

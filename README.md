@@ -54,37 +54,25 @@ it's free, it's open source, and your voice never leaves your Mac.
 | **Mac** | Apple Silicon: any M1, M2, M3, M4 or newer. Intel Macs aren't supported. |
 | **macOS** | 14 Sonoma or later |
 | **Memory** | 8 GB is plenty. Whisp is tuned on a base 8 GB M1, the slowest Mac it supports. |
-| **Disk** | About 2 GB for the speech models, plus Apple's free developer tools |
-| **Internet** | Only once, to download the speech model |
+| **Disk** | About 2 GB for the speech models |
+| **Internet** | To download the speech models and check for app updates |
 | **Language** | English |
 
 **On Windows?** Whisp runs on Windows 10 and 11 too: hold **Right Alt** instead
-of Right Option. Install it by pasting this into PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/windows/install.ps1 | iex
-```
+of Right Option. Download the Windows setup executable from
+[the latest release](https://github.com/bisheshabramhacharya/whisp/releases/latest).
 
 See [windows/README.md](windows/README.md) for requirements, speed, and how to
 bring over your dictionary and history from a Mac.
 
 ## Install
 
-**1. Open Terminal.** Press ⌘Space, type *Terminal*, press Return.
+**1. Download the macOS disk image** (`Whisp-…-macos-arm64.dmg`) from
+[the latest release](https://github.com/bisheshabramhacharya/whisp/releases/latest).
 
-**2. Paste this line and press Return:**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/install.sh | bash
-```
-
-Grab a coffee. The installer downloads the latest release, builds it on your
-Mac, and puts **Whisp.app** in your Applications folder. The first build takes
-a few minutes.
-
-> If Terminal says `git` or the developer tools are missing, run
-> `xcode-select --install`, click **Install** in the window that pops up, then
-> paste the line above again.
+**2. Open the disk image, drag Whisp into Applications, and open Whisp there.**
+If replacing a copy built from source, quit it first. Your data stays in place,
+but macOS may ask you to grant permissions again for the newly signed app.
 
 **3. Follow the setup window.** Whisp opens a short guided setup. It takes
 a couple of minutes and ends with you dictating your first message:
@@ -111,8 +99,9 @@ Whisp menu bar icon.
 
 > **Using Wispr Flow or Willow?** Quit it first. They listen for the same key.
 
-**Updating:** paste the same install line again. You keep your settings,
-history, words and permissions.
+**Updating:** the release build checks for updates automatically. You can also
+choose **Check for Updates…** from the Whisp menu. Your settings, history and
+dictionary stay in place.
 
 ## How to use it
 
@@ -148,7 +137,7 @@ is in [docs/speed](docs/speed/README.md).
 ## Is it private?
 
 Yes. Whisp transcribes everything on your Mac. Your audio and text are never
-sent anywhere. The only things it downloads are the speech models, once.
+sent anywhere. It downloads speech models and checks GitHub for app updates.
 
 Your history, dictionary and (if you keep them) recordings live in
 `~/Library/Application Support/Whisp/`, readable only by your user account.
@@ -212,12 +201,8 @@ an English model.
 
 **Intel Macs?** No, sorry. The model needs the Apple Silicon Neural Engine.
 
-**Why isn't there a .dmg to download?** Apps downloaded from the internet
-need Apple notarization (a paid developer account) to open without scary
-warnings. Building on your Mac avoids that, and you can read every line of
-what you run.
-
-**What exactly does Whisp download?** Only models, once: the speech model from
+**What exactly does Whisp download?** The release build checks GitHub for app
+updates. Whisp downloads speech models once: the speech model from
 [Hugging Face](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml),
 and a faster 5-second encoder (about 525 MB) from this repo's
 [`models-v1` release](https://github.com/bisheshabramhacharya/whisp/releases/tag/models-v1),
@@ -329,10 +314,12 @@ Build overrides: `SCRATCH`, `PRODUCT`, `APP_NAME`, `DIST`, `IDENTITY`
 SwiftPM's generated accessor for FluidAudio resolves `Bundle.module` as
 `Bundle.main.bundleURL + "/FluidAudio_FluidAudio.bundle"`. Inside an `.app`,
 that is the app wrapper root, where `codesign` refuses to seal anything. So
-`build-app.sh` copies bundles into `Contents/Resources/`, signs the app, then
+for local builds `build-app.sh` copies bundles into `Contents/Resources/`, signs the app, then
 adds root-level symlinks for `Bundle.module`. `codesign --verify --deep
 --strict` therefore reports unsealed root contents afterwards; that's expected.
-The executable signature, which permissions bind to, is valid.
+The executable signature, which permissions bind to, is valid. Published
+builds skip the symlinks and keep the complete signature intact. See
+[desktop releases](docs/releases.md) for signing and publishing.
 </details>
 
 <details>
