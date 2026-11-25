@@ -10,6 +10,7 @@ internal sealed class DictationService(SpeechEngine engine, FillerCleaner cleane
     {
         using var takeCancellation = CancellationTokenSource.CreateLinkedTokenSource(stop);
         var preparing = PrepareAsync(stop);
+        var recordingArgs = Capture.GetArgumentsAsync(stop);
         Task pending = Task.CompletedTask;
         CancellationTokenSource? processing = null;
         Capture? capture = null;
@@ -31,7 +32,7 @@ internal sealed class DictationService(SpeechEngine engine, FillerCleaner cleane
                         }
                         try
                         {
-                            capture = new Capture();
+                            capture = new Capture(await recordingArgs);
                             target = await Desktop.FocusedWindowAsync(stop);
                         }
                         catch (Exception e) when (!stop.IsCancellationRequested)
@@ -62,6 +63,8 @@ internal sealed class DictationService(SpeechEngine engine, FillerCleaner cleane
             await pending;
             processing?.Dispose();
             await preparing;
+            try { await recordingArgs; }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         }
     }
 

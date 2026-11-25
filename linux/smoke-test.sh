@@ -30,7 +30,15 @@ cat > "$scratch/bin/hyprctl" <<'EOF'
 EOF
 cat > "$scratch/bin/pw-record" <<'EOF'
 #!/usr/bin/env bash
-[[ "$*" == '--raw --format s16 --rate 16000 --channels 1 -' ]] || exit 2
+if [[ "$*" == --help ]]; then
+    if [[ "${WHISP_SMOKE_PW_RAW:-}" == 1 ]]; then echo '  -a, --raw    RAW mode'; fi
+    exit 0
+fi
+if [[ "${WHISP_SMOKE_PW_RAW:-}" == 1 ]]; then
+    [[ "$1" == --raw ]] || exit 2
+    shift
+fi
+[[ "$*" == '--format s16 --rate 16000 --channels 1 -' ]] || exit 2
 cat "$WHISP_SMOKE/clip.raw"
 touch "$WHISP_SMOKE/recorded"
 EOF
@@ -83,3 +91,15 @@ printf '{"address":"0x2"}\n' > "$scratch/window"
 wait_for grep -Fixq "$expected" "$scratch/clipboard"
 [[ ! -e "$scratch/typed" ]]
 echo 'PASS: focus change copies the transcript instead of typing into the new window'
+
+kill "$daemon"
+wait "$daemon"
+daemon=
+rm -- "$scratch/recorded"
+WHISP_SMOKE_PW_RAW=1 "$whisp" daemon > "$scratch/daemon.log" 2>&1 &
+daemon=$!
+wait_for grep -Fxq 'Ready' "$scratch/daemon.log"
+"$whisp" press
+wait_for test -f "$scratch/recorded"
+"$whisp" cancel
+echo 'PASS: both legacy and modern pw-record arguments are supported'

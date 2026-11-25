@@ -12,11 +12,17 @@ internal sealed class Capture : IAsyncDisposable
     private readonly Process _mic;
     private readonly Task<byte[]> _read;
 
-    public Capture()
+    public Capture(string[] args)
     {
-        _mic = Desktop.Start("pw-record", ["--raw", "--format", "s16", "--rate", "16000", "--channels", "1", "-"],
-            output: true);
+        _mic = Desktop.Start("pw-record", args, output: true);
         _read = ReadAsync();
+    }
+
+    public static async Task<string[]> GetArgumentsAsync(CancellationToken cancellation)
+    {
+        var help = await Desktop.RunAsync("pw-record", ["--help"], null, cancellation);
+        string[] args = ["--format", "s16", "--rate", "16000", "--channels", "1", "-"];
+        return help?.Contains("--raw", StringComparison.Ordinal) == true ? ["--raw", ..args] : args;
     }
 
     private async Task<byte[]> ReadAsync()
@@ -96,7 +102,7 @@ internal static class Desktop
             Console.Error.WriteLine("Whisp: dictation copied; paste it where you want it.");
     }
 
-    private static async Task<string?> RunAsync(string name, string[] args, string? input, CancellationToken cancellation,
+    public static async Task<string?> RunAsync(string name, string[] args, string? input, CancellationToken cancellation,
         bool output = true)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
