@@ -210,7 +210,7 @@ internal sealed class SpeechEngine : IDisposable
         if (missing.Count == 0) return;
 
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("Whisp-Windows");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(OperatingSystem.IsWindows() ? "Whisp-Windows" : "Whisp-Linux");
         long done = _spec.Files.Except(missing).Sum(f => f.Size);
         var total = _spec.TotalSize;
         var lastReport = -1;

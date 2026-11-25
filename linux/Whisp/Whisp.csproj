@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>whisp</AssemblyName>
+    <RootNamespace>Whisp</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
+    <ProjectReference Include="../../windows/WhispCore/WhispCore.csproj" />
+    <Compile Include="../../windows/Whisp/SpeechEngine.cs" Link="SpeechEngine.cs" />
+    <Compile Include="../../windows/Whisp/Log.cs" Link="Log.cs" />
+  </ItemGroup>
+</Project>

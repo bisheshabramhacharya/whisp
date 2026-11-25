@@ -1,0 +1,22 @@
+pkgname=whisp
+pkgver=0.5.0
+pkgrel=1
+pkgdesc='Offline hold-to-talk dictation for Hyprland'
+arch=('x86_64')
+url='https://github.com/bisheshabramhacharya/whisp'
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'openssl' 'zlib' 'hyprland' 'pipewire-audio' 'wtype' 'wl-clipboard')
+options=('!strip' '!debug')
+source=('Whisp-linux-x64.tar.gz')
+sha256sums=('@TARBALL_SHA256@')
+
+package() {
+    cd "$srcdir/Whisp-linux-x64"
+    install -d "$pkgdir/usr/lib/whisp"
+    cp -a app/. "$pkgdir/usr/lib/whisp/"
+    install -Dm755 whisp-setup-hyprland "$pkgdir/usr/bin/whisp-setup-hyprland"
+    ln -s ../lib/whisp/whisp "$pkgdir/usr/bin/whisp"
+    install -Dm644 whisp.service "$pkgdir/usr/lib/systemd/user/whisp.service"
+    sed -i 's|%h/.local/lib/whisp/whisp|/usr/lib/whisp/whisp|' "$pkgdir/usr/lib/systemd/user/whisp.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/whisp/LICENSE"
+}

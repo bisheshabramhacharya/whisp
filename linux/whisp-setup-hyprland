@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${WAYLAND_DISPLAY:-}" || -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    echo 'Run whisp-setup-hyprland in a terminal inside your Hyprland session.' >&2
+    exit 1
+fi
+
+if [[ "${1:-}" == --start ]]; then
+    systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+    systemctl --user restart whisp.service
+    exit
+fi
+
+bin="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+config="$dir/hyprland.conf"
+include="source = $dir/whisp.conf"
+if [[ ! -f "$config" ]]; then
+    echo "No $config found; see the Linux README to add the bindings manually." >&2
+    exit 1
+fi
+
+if [[ ! -e "$dir/whisp.conf" ]]; then
+    printf '%s\n' \
+        "exec-once = \"$bin/whisp-setup-hyprland\" --start" \
+        "bindi = , F9, exec, \"$bin/whisp\" press" \
+        "bindri = , F9, exec, \"$bin/whisp\" release" > "$dir/whisp.conf"
+fi
+if ! grep -Fxq -- "$include" "$config"; then
+    printf '\n%s\n' "$include" >> "$config"
+fi
+systemctl --user daemon-reload
+"$bin/whisp-setup-hyprland" --start
+hyprctl reload
+echo 'Whisp is starting. Hold F9 to dictate when the model is ready.'

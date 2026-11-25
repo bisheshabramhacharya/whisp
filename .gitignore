@@ -5,9 +5,11 @@
 .DS_Store
 .build-*/
 
-# Windows (.NET) build output
+# .NET build output
 windows/**/bin/
 windows/**/obj/
+linux/**/bin/
+linux/**/obj/
 
 # Local benchmark data (LibriSpeech, generated dictation clips) — never commit
 # No trailing slash: the shared set arrives as a symlink, which `testdata/` does

@@ -33,3 +33,43 @@ jobs:
         run: dotnet run --project windows/WhispTests -c Release
       - name: Build
         run: dotnet publish windows/Whisp -c Release -r win-x64 --self-contained true -o dist/Whisp-windows
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      WHISP_MODELS: ${{ github.workspace }}/.build-whisp-models
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.WHISP_MODELS }}
+          key: whisp-parakeet-${{ hashFiles('windows/Whisp/SpeechEngine.cs') }}
+      - name: Install audio test dependency
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Test shared core
+        run: dotnet run --project windows/WhispTests -c Release
+      - name: Build Linux artifacts
+        run: bash linux/build.sh --arch
+      - name: Smoke-test packaged Whisp
+        run: |
+          tar -xzf dist/linux/Whisp-linux-x64.tar.gz -C dist/linux
+          bash linux/smoke-test.sh dist/linux/Whisp-linux-x64/app/whisp
+      - name: Check Arch package installation
+        run: |
+          docker run --rm --volume "$PWD/dist/linux:/artifacts:ro" archlinux:base-devel bash -euc '
+            pacman -Sy --noconfirm
+            pacman -U --noconfirm /artifacts/whisp-*.pkg.tar.zst
+            pw-record --help 2>&1 | grep -- --raw
+            whisp --help
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Whisp-linux-x64
+          path: |
+            dist/linux/*.tar.gz
+            dist/linux/*.pkg.tar.zst
+            dist/linux/*.sha256
