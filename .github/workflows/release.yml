@@ -59,6 +59,8 @@ jobs:
     needs: preflight
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      PACK_ID: Whisp.Desktop
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -75,7 +77,7 @@ jobs:
           }
           dotnet publish windows/Whisp -c Release -r win-x64 --self-contained true -o dist/Whisp-windows
           dotnet tool install vpk --version 1.2.161 --tool-path dist/tools
-          & dist/tools/vpk.exe --skip-updates pack --runtime win-x64 --packId Whisp --packVersion $version --packDir dist/Whisp-windows --mainExe Whisp.exe --packTitle Whisp --icon windows/Whisp/Resources/whisp.ico --shortcuts StartMenuRoot --noPortable --outputDir dist/release
+          & dist/tools/vpk.exe --skip-updates pack --runtime win-x64 --packId $env:PACK_ID --packVersion $version --packDir dist/Whisp-windows --mainExe Whisp.exe --packTitle Whisp --icon windows/Whisp/Resources/whisp.ico --shortcuts StartMenuRoot --noPortable --outputDir dist/release
           $release = Get-Content dist/release/releases.win.json -Raw | ConvertFrom-Json
           $full = @($release.Assets | Where-Object { $_.Type -eq 'Full' })
           if ($full.Count -ne 1 -or $full[0].Version -ne $version) { throw 'Invalid Windows update feed.' }
@@ -84,19 +86,31 @@ jobs:
           if ($package.Length -ne $full[0].Size -or $sha256 -ne $full[0].SHA256) {
             throw 'Windows update package does not match the feed.'
           }
-          $setup = Get-Item dist/release/Whisp-win-Setup.exe
+          $setup = Get-Item "dist/release/$env:PACK_ID-win-Setup.exe"
           Rename-Item $setup.FullName "Whisp-$version-windows-x64-Setup.exe"
-      - name: Smoke test silent Windows install
+      - name: Smoke test Windows install and repair
         shell: pwsh
         run: |
           $setup = Get-Item dist/release/Whisp-*-windows-x64-Setup.exe
-          $install = Join-Path $env:RUNNER_TEMP Whisp-install
-          $setupProcess = Start-Process $setup.FullName -ArgumentList '--silent', '--installto', "`"$install`"" -PassThru
-          if (!$setupProcess.WaitForExit(60000)) {
-            Stop-Process -Id $setupProcess.Id -Force
-            throw 'Windows installer timed out.'
+          $install = Join-Path $env:LOCALAPPDATA $env:PACK_ID
+          $cache = Join-Path $env:LOCALAPPDATA 'Whisp/Models'
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          $probe = Join-Path $cache 'installer-smoke-test'
+          Set-Content -Path $probe -Value 'keep'
+          function Invoke-WhispSetup {
+            $setupProcess = Start-Process $setup.FullName -ArgumentList '--silent' -PassThru
+            if (!$setupProcess.WaitForExit(60000)) {
+              Stop-Process -Id $setupProcess.Id -Force
+              throw 'Windows installer timed out.'
+            }
+            if ($setupProcess.ExitCode -ne 0) { throw "Setup failed: $($setupProcess.ExitCode)" }
+            if (!(Test-Path $probe)) { throw 'Setup removed the speech model cache.' }
           }
-          if ($setupProcess.ExitCode -ne 0) { throw "Setup failed: $($setupProcess.ExitCode)" }
+          Invoke-WhispSetup
+          $repairProbe = Join-Path $install 'repair-smoke-test'
+          Set-Content -Path $repairProbe -Value 'replace'
+          Invoke-WhispSetup
+          if (Test-Path $repairProbe) { throw 'Setup did not repair the installation.' }
           $exe = Get-Item (Join-Path $install 'current/Whisp.exe')
           $version = ([xml](Get-Content windows/Directory.Build.props -Raw)).Project.PropertyGroup.Version
           if (($exe.VersionInfo.ProductVersion -split '\+')[0] -ne $version) {
@@ -107,7 +121,7 @@ jobs:
           if (!$appProcess) { $appProcess = Start-Process $exe.FullName -PassThru }
           if ($appProcess.WaitForExit(5000)) { throw 'Installed Whisp did not stay running.' }
           Stop-Process -Id $appProcess.Id
-          Write-Host "Verified Windows setup and installed Whisp $version."
+          Write-Host "Verified Windows setup, repair, model cache retention, and installed Whisp $version."
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
