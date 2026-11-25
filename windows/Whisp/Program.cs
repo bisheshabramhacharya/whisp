@@ -10,7 +10,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        VelopackApp.Build().Run();
+        var restartedAfterUpdate = false;
+        VelopackApp.Build()
+            .SetAutoApplyOnStartup(false)
+            .OnRestarted(_ => restartedAfterUpdate = true)
+            .Run();
 
         // whisp.exe --transcribe clip.wav [model-id]   prints the raw and cleaned transcript (16 kHz mono WAV)
         if (args.Length is 2 or 3 && args[0] == "--transcribe")
@@ -27,6 +31,8 @@ internal static class Program
         var paths = AppPaths.Default;
         paths.EnsureCreated();
         Log.Init(paths);
+        if (!restartedAfterUpdate)
+            ReleaseUpdates.ApplyPending(args);
         Log.Write($"Whisp {Application.ProductVersion} starting");
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
