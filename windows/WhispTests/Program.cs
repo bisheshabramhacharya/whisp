@@ -550,5 +550,7 @@ Expect($"{Lower(HotkeyBinding.Key(0x5B).MasksRelease)} {Lower(HotkeyBinding.Righ
     File.Delete(path);
 }
 
+TextParityTests.Run((actual, expected, label) => Expect(actual, expected, label), dictCleaner);
+
 Console.WriteLine($"{passes} passed, {failures} failed");
 return failures == 0 ? 0 : 1;

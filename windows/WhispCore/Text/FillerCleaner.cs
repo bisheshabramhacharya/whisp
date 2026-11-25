@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Whisp.Core.Text;
@@ -14,10 +16,11 @@ namespace Whisp.Core.Text;
 ///   "I want to, I want to go", but not a repeated run of numbers ("1 2 1 2 5"),
 ///
 /// then repairs the punctuation/capitalization it disturbed, writes clock times with a
-/// colon ("at 5.30" -> "at 5:30"), and applies the personal dictionary.
+/// colon ("at 5.30" -> "at 5:30"), and applies the coding pack and personal dictionary.
 /// </summary>
 public sealed class FillerCleaner
 {
+    private static readonly TextFormatter Formatter = new();
     private readonly PersonalDictionary? _dictionary;
 
     public FillerCleaner(PersonalDictionary? dictionary = null)
@@ -33,9 +36,11 @@ public sealed class FillerCleaner
         RemoveParentheticalFillers(tokens);
         RemoveStutters(tokens);
         RemoveRestarts(tokens);
-        var text = FixClockTimes(string.Join(" ", tokens.Select(t => t.Text)));
+        var text = CodingWordPack.Apply(FixClockTimes(string.Join(" ", tokens.Select(t => t.Text))));
         return _dictionary?.Apply(text) ?? text;
     }
+
+    public string CleanAndFormat(string raw) => Formatter.Format(Clean(raw));
 
     /// Parakeet writes "five thirty" as "5.30". Use a colon when the context says it's a
     /// clock time: followed by am/pm, or after at/by/until/… A number followed by a
@@ -98,7 +103,7 @@ public sealed class FillerCleaner
         "nudge", "wink", "tut", "tsk", "rah", "ring", "ding", "honk", "quack",
         "moo", "woof", "meow", "vroom", "bam", "pow", "dee", "dum", "poo", "wee",
         "si", "oui", "ja", "da", "ma", "pa", "oink", "buzz", "hiss", "tweet",
-        "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip",
+        "chirp", "ribbit", "snap", "beep", "bong", "zoom", "pip", "dot",
     };
 
     /// Codes and counts ("4", "404", "3.14"), which people repeat on purpose.
@@ -294,8 +299,9 @@ public sealed class FillerCleaner
     }
 
     /// A whitespace-delimited word split into leading punctuation, core, and trailing punctuation.
-    private sealed class Token
+    internal sealed class Token
     {
+        public const string Closers = ")]}\"'”’";
         private string _core = "";
 
         public string Leading;
@@ -322,6 +328,9 @@ public sealed class FillerCleaner
 
         public static Token Parse(string raw)
         {
+            foreach (var ch in raw)
+                if (!char.IsAscii(ch)) return ParseUnicode(raw);
+
             static bool IsWordChar(char c) => char.IsLetter(c) || char.IsNumber(c);
             var start = -1;
             for (var k = 0; k < raw.Length; k++)
@@ -332,13 +341,38 @@ public sealed class FillerCleaner
             return new Token(raw[..start], raw[start..(end + 1)], raw[(end + 1)..]);
         }
 
+        private static Token ParseUnicode(string raw)
+        {
+            var start = -1;
+            var end = 0;
+            for (var i = 0; i < raw.Length;)
+            {
+                var length = StringInfo.GetNextTextElementLength(raw.AsSpan(i));
+                if (Rune.TryGetRuneAt(raw, i, out var rune) && (Rune.IsLetter(rune) || Rune.IsNumber(rune)))
+                {
+                    if (start < 0) start = i;
+                    end = i + length;
+                }
+                i += length;
+            }
+            return start < 0 ? new Token("", "", raw) : new Token(raw[..start], raw[start..end], raw[end..]);
+        }
+
         public string Text => Leading + Core + Trailing;
-        public bool EndsSentence => Trailing.IndexOfAny(new[] { '.', '?', '!' }) >= 0;
+        public bool EndsSentence
+        {
+            get
+            {
+                for (var i = Trailing.Length - 1; i >= 0; i--)
+                    if (!Closers.Contains(Trailing[i])) return Trailing[i] is '.' or '?' or '!';
+                return false;
+            }
+        }
 
         public void CapitalizeFirst()
         {
-            if (Core.Length == 0 || !char.IsLower(Core[0])) return;
-            Core = char.ToUpperInvariant(Core[0]) + Core[1..];
+            if (!Rune.TryGetRuneAt(Core, 0, out var first) || !Rune.IsLower(first)) return;
+            Core = Rune.ToUpperInvariant(first).ToString() + Core[first.Utf16SequenceLength..];
         }
     }
 }

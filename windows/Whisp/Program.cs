@@ -47,7 +47,7 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         var raw = engine.TranscribeAsync(samples).GetAwaiter().GetResult();
         var ms = sw.ElapsedMilliseconds;
-        var cleaned = new FillerCleaner(new PersonalDictionary(paths.DictionaryFile)).Clean(raw);
+        var cleaned = new FillerCleaner(new PersonalDictionary(paths.DictionaryFile)).CleanAndFormat(raw);
         Console.WriteLine($"raw:     {raw}");
         Console.WriteLine($"cleaned: {cleaned}");
         Console.WriteLine($"{samples.Length / 16000.0:F1}s audio in {ms} ms");

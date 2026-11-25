@@ -10,7 +10,7 @@ internal enum DictationState { Idle, Recording, Transcribing }
 
 /// <summary>
 /// Orchestrates one push-to-talk dictation loop:
-/// hotkey event -> sounds/mute -> record -> transcribe -> clean -> paste -> history.
+/// hotkey event -> sounds/mute -> record -> transcribe -> clean -> format -> paste -> history.
 /// Port of Sources/WhispCore/DictationController.swift.
 ///
 /// Everything runs on the UI thread except decodes. While the key is held, finished
@@ -388,7 +388,7 @@ internal sealed class DictationController
             return;
         }
 
-        var cleaned = _cleaner.Clean(raw);
+        var cleaned = _cleaner.CleanAndFormat(raw);
         if (raw.Length == 0 && duration >= 1)
         {
             SetStatus("Didn't hear any speech — check the microphone input");
