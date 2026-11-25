@@ -10,6 +10,10 @@
 #   DIST      Output directory for the .app          (default: dist)
 #   IDENTITY  Code-signing identity name             (default: "Whisp Local Signing";
 #             pass IDENTITY=- to force ad-hoc signing)
+#   SPARKLE_DIR         Sparkle distribution root (enables release bundle layout)
+#   DEVELOPER_ID        Developer ID Application signing identity (release only)
+#   RELEASE_KEYCHAIN   Keychain containing the Developer ID certificate
+#   SPARKLE_PUBLIC_KEY  Public EdDSA key (signed release only)
 #
 # Signing notes
 # -------------
@@ -58,6 +62,9 @@ PRODUCT="${PRODUCT:-Whisp}"
 APP_NAME="${APP_NAME:-Whisp}"
 DIST="${DIST:-dist}"
 IDENTITY="${IDENTITY:-Whisp Local Signing}"
+SPARKLE_DIR="${SPARKLE_DIR:-}"
+DEVELOPER_ID="${DEVELOPER_ID:-}"
+SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-}"
 INSTALL=0
 for arg in "$@"; do
     case "$arg" in
@@ -67,8 +74,20 @@ for arg in "$@"; do
     esac
 done
 
+SWIFT_FLAGS=()
+if [ -n "$SPARKLE_DIR" ]; then
+    SPARKLE_DIR="$(cd "$SPARKLE_DIR" && pwd)"
+    [ -d "$SPARKLE_DIR/Sparkle.framework" ]
+    SWIFT_FLAGS+=(-Xswiftc -DWHISP_RELEASE_UPDATER -Xswiftc -F -Xswiftc "$SPARKLE_DIR")
+    SWIFT_FLAGS+=(-Xlinker -F -Xlinker "$SPARKLE_DIR" -Xlinker -rpath -Xlinker @executable_path/../Frameworks)
+fi
+if [ -n "$DEVELOPER_ID$SPARKLE_PUBLIC_KEY" ]; then
+    [ -n "$SPARKLE_DIR" ] && [ -n "$DEVELOPER_ID" ] && [ -n "$SPARKLE_PUBLIC_KEY" ] ||
+        { echo "error: signing a release requires Sparkle, Developer ID and the public update key" >&2; exit 1; }
+fi
+
 echo "==> swift build -c release --arch arm64 --product $PRODUCT (scratch: $SCRATCH)"
-swift build -c release --arch arm64 --scratch-path "$SCRATCH" --product "$PRODUCT"
+swift build -c release --arch arm64 --scratch-path "$SCRATCH" --product "$PRODUCT" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 
 BIN_DIR="$(swift build -c release --arch arm64 --scratch-path "$SCRATCH" --product "$PRODUCT" --show-bin-path)"
 BIN="$BIN_DIR/$PRODUCT"
@@ -87,6 +106,15 @@ if [ "$PRODUCT" != "Whisp" ] || [ "$APP_NAME" != "Whisp" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP/Contents/Info.plist" || true
 fi
 [ -f "Resources/AppIcon.icns" ] && cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+if [ -n "$SPARKLE_DIR" ]; then
+    ditto "$SPARKLE_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+fi
+if [ -n "$DEVELOPER_ID" ]; then
+    /usr/libexec/PlistBuddy -c "Add :SUFeedURL string https://github.com/bisheshabramhacharya/whisp/releases/latest/download/appcast.xml" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_KEY" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :SURequireSignedFeed bool true" "$APP/Contents/Info.plist"
+fi
 
 # SwiftPM resource bundles -> Contents/Resources (sealed). Root-level symlinks
 # for Bundle.module are added AFTER signing (codesign rejects root content).
@@ -177,7 +205,26 @@ sign_app() {
 }
 
 SIGN_ID="-"
-if [ "$IDENTITY" != "-" ]; then
+if [ -n "$SPARKLE_DIR" ]; then
+    FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+    RELEASE_SIGN_FLAGS=(--sign - --timestamp=none)
+    if [ -n "$DEVELOPER_ID" ]; then
+        RELEASE_SIGN_FLAGS=(--sign "$DEVELOPER_ID" --options runtime --timestamp)
+        if [ -n "${RELEASE_KEYCHAIN:-}" ]; then
+            RELEASE_SIGN_FLAGS+=(--keychain "$RELEASE_KEYCHAIN")
+        fi
+    fi
+    while IFS= read -r -d '' helper; do
+        codesign --force "${RELEASE_SIGN_FLAGS[@]}" "$helper"
+    done < <(find -H "$FRAMEWORK/Versions/Current" -depth \( -name '*.app' -o -name '*.xpc' -o -name Autoupdate \) -print0)
+    codesign --force "${RELEASE_SIGN_FLAGS[@]}" "$FRAMEWORK"
+    for library in "$APP/Contents/Frameworks/"*.dylib; do
+        [ -f "$library" ] || continue
+        codesign --force "${RELEASE_SIGN_FLAGS[@]}" "$library"
+    done
+    codesign --force "${RELEASE_SIGN_FLAGS[@]}" --entitlements Resources/Release.entitlements "$APP"
+    codesign --verify --deep --strict "$APP"
+elif [ "$IDENTITY" != "-" ]; then
     if identity_valid; then
         SIGN_ID="$IDENTITY"
         echo "==> found existing signing identity '$IDENTITY'"
@@ -194,16 +241,17 @@ if [ "$IDENTITY" != "-" ]; then
 else
     echo "==> IDENTITY=- : ad-hoc signing requested"
 fi
-sign_app "$SIGN_ID"
-
-# Post-sign: app-root symlinks so SwiftPM's Bundle.module (which resolves
-# Bundle.main.bundleURL + "/<name>.bundle") finds the sealed copies.
-for name in "${BUNDLE_NAMES[@]:-}"; do
-    [ -n "$name" ] || continue
-    ln -sfn "Contents/Resources/$name" "$APP/$name"
-    echo "    app-root link: $name -> Contents/Resources/$name"
-done
-[ ${#BUNDLE_NAMES[@]} -gt 0 ] && echo "    (note: 'codesign --verify' will now report unsealed bundle-root contents — expected; see script header)"
+if [ -z "$SPARKLE_DIR" ]; then
+    sign_app "$SIGN_ID"
+    # Local builds retain the SwiftPM resource links. Releases omit them to
+    # keep the signature intact; FluidAudio uses these resources only for TTS.
+    for name in "${BUNDLE_NAMES[@]:-}"; do
+        [ -n "$name" ] || continue
+        ln -sfn "Contents/Resources/$name" "$APP/$name"
+        echo "    app-root link: $name -> Contents/Resources/$name"
+    done
+    [ ${#BUNDLE_NAMES[@]} -gt 0 ] && echo "    (note: 'codesign --verify' will now report unsealed bundle-root contents — expected; see script header)"
+fi
 
 echo "==> done: $APP"
 

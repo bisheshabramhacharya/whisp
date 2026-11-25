@@ -12,7 +12,7 @@ dictionary file — and just as private: everything runs on your PC.
 | **PC** | 64-bit Windows 10 or 11 on an Intel or AMD processor |
 | **Memory** | 8 GB is plenty (Whisp uses about 1.2 GB while running) |
 | **Disk** | About 1 GB: 660 MB for the speech model, the rest for the app (2.9 GB more if you switch to Cohere) |
-| **Internet** | Only to install and to download the speech model once |
+| **Internet** | To download the speech models and check for app updates |
 | **Language** | English |
 
 No graphics card needed: the model runs on the CPU, about 15–20× faster than
@@ -20,20 +20,19 @@ real time on a desktop Ryzen 7.
 
 ## Install
 
-Open **PowerShell** (press Start, type *PowerShell*, press Enter), paste this
-line and press Enter:
+Download and run `Whisp-…-windows-x64-Setup.exe` from
+[the latest release](https://github.com/bisheshabramhacharya/whisp/releases/latest).
+The installer adds Whisp to your Start menu; no .NET SDK or admin rights are
+needed. Windows may show an unknown-publisher warning because the installer is
+not Authenticode-signed. A welcome window shows how to dictate while the speech
+model (about 660 MB) downloads in the background.
 
-```powershell
-irm https://raw.githubusercontent.com/bisheshabramhacharya/whisp/main/windows/install.ps1 | iex
-```
+If you installed a previous build with `windows/install.ps1`, uninstall that
+copy before running the setup executable. Its uninstaller keeps your settings,
+history and dictionary, but removes its cached speech models.
 
-The installer downloads the latest release, builds it on your PC (installing
-a private copy of the .NET 8 SDK if you don't have one — no admin rights
-needed), installs Whisp to `%LOCALAPPDATA%\Programs\Whisp`, adds it to the
-Start menu, and starts it. A welcome window shows how to dictate while the
-speech model (about 660 MB) downloads in the background.
-
-**Updating:** run the same line again. You keep your settings, history and words.
+**Updating:** the release build checks for and downloads updates automatically
+while running, then applies the update the next time you open Whisp.
 
 **Uninstalling:** *Settings › Apps › Installed apps › Whisp › Uninstall*. Your
 dictionary and history in `%APPDATA%\Whisp` are kept; delete that folder to

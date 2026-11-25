@@ -1,0 +1,131 @@
+name: Installers
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Package.swift
+      - Package.resolved
+      - Resources/**
+      - Sources/**
+      - scripts/build-app.sh
+      - scripts/package-macos.sh
+      - windows/**
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package and verify macOS DMG
+        env:
+          PUBLISH: ${{ github.ref_type == 'tag' }}
+          MACOS_CERTIFICATE_P12: ${{ github.ref_type == 'tag' && secrets.MACOS_CERTIFICATE_P12 || '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          DEVELOPER_ID: ${{ github.ref_type == 'tag' && vars.MACOS_DEVELOPER_ID || '' }}
+          APPLE_NOTARY_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_NOTARY_API_KEY || '' }}
+          APPLE_NOTARY_KEY_ID: ${{ github.ref_type == 'tag' && vars.APPLE_NOTARY_KEY_ID || '' }}
+          APPLE_NOTARY_ISSUER_ID: ${{ github.ref_type == 'tag' && vars.APPLE_NOTARY_ISSUER_ID || '' }}
+          SPARKLE_PUBLIC_KEY: ${{ github.ref_type == 'tag' && vars.SPARKLE_PUBLIC_KEY || '' }}
+          SPARKLE_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.SPARKLE_PRIVATE_KEY || '' }}
+        run: bash scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/release/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Package Windows x64 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = ([xml](Get-Content windows/Directory.Build.props -Raw)).Project.PropertyGroup.Version
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Release tag does not match Windows version $version."
+          }
+          dotnet publish windows/Whisp -c Release -r win-x64 --self-contained true -o dist/Whisp-windows
+          dotnet tool install vpk --version 1.2.161 --tool-path dist/tools
+          & dist/tools/vpk.exe --skip-updates pack --runtime win-x64 --packId Whisp --packVersion $version --packDir dist/Whisp-windows --mainExe Whisp.exe --packTitle Whisp --icon windows/Whisp/Resources/whisp.ico --shortcuts StartMenuRoot --noPortable --outputDir dist/release
+          $release = Get-Content dist/release/releases.win.json -Raw | ConvertFrom-Json
+          $full = @($release.Assets | Where-Object { $_.Type -eq 'Full' })
+          if ($full.Count -ne 1 -or $full[0].Version -ne $version) { throw 'Invalid Windows update feed.' }
+          $package = Get-Item (Join-Path dist/release $full[0].FileName)
+          $sha256 = (Get-FileHash -Algorithm SHA256 $package.FullName).Hash
+          if ($package.Length -ne $full[0].Size -or $sha256 -ne $full[0].SHA256) {
+            throw 'Windows update package does not match the feed.'
+          }
+          $setup = Get-Item dist/release/Whisp-win-Setup.exe
+          Rename-Item $setup.FullName "Whisp-$version-windows-x64-Setup.exe"
+      - name: Smoke test silent Windows install
+        shell: pwsh
+        run: |
+          $setup = Get-Item dist/release/Whisp-*-windows-x64-Setup.exe
+          $install = Join-Path $env:RUNNER_TEMP Whisp-install
+          $setupProcess = Start-Process $setup.FullName -ArgumentList '--silent', '--installto', "`"$install`"" -PassThru
+          if (!$setupProcess.WaitForExit(60000)) {
+            Stop-Process -Id $setupProcess.Id -Force
+            throw 'Windows installer timed out.'
+          }
+          if ($setupProcess.ExitCode -ne 0) { throw "Setup failed: $($setupProcess.ExitCode)" }
+          $exe = Get-Item (Join-Path $install 'current/Whisp.exe')
+          $version = ([xml](Get-Content windows/Directory.Build.props -Raw)).Project.PropertyGroup.Version
+          if (($exe.VersionInfo.ProductVersion -split '\+')[0] -ne $version) {
+            throw 'Installed Windows executable has the wrong version.'
+          }
+          $appProcess = Get-Process Whisp -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $exe.FullName } | Select-Object -First 1
+          if (!$appProcess) { $appProcess = Start-Process $exe.FullName -PassThru }
+          if ($appProcess.WaitForExit(5000)) { throw 'Installed Whisp did not stay running.' }
+          Stop-Process -Id $appProcess.Id
+          Write-Host "Verified Windows setup and installed Whisp $version."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist/release/Whisp-*-windows-x64-Setup.exe
+            dist/release/*.nupkg
+            dist/release/releases.win.json
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish both installers and update feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          version="${GITHUB_REF_NAME#v}"
+          test -s "release/Whisp-$version-macos-arm64.dmg"
+          test -s "release/Whisp-$version-windows-x64-Setup.exe"
+          test -s release/appcast.xml
+          test -s release/releases.win.json
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --draft --title "Whisp $version" --generate-notes
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

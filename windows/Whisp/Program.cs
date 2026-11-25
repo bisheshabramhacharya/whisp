@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Velopack;
 using Whisp.Core;
 using Whisp.Core.Text;
 
@@ -9,6 +10,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        VelopackApp.Build().Run();
+
         // whisp.exe --transcribe clip.wav [model-id]   prints the raw and cleaned transcript (16 kHz mono WAV)
         if (args.Length is 2 or 3 && args[0] == "--transcribe")
             return Transcribe(args[1], args.Length == 3 ? args[2] : null);
@@ -30,7 +33,16 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         Application.ThreadException += (_, e) => Log.Write($"unhandled: {e.Exception}");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"fatal: {e.ExceptionObject}");
-        Application.Run(new TrayApp(paths));
+        using var updates = new CancellationTokenSource();
+        _ = Task.Run(() => ReleaseUpdates.RunAsync(updates.Token));
+        try
+        {
+            Application.Run(new TrayApp(paths));
+        }
+        finally
+        {
+            updates.Cancel();
+        }
         return 0;
     }
 
